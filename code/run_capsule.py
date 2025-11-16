@@ -23,6 +23,8 @@ from disentangled_rnns.library import disrnn, plotting, rnn_utils
 
 import wandb
 
+from util.loggings import get_repository_commits, get_computation_id
+
 logger = logging.getLogger(__name__)
 
 
@@ -111,6 +113,15 @@ if __name__ == "__main__":
         config=args,
         dir="/results",
     )
+
+    # Log repository commit hashes
+    commits = get_repository_commits()
+    wandb.config.update({"commit_hashes": commits})
+
+    # Log CodeOcean computation ID
+    computation_id = get_computation_id()
+    if computation_id:
+        wandb.config.update({"CO_COMPUTATION_ID": computation_id})
 
     # Haven't implemented multisubject rnns yet
     if args.multisubject:
