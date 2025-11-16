@@ -1,7 +1,222 @@
-""" top level run script """
+"""top level run script"""
 
-def run():
-    """ basic run function """
-    pass
+import copy
+import json
+import logging
+import os
+import sys
+import time
 
-if __name__ == "__main__": run()
+import aind_disrnn_utils.data_loader as dl
+import aind_dynamic_foraging_data_utils.code_ocean_utils as co
+import aind_dynamic_foraging_multisession_analysis.multisession_load as ms_load
+import jax
+import matplotlib.pyplot as plt
+import numpy as np
+import optax
+import pandas as pd
+from aind_disrnn_utils.data_models import (disRNNInputSettings,
+                                           disRNNOutputSettings)
+from disentangled_rnns.library import disrnn, plotting, rnn_utils
+
+logger = logging.getLogger(__name__)
+
+if __name__ == "__main__":
+    # set up a logger
+    logging.basicConfig(
+        level=logging.INFO,
+        stream=sys.stdout,
+        format="%(levelname)s:%(asctime)s:%(filename)s:%(lineno)d:    %(message)s",
+        datefmt="%Y-%m-%d %H-%M-%S",
+    )
+
+    # Parse CLI arguments
+    logger.info("parsing CLI args")
+    args = disRNNInputSettings()
+    logger.info(args)
+    json_string = args.model_dump_json(indent=2)
+    file_path = "/results/inputs.json"
+    with open(file_path, "w") as f:
+        f.write(json_string)
+
+    # Haven't implemented multisubject rnns yet
+    if args.multisubject:
+        logger.error("Multisubject not yet supported")
+        sys.exit()
+
+    # Load Data
+    subject_dfs = []
+    for subject in args.subject_ids:
+        asset_name = "/data/disrnn_dataset_{}/disrnn_dataset.csv".format(subject)
+        if os.path.exists(asset_name):
+            logger.info("loading: {}".format(asset_name))
+            subject_dfs.append(pd.read_csv(asset_name))
+        else:
+            logger.error("Could not find dataset: {}. ".format(asset_name))
+            sys.exit()
+
+    df = pd.concat(subject_dfs)
+
+    # Create disrnn dataset
+    dataset = dl.create_disrnn_dataset(
+        df, ignore_policy=args.ignore_policy, features=args.features
+    )
+    dataset_train, dataset_eval = rnn_utils.split_dataset(dataset, eval_every_n=2)
+
+    # Setup output model
+    output = {}
+    output["num_trials"] = len(df)
+    output["num_sessions"] = len(df["ses_idx"].unique())
+
+    # Log details of dataset
+    logger.info("Dataset details:")
+    logger.info("Input size: {}".format(dataset._xs.shape))
+    logger.info("Output size: {}".format(dataset._ys.shape))
+    logger.info("Train output: {}".format(dataset_train._ys.shape))
+    logger.info("Test output: {}".format(dataset_eval._ys.shape))
+
+    # Set up random splits
+    logger.info("setting up random splits")
+    key = jax.random.PRNGKey(np.random.randint(10**16))
+    k1, k2 = jax.random.split(key)
+    output["random_key"] = list(key.__array__())
+
+    # Configure Network
+    logger.info("Configuring network")
+    output_size = 2 if args.ignore_policy == "exclude" else 3
+    # Choose left / choose right, maybe ignore
+    disrnn_config = disrnn.DisRnnConfig(
+        # Dataset related
+        obs_size=dataset._xs.shape[2],
+        output_size=output_size,
+        x_names=dataset.x_names,
+        y_names=dataset.y_names,
+        # Network architecture
+        latent_size=args.num_latents,
+        update_net_n_units_per_layer=args.update_net_n_units_per_layer,
+        update_net_n_layers=args.update_net_n_layers,
+        choice_net_n_units_per_layer=args.choice_net_n_units_per_layer,
+        choice_net_n_layers=args.choice_net_n_layers,
+        activation=args.activation,
+        # Penalties
+        noiseless_mode=False,
+        latent_penalty=args.latent_penalty,
+        choice_net_latent_penalty=args.choice_net_latent_penalty,
+        update_net_obs_penalty=args.update_net_obs_penalty,
+        update_net_latent_penalty=args.update_net_latent_penalty,
+    )
+
+    noiseless_network = copy.deepcopy(disrnn_config)
+    noiseless_network.latent_penalty = 0
+    noiseless_network.choice_net_latent_penalty = 0
+    noiseless_network.update_net_obs_penalty = 0
+    noiseless_network.update_net_latent_penalty = 0
+    noiseless_network.l2_scale = 0
+    noiseless_network.noiseless_mode = True
+
+    # Initialize network
+    logger.info("Initializing network")
+    params, warmup_opt_state, warmup_losses = rnn_utils.train_network(
+        lambda: disrnn.HkDisentangledRNN(noiseless_network),
+        dataset_train,
+        dataset_eval,
+        opt=optax.adam(args.learning_rate),
+        loss=args.loss,
+        loss_param=args.loss_param,
+        n_steps=args.n_warmup_steps,
+        random_key=k1,
+    )
+    fig = plt.figure()
+    plt.semilogy(warmup_losses["training_loss"], color="black")
+    plt.semilogy(warmup_losses["validation_loss"], color="tab:red", linestyle="dashed")
+    plt.xlabel("Training Step")
+    plt.ylabel("Mean Loss")
+    plt.legend(("Training Set", "Validation Set"))
+    plt.title("Loss over warmup training")
+    fig.savefig("/results/warmup_validation.png")
+
+    # Iterate training
+    logger.info("training network")
+    start = time.time()
+    params, opt_state, losses = rnn_utils.train_network(
+        lambda: disrnn.HkDisentangledRNN(disrnn_config),
+        dataset_train,
+        dataset_eval,
+        loss=args.loss,
+        loss_param=args.loss_param,
+        params=params,
+        opt_state=None,
+        opt=optax.adam(args.learning_rate),
+        n_steps=args.n_steps,
+        do_plot=True,
+        random_key=k2,
+    )
+    stop = time.time()
+    logger.info(f"Elapsed time: {stop-start:.2f} seconds.")
+    output["training_time"] = stop - start
+
+    fig = plt.figure()
+    plt.semilogy(losses["training_loss"], color="black")
+    plt.semilogy(losses["validation_loss"], color="tab:red", linestyle="dashed")
+    plt.xlabel("Training Step")
+    plt.ylabel("Mean Loss")
+    plt.legend(("Training Set", "Validation Set"))
+    plt.title("Loss over Training")
+    fig.savefig("/results/validation.png")
+
+    # Plot the open/closed state of the bottlenecks
+    logger.info("Plotting state of bottlenecks")
+    fig = plotting.plot_bottlenecks(params, disrnn_config, sort_latents=False)
+    fig.savefig("/results/bottlenecks.png")
+
+    # Plot the choice rule
+    logger.info("Plotting choice rule")
+    fig = plotting.plot_choice_rule(params, disrnn_config)
+    if fig is not None:
+        fig.savefig("/results/choice_rule.png")
+
+    # Plot the update rules
+    logger.info("Plotting update rules")
+    figs = plotting.plot_update_rules(params, disrnn_config)
+    for count, fig in enumerate(figs):
+        fig.savefig("/results/update_rule_{}.png".format(count))
+
+    # Evaluate the network
+    xs, ys = next(dataset_eval)
+    yhat, network_states = rnn_utils.eval_network(
+        lambda: disrnn.HkDisentangledRNN(noiseless_network), params, xs
+    )
+
+    # Save results
+    logger.info("Converting network outputs to dataframes")
+    output_df = dl.load_model_results(
+        df, network_states.__array__(), yhat, ignore_policy=args.ignore_policy
+    )
+    logger.info("saving model results")
+    output_df.to_csv("/results/output_df.csv", index=False)
+
+    logger.info("Saving model parameters")
+    with open("/results/params.json", "w") as f:
+        temp = json.dumps(params, cls=rnn_utils.NpJnpJsonEncoder)
+        f.write(temp)
+    # Load params like
+    # with open(filepath) as f:
+    #     params = rnn_utils.to_np(json.load(f))
+
+    logger.info("Output details:")
+    logger.info(asset_name)
+    logger.info("yhat size: {}".format(np.shape(yhat)))
+    logger.info("state size: {}".format(np.shape(network_states)))
+
+    likelihood = rnn_utils.normalized_likelihood(ys, yhat[:, :, 0:2])
+    output["likelihood"] = likelihood
+    logger.info(likelihood)
+    logger.info("all done, goodbye")
+
+    # log output model
+    output = disRNNOutputSettings(**output)
+    logger.info(output)
+    json_string = output.model_dump_json(indent=2)
+    file_path = "/results/outputs.json"
+    with open(file_path, "w") as f:
+        f.write(json_string)
