@@ -257,12 +257,14 @@ if __name__ == "__main__":
     fig = plotting.plot_choice_rule(params, disrnn_config)
     if fig is not None:
         fig.savefig("/results/choice_rule.png")
+        wandb.log({"fig/choice_rule": wandb.Image('/results/choice_rule.png')})
 
     # Plot the update rules
     logger.info("Plotting update rules")
     figs = plotting.plot_update_rules(params, disrnn_config)
     for count, fig in enumerate(figs):
         fig.savefig("/results/update_rule_{}.png".format(count))
+        wandb.log({f"fig/update_rule_{count}": wandb.Image(f"/results/update_rule_{count}.png")})
 
     # Evaluate the network
     xs, ys = next(dataset_eval)
@@ -285,6 +287,12 @@ if __name__ == "__main__":
     # Load params like
     # with open(filepath) as f:
     #     params = rnn_utils.to_np(json.load(f))
+    
+    wandb.summary["final/val_loss"] = float(losses['validation_loss'][-1])
+    wandb.summary["final/train_loss"] = float(losses['training_loss'][-1])
+    wandb.summary["elapsed_seconds"] = float(stop - start)
+
+    wandb.finish()
 
     logger.info("Output details:")
     logger.info(asset_name)
