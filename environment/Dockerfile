@@ -9,7 +9,7 @@ COPY git-askpass /
 
 RUN pip install -U --no-cache-dir \
     "jax[cuda12]==0.6.1" \
-    "git+https://github.com/AllenNeuralDynamics/aind-disentangled-rnns.git@af30f2af9509043b370ca6ff2eca1d0c614eeb62#egg=disentangled-rnns" \
+    "git+https://github.com/AllenNeuralDynamics/aind-disentangled-rnns.git@b4973428bd23d7d852a56fe731a42f232f65e882#egg=disentangled-rnns" \
     "git+https://github.com/AllenNeuralDynamics/aind_disrnn_utils.git@94a1b1f23c1bed67983424d188d2bc89b10f4edb#egg=aind-disrnn-utils" \
     aind-analysis-arch-result-access==0.8.0 \
     aind-dynamic-foraging-basic-analysis==0.3.34 \
