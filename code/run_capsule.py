@@ -107,7 +107,7 @@ if __name__ == "__main__":
         entity=hydra_config.wandb.entity,
         # Set the wandb project where this run will be logged.
         project="han-test",
-        name=f"disrnn_{args.subject_ids}_beta_{args.latent_penalty}_hydra",
+        name=f"disrnn_{args.subject_ids}_beta_{args.latent_penalty}",
         group=f"subject_{args.subject_ids}",
         job_type="train",
         config=args,
