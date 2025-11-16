@@ -204,10 +204,11 @@ if __name__ == "__main__":
         dataset_eval,
         loss=args.loss,
         loss_param=args.loss_param,
-        params=params,
+        params=params,  # continue from warmup
         opt_state=None,
         opt=optax.adam(args.learning_rate),
         n_steps=args.n_steps,
+        step_offset=args.n_warmup_steps,  # to continue wandb step counting
         do_plot=True,
         random_key=k2,
     )
