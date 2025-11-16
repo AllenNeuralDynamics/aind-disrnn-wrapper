@@ -17,8 +17,10 @@ import numpy as np
 import optax
 import pandas as pd
 from omegaconf import OmegaConf
-from aind_disrnn_utils.data_models import disRNNOutputSettings
+from aind_disrnn_utils.data_models import disRNNOutputSettings, disRNNInputSettings
 from disentangled_rnns.library import disrnn, plotting, rnn_utils
+
+import wandb
 
 CONFIG_PATH = "/data/jobs/0/.hydra/config.yaml"
 
@@ -47,7 +49,7 @@ if __name__ == "__main__":
     penalties_cfg = model_cfg.penalties
     training_cfg = model_cfg.training
 
-    args = SimpleNamespace(  # To match Alex's args structure
+    args = disRNNInputSettings(  # To match Alex's args structure
         multisubject=data_cfg.multisubject,
         subject_ids=list(data_cfg.subject_ids),
         ignore_policy=data_cfg.ignore_policy,
@@ -79,6 +81,19 @@ if __name__ == "__main__":
 
     OmegaConf.save(config=hydra_config, f="/results/inputs.yaml", resolve=True)
     logger.info("Saved resolved config to /results/inputs.yaml")
+    
+    # Start wandb run
+    wandb.init(
+        # Set the wandb entity where your project will be logged (generally your team name).
+        entity=hydra_config.wandb.entity,
+        # Set the wandb project where this run will be logged.
+        project="han-test",
+        name=f"disrnn_{args.subject_ids}_beta_{args.latent_penalty}_hydra",
+        group=f"subject_{args.subject_ids}",
+        job_type="train",
+        config=args,
+        dir="/results/wandb",
+    )
 
     # Haven't implemented multisubject rnns yet
     if args.multisubject:
@@ -123,7 +138,6 @@ if __name__ == "__main__":
     key = jax.random.PRNGKey(seed)
     k1, k2 = jax.random.split(key)
     output["random_key"] = list(key.__array__())
-    output["seed"] = seed
 
     # Configure Network
     logger.info("Configuring network")
@@ -179,6 +193,8 @@ if __name__ == "__main__":
     plt.title("Loss over warmup training")
     fig.savefig("/results/warmup_validation.png")
 
+    wandb.log({"fig/warmup_loss_curve": wandb.Image('/results/warmup_validation.png')})
+
     # Iterate training
     logger.info("training network")
     start = time.time()
@@ -208,10 +224,15 @@ if __name__ == "__main__":
     plt.title("Loss over Training")
     fig.savefig("/results/validation.png")
 
+    wandb.log({"fig/validation_loss_curve": wandb.Image('/results/validation.png')})
+
+
     # Plot the open/closed state of the bottlenecks
     logger.info("Plotting state of bottlenecks")
     fig = plotting.plot_bottlenecks(params, disrnn_config, sort_latents=False)
     fig.savefig("/results/bottlenecks.png")
+
+    wandb.log({"fig/bottlenecks": wandb.Image('/results/bottlenecks.png')})
 
     # Plot the choice rule
     logger.info("Plotting choice rule")
@@ -233,7 +254,7 @@ if __name__ == "__main__":
 
     # Save results
     logger.info("Converting network outputs to dataframes")
-    output_df = dl.load_model_results(
+    output_df = dl.add_model_results(
         df, network_states.__array__(), yhat, ignore_policy=args.ignore_policy
     )
     logger.info("saving model results")
