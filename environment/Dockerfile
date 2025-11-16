@@ -15,6 +15,7 @@ RUN pip install -U --no-cache-dir \
     aind-dynamic-foraging-basic-analysis==0.3.34 \
     aind-dynamic-foraging-data-utils==0.1.40 \
     aind-dynamic-foraging-multisession-analysis==0.0.18 \
+    wandb==0.23.0
 
 # for dev
 RUN pip install -U --no-cache-dir \
