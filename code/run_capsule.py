@@ -109,7 +109,7 @@ if __name__ == "__main__":
         group=f"subject_{args.subject_ids}",
         job_type="train",
         config=args,
-        dir="/results/wandb",
+        dir="/results",
     )
 
     # Haven't implemented multisubject rnns yet
