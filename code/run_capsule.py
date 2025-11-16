@@ -54,7 +54,7 @@ if __name__ == "__main__":
         subject_ids=list(data_cfg.subject_ids),
         ignore_policy=data_cfg.ignore_policy,
         features=data_cfg.features,
-        eval_every_n=data_cfg.eval_every_n,
+        # eval_every_n=data_cfg.eval_every_n,
         num_latents=arch_cfg.latent_size,
         update_net_n_units_per_layer=arch_cfg.update_net_n_units_per_layer,
         update_net_n_layers=arch_cfg.update_net_n_layers,
@@ -119,7 +119,7 @@ if __name__ == "__main__":
     dataset = dl.create_disrnn_dataset(
         df, ignore_policy=args.ignore_policy, features=args.features
     )
-    dataset_train, dataset_eval = rnn_utils.split_dataset(dataset, eval_every_n=2)
+    dataset_train, dataset_eval = rnn_utils.split_dataset(dataset, eval_every_n=data_cfg.eval_every_n)
 
     # Setup output model
     output = {}
