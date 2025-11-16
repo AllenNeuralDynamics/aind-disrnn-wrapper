@@ -6,6 +6,7 @@ import logging
 import os
 import sys
 import time
+from types import SimpleNamespace
 
 import aind_disrnn_utils.data_loader as dl
 import aind_dynamic_foraging_data_utils.code_ocean_utils as co
@@ -15,9 +16,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 import optax
 import pandas as pd
-from aind_disrnn_utils.data_models import (disRNNInputSettings,
-                                           disRNNOutputSettings)
+from omegaconf import OmegaConf
+from aind_disrnn_utils.data_models import disRNNOutputSettings
 from disentangled_rnns.library import disrnn, plotting, rnn_utils
+
+CONFIG_PATH = "/data/jobs/0/.hydra/config.yaml"
 
 logger = logging.getLogger(__name__)
 
@@ -30,14 +33,52 @@ if __name__ == "__main__":
         datefmt="%Y-%m-%d %H-%M-%S",
     )
 
-    # Parse CLI arguments
-    logger.info("parsing CLI args")
-    args = disRNNInputSettings()
-    logger.info(args)
-    json_string = args.model_dump_json(indent=2)
-    file_path = "/results/inputs.json"
-    with open(file_path, "w") as f:
-        f.write(json_string)
+    # Load Hydra config with OmegaConf
+    logger.info("loading Hydra config from %s", CONFIG_PATH)
+    try:
+        hydra_config = OmegaConf.load(CONFIG_PATH)
+    except FileNotFoundError:
+        logger.exception("Hydra config not found at %s", CONFIG_PATH)
+        sys.exit(1)
+
+    data_cfg = hydra_config.data
+    model_cfg = hydra_config.model
+    arch_cfg = model_cfg.architecture
+    penalties_cfg = model_cfg.penalties
+    training_cfg = model_cfg.training
+
+    args = SimpleNamespace(  # To match Alex's args structure
+        multisubject=data_cfg.multisubject,
+        subject_ids=list(data_cfg.subject_ids),
+        ignore_policy=data_cfg.ignore_policy,
+        features=data_cfg.features,
+        eval_every_n=data_cfg.eval_every_n,
+        num_latents=arch_cfg.latent_size,
+        update_net_n_units_per_layer=arch_cfg.update_net_n_units_per_layer,
+        update_net_n_layers=arch_cfg.update_net_n_layers,
+        choice_net_n_units_per_layer=arch_cfg.choice_net_n_units_per_layer,
+        choice_net_n_layers=arch_cfg.choice_net_n_layers,
+        activation=arch_cfg.activation,
+        latent_penalty=penalties_cfg.latent_penalty,
+        choice_net_latent_penalty=penalties_cfg.choice_net_latent_penalty,
+        update_net_obs_penalty=penalties_cfg.update_net_obs_penalty,
+        update_net_latent_penalty=penalties_cfg.update_net_latent_penalty,
+        n_steps=training_cfg.n_steps,
+        n_warmup_steps=training_cfg.n_warmup_steps,
+        learning_rate=training_cfg.lr,
+        loss=training_cfg.loss,
+        loss_param=training_cfg.loss_param,
+    )
+
+    seed = hydra_config.seed if "seed" in hydra_config else None
+    if seed is None:
+        seed = int(time.time())
+        logger.warning("No seed provided in config; using fallback seed %s", seed)
+    else:
+        logger.info("Using seed from config: %s", seed)
+
+    OmegaConf.save(config=hydra_config, f="/results/inputs.yaml", resolve=True)
+    logger.info("Saved resolved config to /results/inputs.yaml")
 
     # Haven't implemented multisubject rnns yet
     if args.multisubject:
@@ -56,6 +97,8 @@ if __name__ == "__main__":
             sys.exit()
 
     df = pd.concat(subject_dfs)
+
+    np.random.seed(seed)
 
     # Create disrnn dataset
     dataset = dl.create_disrnn_dataset(
@@ -77,9 +120,10 @@ if __name__ == "__main__":
 
     # Set up random splits
     logger.info("setting up random splits")
-    key = jax.random.PRNGKey(np.random.randint(10**16))
+    key = jax.random.PRNGKey(seed)
     k1, k2 = jax.random.split(key)
     output["random_key"] = list(key.__array__())
+    output["seed"] = seed
 
     # Configure Network
     logger.info("Configuring network")
