@@ -7,6 +7,7 @@ import os
 import sys
 import time
 from types import SimpleNamespace
+from pathlib import Path
 
 import aind_disrnn_utils.data_loader as dl
 import aind_dynamic_foraging_data_utils.code_ocean_utils as co
@@ -22,9 +23,24 @@ from disentangled_rnns.library import disrnn, plotting, rnn_utils
 
 import wandb
 
-CONFIG_PATH = "/data/jobs/0/.hydra/config.yaml"
-
 logger = logging.getLogger(__name__)
+
+
+def find_hydra_config(logger):
+    """
+    Search for config.yaml under /data/jobs/.
+    Returns the first found config.yaml path, or None if not found. Logs warnings if missing or multiple.
+    """
+    config_candidates = list(Path("/data/jobs").rglob("config.yaml"))
+    if not config_candidates:
+        logger.warning("No config.yaml found under /data/jobs/")
+        return None
+    elif len(config_candidates) > 1:
+        logger.warning(f"Multiple config.yaml files found: {config_candidates}. Using the first one.")
+        return config_candidates[0]
+    else:
+        return config_candidates[0]
+    
 
 if __name__ == "__main__":
     # set up a logger
@@ -35,14 +51,15 @@ if __name__ == "__main__":
         datefmt="%Y-%m-%d %H-%M-%S",
     )
 
-    # Load Hydra config with OmegaConf
-    logger.info("loading Hydra config from %s", CONFIG_PATH)
-    try:
-        hydra_config = OmegaConf.load(CONFIG_PATH)
-    except FileNotFoundError:
-        logger.exception("Hydra config not found at %s", CONFIG_PATH)
+    # Find config path
+    hydra_config = find_hydra_config(logger)
+    if find_hydra_config is None:
+        logger.error("No config.yaml found. Exiting.")
         sys.exit(1)
 
+    # Load Hydra config with OmegaConf
+    logger.info("loading Hydra config from %s", hydra_config)
+    hydra_config = OmegaConf.load(hydra_config)
     data_cfg = hydra_config.data
     model_cfg = hydra_config.model
     arch_cfg = model_cfg.architecture
