@@ -20,10 +20,6 @@
 		{
 			"id": "ad5ec889-f4e0-45a2-802c-f843266d3cce",
 			"mount": "disrnn_dataset_774212"
-		},
-		{
-			"id": "f6de99c1-d456-41f7-8385-a2e4f15c0eb0",
-			"mount": "jobs"
 		}
 	]
 }
