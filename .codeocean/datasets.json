@@ -1,0 +1,25 @@
+{
+	"version": 1,
+	"attached_datasets": [
+		{
+			"id": "64fa1cb4-8af8-4d96-a965-3454d59439f6",
+			"mount": "disrnn_dataset_779531"
+		},
+		{
+			"id": "76fc65d3-eec4-4578-a20d-499193fc920e",
+			"mount": "disrnn_dataset_778077"
+		},
+		{
+			"id": "8eaa487e-e78c-4635-b24b-eabe680a55ae",
+			"mount": "disrnn_dataset_781162"
+		},
+		{
+			"id": "9788eb8d-ea88-4c60-bacc-1a23efd2f5e1",
+			"mount": "disrnn_dataset_781173"
+		},
+		{
+			"id": "ad5ec889-f4e0-45a2-802c-f843266d3cce",
+			"mount": "disrnn_dataset_774212"
+		}
+	]
+}
