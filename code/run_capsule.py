@@ -60,7 +60,7 @@ if __name__ == "__main__":
     
     # Copy input hydra folder to results for record-keeping
     source_dir = hydra_config.resolve().parents[1]
-    destination_root = Path("/results/job")
+    destination_root = Path("/results/input")
     destination_root.mkdir(parents=True, exist_ok=True)
     destination_dir = destination_root / source_dir.name
     logger.info("Copying %s to %s", source_dir, destination_dir)
@@ -120,16 +120,6 @@ if __name__ == "__main__":
         config=args,
         dir="/results",
     )
-    
-    # print folder tree under /data and capsule/data
-    logger.info("Folder tree under /data:")
-    for root, dirs, files in os.walk("/data"):
-        level = root.replace("/data", "").count(os.sep)
-        indent = " " * 4 * (level)
-        logger.info(f"{indent}{os.path.basename(root)}/")
-        subindent = " " * 4 * (level + 1)
-        for f in files:
-            logger.info(f"{subindent}{f}")
 
     # Log CodeOcean computation ID
     wandb.config.update({"CO_COMPUTATION_ID": os.environ.get("CO_COMPUTATION_ID")})
