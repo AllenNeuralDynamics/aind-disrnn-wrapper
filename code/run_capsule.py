@@ -22,6 +22,7 @@ from aind_disrnn_utils.data_models import disRNNOutputSettings, disRNNInputSetti
 from disentangled_rnns.library import disrnn, plotting, rnn_utils
 
 import wandb
+import shutil
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +57,14 @@ if __name__ == "__main__":
     if find_hydra_config is None:
         logger.error("No config.yaml found. Exiting.")
         sys.exit(1)
+    
+    # Copy input hydra folder to results for record-keeping
+    source_dir = hydra_config.resolve().parents[1]
+    destination_root = Path("/results/job")
+    destination_root.mkdir(parents=True, exist_ok=True)
+    destination_dir = destination_root / source_dir.name
+    logger.info("Copying %s to %s", source_dir, destination_dir)
+    shutil.copytree(source_dir, destination_dir, dirs_exist_ok=True)
 
     # Load Hydra config with OmegaConf
     logger.info("loading Hydra config from %s", hydra_config)
@@ -111,6 +120,16 @@ if __name__ == "__main__":
         config=args,
         dir="/results",
     )
+    
+    # print folder tree under /data and capsule/data
+    logger.info("Folder tree under /data:")
+    for root, dirs, files in os.walk("/data"):
+        level = root.replace("/data", "").count(os.sep)
+        indent = " " * 4 * (level)
+        logger.info(f"{indent}{os.path.basename(root)}/")
+        subindent = " " * 4 * (level + 1)
+        for f in files:
+            logger.info(f"{subindent}{f}")
 
     # Log CodeOcean computation ID
     wandb.config.update({"CO_COMPUTATION_ID": os.environ.get("CO_COMPUTATION_ID")})
