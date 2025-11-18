@@ -3,7 +3,6 @@ from __future__ import annotations
 import copy
 import json
 import logging
-import os
 import time
 from pathlib import Path
 from typing import Any, Dict, Mapping
@@ -39,7 +38,6 @@ class DisrnnTrainer(ModelTrainer):
         architecture: Mapping[str, Any] | DictConfig,
         penalties: Mapping[str, Any] | DictConfig,
         training: Mapping[str, Any] | DictConfig,
-        wandb: Mapping[str, Any] | DictConfig | None = None,
         output_dir: str = "/results",
         seed: int | None = None,
         **_: Any,
@@ -48,11 +46,14 @@ class DisrnnTrainer(ModelTrainer):
         self.architecture = _to_dict(architecture)
         self.penalties = _to_dict(penalties)
         self.training = _to_dict(training)
-        self.wandb_cfg = _to_dict(wandb) if wandb is not None else {}
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-    def fit(self, bundle: DatasetBundle) -> TrainerResult:
+    def fit(
+        self,
+        bundle: DatasetBundle,
+        loggers: dict[str, Any] | None = None,
+    ) -> TrainerResult:
         metadata = dict(bundle.metadata)
         subject_ids = metadata.get("subject_ids", [])
         ignore_policy = metadata.get("ignore_policy", "exclude")
@@ -61,6 +62,10 @@ class DisrnnTrainer(ModelTrainer):
         seed = metadata.get("seed", self.seed)
         if seed is None:
             raise ValueError("Training seed must be provided via data config or trainer config.")
+
+        wandb_run = None
+        if loggers and "wandb" in loggers:
+            wandb_run = loggers["wandb"]
 
         dataset = bundle.extras.get("dataset") if bundle.extras else None
         if dataset is None:
@@ -116,23 +121,23 @@ class DisrnnTrainer(ModelTrainer):
             loss_param=self.training["loss_param"],
         )
 
-        wandb_entity = self.wandb_cfg.get("entity")
-        wandb_project = self.wandb_cfg.get("project", "disrnn")
-        wandb_group = self.wandb_cfg.get("group") or f"subject_{subject_ids}"
-        wandb_job_type = self.wandb_cfg.get("job_type", "train")
-        wandb_dir = self.wandb_cfg.get("dir", str(self.output_dir))
-        wandb_name = self.wandb_cfg.get("name") or f"disrnn_{subject_ids}_beta_{self.penalties['latent_penalty']}"
-
-        run = wandb.init(
-            entity=wandb_entity,
-            project=wandb_project,
-            name=wandb_name,
-            group=wandb_group,
-            job_type=wandb_job_type,
-            config=args.model_dump(),
-            dir=wandb_dir,
-        )
-        run.config.update({"CO_COMPUTATION_ID": os.environ.get("CO_COMPUTATION_ID")})
+        if wandb_run is not None:
+            run_name = getattr(wandb_run, "name", None)
+            if not run_name or run_name.startswith("run-"):
+                try:
+                    wandb_run.name = f"disrnn_{subject_ids}_beta_{self.penalties['latent_penalty']}"
+                except Exception:  # name assignment is best-effort
+                    logger.debug("Unable to set wandb run name", exc_info=True)
+            wandb_run.config.update(args.model_dump())
+            wandb_run.config.update(
+                {
+                    "trainer": self.__class__.__name__,
+                    "ignore_policy": ignore_policy,
+                    "subject_ids": list(subject_ids),
+                }
+            )
+        else:
+            logger.info("W&B run not supplied; skipping wandb logging for this trainer.")
 
         output_size = 2 if ignore_policy == "exclude" else 3
         disrnn_config = disrnn.DisRnnConfig(
@@ -172,6 +177,8 @@ class DisrnnTrainer(ModelTrainer):
             loss_param=args.loss_param,
             n_steps=args.n_warmup_steps,
             random_key=warmup_key,
+            report_progress_by="wandb",
+            wandb_run=wandb_run,
         )
         warmup_duration = time.time() - warmup_start
         warmup_path = self._plot_losses(
@@ -179,7 +186,8 @@ class DisrnnTrainer(ModelTrainer):
             title="Loss over warmup training",
             output_name="warmup_validation.png",
         )
-        wandb.log({"fig/warmup_loss_curve": wandb.Image(str(warmup_path))})
+        if wandb_run is not None:
+            wandb_run.log({"fig/warmup_loss_curve": wandb.Image(str(warmup_path))})
 
         logger.info("Running full training phase")
         start = time.time()
@@ -193,9 +201,11 @@ class DisrnnTrainer(ModelTrainer):
             opt_state=None,
             opt=optax.adam(args.learning_rate),
             n_steps=args.n_steps,
-            step_offset=args.n_warmup_steps,
             do_plot=True,
             random_key=training_key,
+            report_progress_by="wandb",
+            wandb_run=wandb_run,
+            wandb_step_offset=args.n_warmup_steps,
         )
         training_time = time.time() - start
         output["training_time"] = training_time
@@ -205,21 +215,25 @@ class DisrnnTrainer(ModelTrainer):
             title="Loss over Training",
             output_name="validation.png",
         )
-        wandb.log({"fig/validation_loss_curve": wandb.Image(str(losses_path))})
+        if wandb_run is not None:
+            wandb_run.log({"fig/validation_loss_curve": wandb.Image(str(losses_path))})
 
         bottlenecks_fig = plotting.plot_bottlenecks(params, disrnn_config, sort_latents=False)
         bottlenecks_path = self._save_figure(bottlenecks_fig, "bottlenecks.png")
-        wandb.log({"fig/bottlenecks": wandb.Image(str(bottlenecks_path))})
+        if wandb_run is not None:
+            wandb_run.log({"fig/bottlenecks": wandb.Image(str(bottlenecks_path))})
 
         choice_fig = plotting.plot_choice_rule(params, disrnn_config)
         if choice_fig is not None:
             choice_path = self._save_figure(choice_fig, "choice_rule.png")
-            wandb.log({"fig/choice_rule": wandb.Image(str(choice_path))})
+            if wandb_run is not None:
+                wandb_run.log({"fig/choice_rule": wandb.Image(str(choice_path))})
 
         update_figs = plotting.plot_update_rules(params, disrnn_config)
         for index, fig in enumerate(update_figs):
             path = self._save_figure(fig, f"update_rule_{index}.png")
-            wandb.log({f"fig/update_rule_{index}": wandb.Image(str(path))})
+            if wandb_run is not None:
+                wandb_run.log({f"fig/update_rule_{index}": wandb.Image(str(path))})
 
         xs, ys = next(dataset_eval)
         yhat, network_states = rnn_utils.eval_network(
@@ -237,14 +251,14 @@ class DisrnnTrainer(ModelTrainer):
         with params_path.open("w") as f:
             f.write(json.dumps(params, cls=rnn_utils.NpJnpJsonEncoder))
 
-        wandb.summary["final/val_loss"] = float(losses["validation_loss"][-1])
-        wandb.summary["final/train_loss"] = float(losses["training_loss"][-1])
-        wandb.summary["elapsed_seconds"] = float(training_time)
-        wandb.summary["warmup_seconds"] = float(warmup_duration)
+        if wandb_run is not None:
+            wandb_run.summary["final/val_loss"] = float(losses["validation_loss"][-1])
+            wandb_run.summary["final/train_loss"] = float(losses["training_loss"][-1])
+            wandb_run.summary["elapsed_seconds"] = float(training_time)
+            wandb_run.summary["warmup_seconds"] = float(warmup_duration)
 
         likelihood = rnn_utils.normalized_likelihood(ys, yhat[:, :, 0:2])
         output["likelihood"] = float(likelihood)
-        run.finish()
 
         output_settings = disRNNOutputSettings(**output)
         return TrainerResult(

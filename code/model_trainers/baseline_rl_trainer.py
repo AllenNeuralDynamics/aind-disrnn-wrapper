@@ -11,7 +11,7 @@ class BaselineRLTrainer(ModelTrainer):
         super().__init__(seed=seed)
         self.settings = settings
 
-    def fit(self, bundle: DatasetBundle) -> TrainerResult:
+    def fit(self, bundle: DatasetBundle, loggers: dict[str, object] | None = None) -> TrainerResult:
         raise NotImplementedError(
             "Baseline RL trainer is not implemented yet; config received:"
             f" {self.settings}"

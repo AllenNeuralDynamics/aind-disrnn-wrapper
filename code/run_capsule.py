@@ -2,13 +2,16 @@
 
 import json
 import logging
+import os
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf
+
+import wandb
 
 from capsule_core.interfaces import DatasetLoader, ModelTrainer
 from capsule_core.types import TrainerResult
@@ -75,6 +78,13 @@ def configure_logger() -> None:
         datefmt="%Y-%m-%d %H-%M-%S",
     )
 
+def start_wandb_run(config: DictConfig) -> Optional[wandb.sdk.wandb_run.Run]:
+    params = OmegaConf.to_container(config.get("wandb"), resolve=True)
+    run_config = params.pop("config", {})
+    run = wandb.init(**params, config=run_config)
+    run.config.update({"CO_COMPUTATION_ID": os.environ.get("CO_COMPUTATION_ID")})
+    return run
+
 
 def main() -> None:
     configure_logger()
@@ -109,7 +119,15 @@ def main() -> None:
     logger.info("Loaded dataset bundle with metadata: %s", dataset_bundle.metadata)
 
     model_trainer: ModelTrainer = instantiate(hydra_config.model)
-    trainer_result: TrainerResult = model_trainer.fit(dataset_bundle)
+
+    wandb_run = start_wandb_run(hydra_config)
+    loggers = {"wandb": wandb_run} if wandb_run is not None else None
+
+    try:
+        trainer_result: TrainerResult = model_trainer.fit(dataset_bundle, loggers=loggers)
+    finally:
+        if wandb_run is not None:
+            wandb_run.finish()
 
     persist_output(trainer_result.output, Path("/results/outputs.json"))
     logger.info("All done, goodbye")
