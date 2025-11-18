@@ -79,7 +79,7 @@ def configure_logger() -> None:
     )
 
 def start_wandb_run(config: DictConfig) -> Optional[wandb.sdk.wandb_run.Run]:
-    params = OmegaConf.to_container(config.get("wandb"), resolve=True)
+    params = OmegaConf.to_container(config, resolve=True)
     run = wandb.init(**params)
     run.config.update({"CO_COMPUTATION_ID": os.environ.get("CO_COMPUTATION_ID")})
     return run
