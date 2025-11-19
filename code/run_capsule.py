@@ -9,6 +9,7 @@ import time
 from types import SimpleNamespace
 from pathlib import Path
 
+import s3fs
 import aind_disrnn_utils.data_loader as dl
 import aind_dynamic_foraging_data_utils.code_ocean_utils as co
 import aind_dynamic_foraging_multisession_analysis.multisession_load as ms_load
@@ -37,11 +38,13 @@ def find_hydra_config(logger):
         logger.warning("No config.yaml found under /data/jobs/")
         return None
     elif len(config_candidates) > 1:
-        logger.warning(f"Multiple config.yaml files found: {config_candidates}. Using the first one.")
+        logger.warning(
+            f"Multiple config.yaml files found: {config_candidates}. Using the first one."
+        )
         return config_candidates[0]
     else:
         return config_candidates[0]
-    
+
 
 if __name__ == "__main__":
     # set up a logger
@@ -57,7 +60,7 @@ if __name__ == "__main__":
     if find_hydra_config is None:
         logger.error("No config.yaml found. Exiting.")
         sys.exit(1)
-    
+
     # Copy input hydra folder to results for record-keeping
     source_dir = hydra_config.resolve().parents[1]
     destination_root = Path("/results/input")
@@ -107,7 +110,7 @@ if __name__ == "__main__":
 
     OmegaConf.save(config=hydra_config, f="/results/inputs.yaml", resolve=True)
     logger.info("Saved resolved config to /results/inputs.yaml")
-    
+
     # Start wandb run
     wandb.init(
         # Set the wandb entity where your project will be logged (generally your team name).
@@ -131,16 +134,25 @@ if __name__ == "__main__":
 
     # Load Data
     subject_dfs = []
+    results = []
     for subject in args.subject_ids:
-        asset_name = "/data/disrnn_dataset_{}/disrnn_dataset.csv".format(subject)
-        if os.path.exists(asset_name):
-            logger.info("loading: {}".format(asset_name))
-            subject_dfs.append(pd.read_csv(asset_name))
-        else:
-            logger.error("Could not find dataset: {}. ".format(asset_name))
-            sys.exit()
+        logger.info("Querying docDB for {}".format(subject))
+        mouse_results = co.get_subject_assets(
+            mouse, modality=["behavior"], stage=["STAGE_FINAL", "GRADUATED"]
+        ) # TODO, should we expose these filters?
+        mouse_results = mouse_results.sort_values(by="session_name").reset_index(
+            drop=True
+        )
+        results.append(mouse_results)
+    results = pd.concat(results)
 
-    df = pd.concat(subject_dfs)
+    # TODO, filter sessions by performance
+
+    logger.info('Getting s3 location')
+    results = co.add_s3_location(results)
+
+    logger.info("Loading NWBs")
+    nwbs, df = ms_load.make_multisession_trials_df(results["s3_nwb_location"])
 
     np.random.seed(seed)
 
@@ -148,7 +160,9 @@ if __name__ == "__main__":
     dataset = dl.create_disrnn_dataset(
         df, ignore_policy=args.ignore_policy, features=args.features
     )
-    dataset_train, dataset_eval = rnn_utils.split_dataset(dataset, eval_every_n=data_cfg.eval_every_n)
+    dataset_train, dataset_eval = rnn_utils.split_dataset(
+        dataset, eval_every_n=data_cfg.eval_every_n
+    )
 
     # Setup output model
     output = {}
@@ -222,7 +236,7 @@ if __name__ == "__main__":
     plt.title("Loss over warmup training")
     fig.savefig("/results/warmup_validation.png")
 
-    wandb.log({"fig/warmup_loss_curve": wandb.Image('/results/warmup_validation.png')})
+    wandb.log({"fig/warmup_loss_curve": wandb.Image("/results/warmup_validation.png")})
 
     # Iterate training
     logger.info("training network")
@@ -254,29 +268,34 @@ if __name__ == "__main__":
     plt.title("Loss over Training")
     fig.savefig("/results/validation.png")
 
-    wandb.log({"fig/validation_loss_curve": wandb.Image('/results/validation.png')})
-
+    wandb.log({"fig/validation_loss_curve": wandb.Image("/results/validation.png")})
 
     # Plot the open/closed state of the bottlenecks
     logger.info("Plotting state of bottlenecks")
     fig = plotting.plot_bottlenecks(params, disrnn_config, sort_latents=False)
     fig.savefig("/results/bottlenecks.png")
 
-    wandb.log({"fig/bottlenecks": wandb.Image('/results/bottlenecks.png')})
+    wandb.log({"fig/bottlenecks": wandb.Image("/results/bottlenecks.png")})
 
     # Plot the choice rule
     logger.info("Plotting choice rule")
     fig = plotting.plot_choice_rule(params, disrnn_config)
     if fig is not None:
         fig.savefig("/results/choice_rule.png")
-        wandb.log({"fig/choice_rule": wandb.Image('/results/choice_rule.png')})
+        wandb.log({"fig/choice_rule": wandb.Image("/results/choice_rule.png")})
 
     # Plot the update rules
     logger.info("Plotting update rules")
     figs = plotting.plot_update_rules(params, disrnn_config)
     for count, fig in enumerate(figs):
         fig.savefig("/results/update_rule_{}.png".format(count))
-        wandb.log({f"fig/update_rule_{count}": wandb.Image(f"/results/update_rule_{count}.png")})
+        wandb.log(
+            {
+                f"fig/update_rule_{count}": wandb.Image(
+                    f"/results/update_rule_{count}.png"
+                )
+            }
+        )
 
     # Evaluate the network
     xs, ys = next(dataset_eval)
@@ -299,9 +318,9 @@ if __name__ == "__main__":
     # Load params like
     # with open(filepath) as f:
     #     params = rnn_utils.to_np(json.load(f))
-    
-    wandb.summary["final/val_loss"] = float(losses['validation_loss'][-1])
-    wandb.summary["final/train_loss"] = float(losses['training_loss'][-1])
+
+    wandb.summary["final/val_loss"] = float(losses["validation_loss"][-1])
+    wandb.summary["final/train_loss"] = float(losses["training_loss"][-1])
     wandb.summary["elapsed_seconds"] = float(stop - start)
 
     wandb.finish()
