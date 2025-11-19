@@ -9,7 +9,6 @@ import time
 from types import SimpleNamespace
 from pathlib import Path
 
-import s3fs
 import aind_disrnn_utils.data_loader as dl
 import aind_dynamic_foraging_data_utils.code_ocean_utils as co
 import aind_dynamic_foraging_multisession_analysis.multisession_load as ms_load
@@ -133,7 +132,6 @@ if __name__ == "__main__":
         sys.exit()
 
     # Load Data
-    subject_dfs = []
     results = []
     for subject in args.subject_ids:
         logger.info("Querying docDB for {}".format(subject))
