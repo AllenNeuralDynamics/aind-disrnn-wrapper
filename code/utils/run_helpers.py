@@ -33,7 +33,7 @@ def find_hydra_config() -> Path | None:
 
 def copy_input_folder(config_path: Path) -> None:
     source_dir = config_path.resolve().parents[1]
-    destination_root = Path("/results/input")
+    destination_root = Path("/results/inputs")
     destination_root.mkdir(parents=True, exist_ok=True)
     destination_dir = destination_root / source_dir.name
     logger.info("Copying Hydra inputs from %s to %s", source_dir, destination_dir)

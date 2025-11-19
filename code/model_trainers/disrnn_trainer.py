@@ -38,7 +38,7 @@ class DisrnnTrainer(ModelTrainer):
         architecture: Mapping[str, Any] | DictConfig,
         penalties: Mapping[str, Any] | DictConfig,
         training: Mapping[str, Any] | DictConfig,
-        output_dir: str = "/results/output",
+        output_dir: str = "/results/outputs",
         seed: int | None = None,
         **_: Any,
     ) -> None:
