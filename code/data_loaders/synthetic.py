@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from capsule_core.interfaces import DatasetLoader
-from capsule_core.types import DatasetBundle
+from base.interfaces import DatasetLoader
+from base.types import DatasetBundle
 
 
 class SyntheticDatasetLoader(DatasetLoader):

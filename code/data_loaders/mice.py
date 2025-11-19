@@ -11,8 +11,8 @@ import pandas as pd
 import aind_disrnn_utils.data_loader as dl
 from disentangled_rnns.library import rnn_utils
 
-from capsule_core.interfaces import DatasetLoader
-from capsule_core.types import DatasetBundle
+from base.interfaces import DatasetLoader
+from base.types import DatasetBundle
 
 logger = logging.getLogger(__name__)
 

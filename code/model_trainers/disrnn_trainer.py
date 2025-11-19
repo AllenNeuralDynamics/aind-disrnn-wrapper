@@ -18,8 +18,8 @@ import aind_disrnn_utils.data_loader as dl
 from aind_disrnn_utils.data_models import disRNNInputSettings, disRNNOutputSettings
 from disentangled_rnns.library import disrnn, plotting, rnn_utils
 
-from capsule_core.interfaces import ModelTrainer
-from capsule_core.types import DatasetBundle, TrainerResult
+from base.interfaces import ModelTrainer
+from base.types import DatasetBundle, TrainerResult
 
 logger = logging.getLogger(__name__)
 

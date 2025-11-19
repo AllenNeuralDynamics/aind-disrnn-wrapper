@@ -7,8 +7,8 @@ from pathlib import Path
 from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf
 
-from capsule_core.interfaces import DatasetLoader, ModelTrainer
-from capsule_core.types import TrainerResult
+from base.interfaces import DatasetLoader, ModelTrainer
+from base.types import TrainerResult
 from utils.run_helpers import (
     configure_sys_logger,
     copy_input_folder,

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from capsule_core.interfaces import ModelTrainer
-from capsule_core.types import DatasetBundle, TrainerResult
+from base.interfaces import ModelTrainer
+from base.types import DatasetBundle, TrainerResult
 
 
 class BaselineRLTrainer(ModelTrainer):
