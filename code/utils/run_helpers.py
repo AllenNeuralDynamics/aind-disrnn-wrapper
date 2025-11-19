@@ -8,7 +8,7 @@ import os
 import shutil
 import sys
 from pathlib import Path
-from typing import Any, Mapping, Optional
+from typing import Any, Optional
 
 from omegaconf import DictConfig, OmegaConf
 
@@ -68,7 +68,7 @@ def _json_default(obj: Any) -> Any:
     raise TypeError(f"Object of type {type(obj).__name__} is not JSON serialisable")
 
 
-def configure_logger() -> None:
+def configure_sys_logger() -> None:
     logging.basicConfig(
         level=logging.INFO,
         stream=sys.stdout,
@@ -78,16 +78,15 @@ def configure_logger() -> None:
 
 
 def start_wandb_run(
-    config: DictConfig | Mapping[str, Any] | None,
+    hydra_config: DictConfig,
 ) -> Optional[wandb.sdk.wandb_run.Run]:
-    if config is None:
-        return None
-
-    params = OmegaConf.to_container(config, resolve=True)
-    if not isinstance(params, dict):
-        params = dict(params)
-
-    run_config = params.pop("config", {})
-    run = wandb.init(**params, config=run_config)
+    dict_config = OmegaConf.to_container(hydra_config, resolve=True)
+    run = wandb.init(
+        **dict_config.get("wandb", {}),
+        config={k: dict_config[k] for k in ("data", "model") if k in dict_config}
+    )
+    
+    # System environment variable for CO 
+    # TODO: this only works for capsule run at this point
     run.config.update({"CO_COMPUTATION_ID": os.environ.get("CO_COMPUTATION_ID")})
     return run

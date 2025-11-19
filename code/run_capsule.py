@@ -10,7 +10,7 @@ from omegaconf import DictConfig, OmegaConf
 from capsule_core.interfaces import DatasetLoader, ModelTrainer
 from capsule_core.types import TrainerResult
 from utils.run_helpers import (
-    configure_logger,
+    configure_sys_logger,
     copy_input_folder,
     find_hydra_config,
     persist_output,
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 def main() -> None:
-    configure_logger()
+    configure_sys_logger()
 
     # --- Load Hydra config ---
     config_path = find_hydra_config()
@@ -47,9 +47,7 @@ def main() -> None:
     hydra_config.model.seed = hydra_config.model.get("seed", seed)
     
     # --- Prepare wandb ---
-    # Note: wandb_run doesn't have a run name and config at this point,
-    #       You should set them in your model trainer.
-    wandb_run = start_wandb_run(hydra_config.wandb)
+    wandb_run = start_wandb_run(hydra_config)
     loggers = {"wandb": wandb_run} if wandb_run is not None else None
 
     # --- Load data ---
