@@ -83,7 +83,8 @@ def start_wandb_run(
     dict_config = OmegaConf.to_container(hydra_config, resolve=True)
     run = wandb.init(
         **dict_config.get("wandb", {}),
-        config={k: dict_config[k] for k in ("data", "model") if k in dict_config}
+        config={k: dict_config[k] for k in ("data", "model") if k in dict_config},
+        tags=[hydra_config.data.type, hydra_config.model.type],
     )
     
     # System environment variable for CO 
