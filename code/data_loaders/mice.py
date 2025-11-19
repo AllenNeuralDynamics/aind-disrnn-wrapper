@@ -28,7 +28,6 @@ class MiceDatasetLoader(DatasetLoader):
         features: Mapping[str, str],
         eval_every_n: int,
         multisubject: bool = False,
-        data_root: str = "/data",
         seed: int | None = None,
         **extras: object,
     ) -> None:
@@ -38,7 +37,6 @@ class MiceDatasetLoader(DatasetLoader):
         self.features = dict(features)
         self.eval_every_n = eval_every_n
         self.multisubject = multisubject
-        self.data_root = Path(data_root)
         self.extras = extras
 
     def load(self) -> DatasetBundle:
