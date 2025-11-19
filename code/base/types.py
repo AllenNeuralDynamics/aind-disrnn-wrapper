@@ -1,0 +1,15 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any, Dict
+
+
+@dataclass
+class DatasetBundle:
+    """Container for dataset material passed from loaders to trainers."""
+
+    raw: Any
+    train_set: Any
+    eval_set: Any
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    extras: Dict[str, Any] = field(default_factory=dict)
