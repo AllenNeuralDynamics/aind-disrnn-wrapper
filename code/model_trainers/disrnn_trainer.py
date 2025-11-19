@@ -229,9 +229,16 @@ class DisrnnTrainer(ModelTrainer):
         if wandb_run is not None:
             wandb_run.summary["final/val_loss"] = float(losses["validation_loss"][-1])
             wandb_run.summary["final/train_loss"] = float(losses["training_loss"][-1])
+            wandb_run.summary["likelihood"] = float(likelihood)
             wandb_run.summary["elapsed_seconds"] = float(training_time)
             wandb_run.summary["warmup_seconds"] = float(warmup_duration)
-            wandb_run.summary["likelihood"] = float(likelihood)
+            
+            # Upload the whole /results/output folder as an artifact
+            # Here I'm using the random id as the name, meaning each run will has its own artifact.
+            artifact_name = f"disrnn-output-{getattr(wandb_run, 'id', None) or 'latest'}"
+            artifact = wandb.Artifact(artifact_name, type="training-output")
+            artifact.add_dir(str(self.output_dir))
+            wandb_run.log_artifact(artifact)
 
         return output
 
