@@ -33,18 +33,9 @@ def main() -> None:
     logger.info("Loading Hydra config from %s", config_path)
     hydra_config = OmegaConf.load(config_path)
     
-    #  Backup inputs
+    # Backup inputs
     copy_input_folder(config_path)
     save_resolved_config(hydra_config, Path("/results/inputs.yaml"))
-
-    #  Sync seeds, if needed
-    seed = hydra_config.get("seed")
-    if seed is None:
-        seed = int(time.time())
-        logger.warning("No seed provided in config; using fallback seed %s", seed)
-    hydra_config.seed = seed
-    hydra_config.data.seed = hydra_config.data.get("seed", seed)
-    hydra_config.model.seed = hydra_config.model.get("seed", seed)
     
     # --- Prepare wandb ---
     wandb_run = start_wandb_run(hydra_config)
