@@ -17,6 +17,7 @@ class DatasetLoader(ABC):
             logging.info(f"No seed set for DatasetLoader, using {self.seed}")
         else:
             self.seed = seed
+            logging.info(f"Using seed {self.seed} for DatasetLoader")
 
     @abstractmethod
     def load(self) -> DatasetBundle:
@@ -32,6 +33,7 @@ class ModelTrainer(ABC):
             logging.info(f"No seed set for ModelTrainer, using {self.seed}")
         else:
             self.seed = seed
+            logging.info(f"Using seed {self.seed} for ModelTrainer")
             
     @abstractmethod
     def fit(self, bundle: DatasetBundle, loggers: Optional[Dict[str, Any]] = None) -> TrainerResult:

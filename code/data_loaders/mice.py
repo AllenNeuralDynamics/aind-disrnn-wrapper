@@ -27,6 +27,7 @@ class MiceDatasetLoader(DatasetLoader):
         eval_every_n: int,
         multisubject: bool = False,
         data_root: str = "/data",
+        seed: int | None = None,
         **extras: object,
     ) -> None:
         super().__init__(seed=seed)
