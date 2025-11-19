@@ -100,10 +100,6 @@ class DisrnnTrainer(ModelTrainer):
         output["random_key"] = [int(x) for x in np.asarray(key).reshape(-1)]
 
         args = disRNNInputSettings(
-            multisubject=multisubject,
-            subject_ids=list(subject_ids),
-            ignore_policy=ignore_policy,
-            features=features,
             num_latents=self.architecture["latent_size"],
             update_net_n_units_per_layer=self.architecture["update_net_n_units_per_layer"],
             update_net_n_layers=self.architecture["update_net_n_layers"],
