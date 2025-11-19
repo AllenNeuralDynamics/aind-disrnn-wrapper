@@ -8,12 +8,10 @@ from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf
 
 from base.interfaces import DatasetLoader, ModelTrainer
-from base.types import TrainerResult
 from utils.run_helpers import (
     configure_sys_logger,
     copy_input_folder,
     find_hydra_config,
-    persist_output,
     save_resolved_config,
     start_wandb_run,
 )
@@ -48,12 +46,10 @@ def main() -> None:
 
     # --- Train model ---
     model_trainer: ModelTrainer = instantiate(hydra_config.model)
-    trainer_result: TrainerResult = model_trainer.fit(dataset_bundle, loggers=loggers)
+    output = model_trainer.fit(dataset_bundle, loggers=loggers)
     if wandb_run is not None:
         wandb_run.finish()
 
-    # --- Save outputs ---
-    persist_output(trainer_result.output, Path("/results/outputs.json"))
     logger.info("All done, goodbye")
 
 

@@ -13,12 +13,3 @@ class DatasetBundle:
     eval_set: Any
     metadata: Dict[str, Any] = field(default_factory=dict)
     extras: Dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class TrainerResult:
-    """Standard payload returned by model trainers."""
-
-    output: Any = None
-    metrics: Dict[str, float] = field(default_factory=dict)
-    extras: Dict[str, Any] = field(default_factory=dict)

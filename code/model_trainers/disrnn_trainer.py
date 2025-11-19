@@ -15,11 +15,11 @@ import wandb
 from omegaconf import DictConfig, OmegaConf
 
 import aind_disrnn_utils.data_loader as dl
-from aind_disrnn_utils.data_models import disRNNInputSettings, disRNNOutputSettings
+from aind_disrnn_utils.data_models import disRNNInputSettings
 from disentangled_rnns.library import disrnn, plotting, rnn_utils
 
 from base.interfaces import ModelTrainer
-from base.types import DatasetBundle, TrainerResult
+from base.types import DatasetBundle
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +38,7 @@ class DisrnnTrainer(ModelTrainer):
         architecture: Mapping[str, Any] | DictConfig,
         penalties: Mapping[str, Any] | DictConfig,
         training: Mapping[str, Any] | DictConfig,
-        output_dir: str = "/results",
+        output_dir: str = "/results/output",
         seed: int | None = None,
         **_: Any,
     ) -> None:
@@ -53,7 +53,7 @@ class DisrnnTrainer(ModelTrainer):
         self,
         bundle: DatasetBundle,
         loggers: dict[str, Any] | None = None,
-    ) -> TrainerResult:
+    ):
         metadata = dict(bundle.metadata)
         ignore_policy = metadata.get("ignore_policy", "exclude")
 
@@ -219,29 +219,21 @@ class DisrnnTrainer(ModelTrainer):
         with params_path.open("w") as f:
             f.write(json.dumps(params, cls=rnn_utils.NpJnpJsonEncoder))
 
+        likelihood = rnn_utils.normalized_likelihood(ys, yhat[:, :, 0:2])
+        output["likelihood"] = float(likelihood)
+
+        # save output to json
+        with open(self.output_dir / "output_summary.json", "w") as f:
+            json.dump(output, f, indent=4)
+
         if wandb_run is not None:
             wandb_run.summary["final/val_loss"] = float(losses["validation_loss"][-1])
             wandb_run.summary["final/train_loss"] = float(losses["training_loss"][-1])
             wandb_run.summary["elapsed_seconds"] = float(training_time)
             wandb_run.summary["warmup_seconds"] = float(warmup_duration)
+            wandb_run.summary["likelihood"] = float(likelihood)
 
-        likelihood = rnn_utils.normalized_likelihood(ys, yhat[:, :, 0:2])
-        output["likelihood"] = float(likelihood)
-
-        output_settings = disRNNOutputSettings(**output)
-        return TrainerResult(
-            output=output_settings,
-            metrics={
-                "final/val_loss": float(losses["validation_loss"][-1]),
-                "final/train_loss": float(losses["training_loss"][-1]),
-                "likelihood": float(likelihood),
-            },
-            extras={
-                "params_path": str(params_path),
-                "output_df_path": str(output_path),
-                "warmup_seconds": warmup_duration,
-            },
-        )
+        return output
 
     def _plot_losses(self, losses: Mapping[str, Any], title: str, output_name: str) -> Path:
         fig = plt.figure()

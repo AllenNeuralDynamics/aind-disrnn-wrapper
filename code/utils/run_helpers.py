@@ -46,28 +46,6 @@ def save_resolved_config(config: DictConfig, destination: Path) -> None:
     logger.info("Saved resolved config to %s", destination)
 
 
-def persist_output(output_obj: Any, destination: Path) -> None:
-    if output_obj is None:
-        logger.info("Trainer returned no output payload; skipping persistence.")
-        return
-
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    if hasattr(output_obj, "model_dump_json"):
-        payload = output_obj.model_dump_json(indent=4)
-    elif hasattr(output_obj, "model_dump"):
-        payload = json.dumps(output_obj.model_dump(), indent=4)
-    else:
-        payload = json.dumps(output_obj, indent=4, default=_json_default)
-    destination.write_text(payload)
-    logger.info("Wrote trainer output to %s", destination)
-
-
-def _json_default(obj: Any) -> Any:
-    if isinstance(obj, Path):
-        return str(obj)
-    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serialisable")
-
-
 def configure_sys_logger() -> None:
     logging.basicConfig(
         level=logging.INFO,
