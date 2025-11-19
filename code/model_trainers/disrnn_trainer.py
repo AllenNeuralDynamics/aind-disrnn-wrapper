@@ -99,6 +99,9 @@ class DisrnnTrainer(ModelTrainer):
             rng_keys["training"] = training_key
         output["random_key"] = [int(x) for x in np.asarray(key).reshape(-1)]
 
+        # TODO: merge this pydantic validation step into disrnn.DisRnnConfig
+        # Note that I already removed data-specific fields like subject_ids here,
+        # since they are not needed for ModelTrainer class
         args = disRNNInputSettings(
             num_latents=self.architecture["latent_size"],
             update_net_n_units_per_layer=self.architecture["update_net_n_units_per_layer"],
