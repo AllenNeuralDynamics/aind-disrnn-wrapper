@@ -55,13 +55,7 @@ class DisrnnTrainer(ModelTrainer):
         loggers: dict[str, Any] | None = None,
     ) -> TrainerResult:
         metadata = dict(bundle.metadata)
-        subject_ids = metadata.get("subject_ids", [])
         ignore_policy = metadata.get("ignore_policy", "exclude")
-        features = metadata.get("features", {})
-        multisubject = metadata.get("multisubject", False)
-        seed = metadata.get("seed", self.seed)
-        if seed is None:
-            raise ValueError("Training seed must be provided via data config or trainer config.")
 
         wandb_run = None
         if loggers and "wandb" in loggers:
@@ -88,7 +82,7 @@ class DisrnnTrainer(ModelTrainer):
             dataset_eval._ys.shape,
         )
 
-        key = jax.random.PRNGKey(seed)
+        key = jax.random.PRNGKey(self.seed)
         warmup_key, training_key = jax.random.split(key)
         output["random_key"] = [int(x) for x in np.asarray(key).reshape(-1)]
 
