@@ -135,13 +135,13 @@ if __name__ == "__main__":
     results = []
     for subject in args.subject_ids:
         logger.info("Querying docDB for {}".format(subject))
-        mouse_results = co.get_subject_assets(
-            mouse, modality=["behavior"], stage=["STAGE_FINAL", "GRADUATED"]
+        subject_results = co.get_subject_assets(
+            subject, modality=["behavior"], stage=["STAGE_FINAL", "GRADUATED"]
         ) # TODO, should we expose these filters?
-        mouse_results = mouse_results.sort_values(by="session_name").reset_index(
+        subject_results = subject_results.sort_values(by="session_name").reset_index(
             drop=True
         )
-        results.append(mouse_results)
+        results.append(subject_results)
     results = pd.concat(results)
 
     # TODO, filter sessions by performance
