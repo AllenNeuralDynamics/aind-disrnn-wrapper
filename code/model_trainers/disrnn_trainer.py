@@ -121,24 +121,6 @@ class DisrnnTrainer(ModelTrainer):
             loss_param=self.training["loss_param"],
         )
 
-        if wandb_run is not None:
-            run_name = getattr(wandb_run, "name", None)
-            if not run_name or run_name.startswith("run-"):
-                try:
-                    wandb_run.name = f"disrnn_{subject_ids}_beta_{self.penalties['latent_penalty']}"
-                except Exception:  # name assignment is best-effort
-                    logger.debug("Unable to set wandb run name", exc_info=True)
-            wandb_run.config.update(args.model_dump())
-            wandb_run.config.update(
-                {
-                    "trainer": self.__class__.__name__,
-                    "ignore_policy": ignore_policy,
-                    "subject_ids": list(subject_ids),
-                }
-            )
-        else:
-            logger.info("W&B run not supplied; skipping wandb logging for this trainer.")
-
         output_size = 2 if ignore_policy == "exclude" else 3
         disrnn_config = disrnn.DisRnnConfig(
             obs_size=dataset._xs.shape[2],
