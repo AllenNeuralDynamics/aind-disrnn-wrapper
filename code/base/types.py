@@ -9,8 +9,8 @@ class DatasetBundle:
     """Container for dataset material passed from loaders to trainers."""
 
     raw: Any
-    train: Any
-    eval: Any
+    train_set: Any
+    eval_set: Any
     metadata: Dict[str, Any] = field(default_factory=dict)
     extras: Dict[str, Any] = field(default_factory=dict)
 

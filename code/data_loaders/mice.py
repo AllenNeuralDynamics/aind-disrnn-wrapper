@@ -75,8 +75,8 @@ class MiceDatasetLoader(DatasetLoader):
         extras = {"dataset": dataset}
         return DatasetBundle(
             raw=df,
-            train=dataset_train,
-            eval=dataset_eval,
+            train_set=dataset_train,
+            eval_set=dataset_eval,
             metadata=metadata,
             extras=extras,
         )

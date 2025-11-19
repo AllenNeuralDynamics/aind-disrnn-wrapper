@@ -65,8 +65,8 @@ class DisrnnTrainer(ModelTrainer):
         if dataset is None:
             raise ValueError("Dataset bundle must include the constructed disRNN dataset.")
 
-        dataset_train = bundle.train
-        dataset_eval = bundle.eval
+        dataset_train = bundle.train_set
+        dataset_eval = bundle.eval_set
         if dataset_train is None or dataset_eval is None:
             raise ValueError("Dataset bundle must include train and eval splits.")
 
