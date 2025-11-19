@@ -4,7 +4,6 @@ import logging
 from pathlib import Path
 from typing import Iterable, Mapping
 
-import jax
 import numpy as np
 import pandas as pd
 
@@ -28,7 +27,6 @@ class MiceDatasetLoader(DatasetLoader):
         eval_every_n: int,
         multisubject: bool = False,
         data_root: str = "/data",
-        seed: int | None = None,
         **extras: object,
     ) -> None:
         super().__init__(seed=seed)
@@ -41,9 +39,6 @@ class MiceDatasetLoader(DatasetLoader):
         self.extras = extras
 
     def load(self) -> DatasetBundle:
-        if self.seed is None:
-            raise ValueError("MiceDatasetLoader requires a deterministic seed.")
-
         if self.multisubject:
             raise NotImplementedError("Multisubject loading is not yet supported.")
 
@@ -58,7 +53,6 @@ class MiceDatasetLoader(DatasetLoader):
             frames.append(pd.read_csv(asset_path))
 
         df = pd.concat(frames, ignore_index=True)
-        np.random.seed(self.seed)
 
         dataset = dl.create_disrnn_dataset(
             df, ignore_policy=self.ignore_policy, features=self.features
@@ -66,9 +60,6 @@ class MiceDatasetLoader(DatasetLoader):
         dataset_train, dataset_eval = rnn_utils.split_dataset(
             dataset, eval_every_n=self.eval_every_n
         )
-
-        key = jax.random.PRNGKey(self.seed)
-        k1, k2 = jax.random.split(key)
         metadata = {
             "subject_ids": self.subject_ids,
             "ignore_policy": self.ignore_policy,
@@ -77,10 +68,8 @@ class MiceDatasetLoader(DatasetLoader):
             "num_trials": len(df),
             "num_sessions": int(df["ses_idx"].nunique()) if "ses_idx" in df else None,
             "multisubject": self.multisubject,
-            "seed": self.seed,
         }
         metadata.update(self.extras)
-        rng_keys = {"primary": key, "warmup": k1, "training": k2}
 
         extras = {"dataset": dataset}
         return DatasetBundle(
@@ -88,6 +77,5 @@ class MiceDatasetLoader(DatasetLoader):
             train=dataset_train,
             eval=dataset_eval,
             metadata=metadata,
-            rng_keys=rng_keys,
             extras=extras,
         )

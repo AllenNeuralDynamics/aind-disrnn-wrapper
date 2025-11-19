@@ -73,6 +73,8 @@ class DisrnnTrainer(ModelTrainer):
 
         dataset_train = bundle.train
         dataset_eval = bundle.eval
+        if dataset_train is None or dataset_eval is None:
+            raise ValueError("Dataset bundle must include train and eval splits.")
 
         output = {
             "num_trials": metadata.get("num_trials"),
@@ -86,17 +88,8 @@ class DisrnnTrainer(ModelTrainer):
             dataset_eval._ys.shape,
         )
 
-        rng_keys = bundle.rng_keys or {}
-        key = rng_keys.get("primary")
-        if key is None:
-            key = jax.random.PRNGKey(seed)
-            rng_keys["primary"] = key
-        warmup_key = rng_keys.get("warmup")
-        training_key = rng_keys.get("training")
-        if warmup_key is None or training_key is None:
-            warmup_key, training_key = jax.random.split(key)
-            rng_keys["warmup"] = warmup_key
-            rng_keys["training"] = training_key
+        key = jax.random.PRNGKey(seed)
+        warmup_key, training_key = jax.random.split(key)
         output["random_key"] = [int(x) for x in np.asarray(key).reshape(-1)]
 
         # TODO: merge this pydantic validation step into disrnn.DisRnnConfig

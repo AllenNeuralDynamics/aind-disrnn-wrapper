@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 
 @dataclass
@@ -12,7 +12,6 @@ class DatasetBundle:
     train: Any
     eval: Any
     metadata: Dict[str, Any] = field(default_factory=dict)
-    rng_keys: Optional[Dict[str, Any]] = None
     extras: Dict[str, Any] = field(default_factory=dict)
 
 
