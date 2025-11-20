@@ -147,6 +147,7 @@ class DisrnnTrainer(ModelTrainer):
             random_key=warmup_key,
             report_progress_by="wandb",
             wandb_run=wandb_run,
+            disrnn_config=noiseless_network,
         )
         warmup_duration = time.time() - warmup_start
         warmup_path = self._plot_losses(
@@ -174,6 +175,7 @@ class DisrnnTrainer(ModelTrainer):
             report_progress_by="wandb",
             wandb_run=wandb_run,
             wandb_step_offset=args.n_warmup_steps,
+            disrnn_config=disrnn_config,
         )
         training_time = time.time() - start
         output["training_time"] = training_time
