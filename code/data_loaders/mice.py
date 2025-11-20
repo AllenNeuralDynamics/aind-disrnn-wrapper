@@ -7,6 +7,8 @@ from typing import Iterable, Mapping
 import numpy as np
 import pandas as pd
 
+import aind_dynamic_foraging_data_utils.code_ocean_utils as co
+import aind_dynamic_foraging_multisession_analysis.multisession_load as ms_load
 import aind_disrnn_utils.data_loader as dl
 from disentangled_rnns.library import rnn_utils
 
@@ -26,7 +28,6 @@ class MiceDatasetLoader(DatasetLoader):
         features: Mapping[str, str],
         eval_every_n: int,
         multisubject: bool = False,
-        data_root: str = "/data",
         seed: int | None = None,
         **extras: object,
     ) -> None:
@@ -36,24 +37,33 @@ class MiceDatasetLoader(DatasetLoader):
         self.features = dict(features)
         self.eval_every_n = eval_every_n
         self.multisubject = multisubject
-        self.data_root = Path(data_root)
         self.extras = extras
 
     def load(self) -> DatasetBundle:
         if self.multisubject:
             raise NotImplementedError("Multisubject loading is not yet supported.")
-
-        frames = []
+        
+        results = []
         for subject in self.subject_ids:
-            asset_path = (
-                self.data_root / f"disrnn_dataset_{subject}" / "disrnn_dataset.csv"
-            )
-            if not asset_path.exists():
-                raise FileNotFoundError(f"Missing dataset CSV: {asset_path}")
-            logger.info("Loading dataset for subject %s from %s", subject, asset_path)
-            frames.append(pd.read_csv(asset_path))
+            logger.info("Querying docDB for {}".format(subject))
+            subject_results = co.get_subject_assets(
+                subject, modality=["behavior"], stage=["STAGE_FINAL", "GRADUATED"]
+            )  # TODO, should we expose these filters?
+            subject_results = subject_results.sort_values(
+                by="session_name"
+            ).reset_index(drop=True)
+            results.append(subject_results)
+        results = pd.concat(results)
+        if len(results) == 0:
+            raise Exception("No data found for subject ids")
 
-        df = pd.concat(frames, ignore_index=True)
+        # TODO, filter sessions by performance
+
+        logger.info("Getting s3 location")
+        results = co.add_s3_location(results)
+
+        logger.info("Loading NWBs")
+        nwbs, df = ms_load.make_multisession_trials_df(results["s3_nwb_location"])
 
         dataset = dl.create_disrnn_dataset(
             df, ignore_policy=self.ignore_policy, features=self.features
