@@ -8,7 +8,7 @@ COPY git-askpass /
 
 
 RUN pip install -U --no-cache-dir \
-    "jax[cuda12]==0.6.1" \
+    "jax==0.6.1" \
     "git+https://github.com/AllenNeuralDynamics/aind-disentangled-rnns.git@c7b6b9e10b417a833e67f442588f4059ee417033#egg=disentangled-rnns" \
     "git+https://github.com/AllenNeuralDynamics/aind_disrnn_utils.git@94a1b1f23c1bed67983424d188d2bc89b10f4edb#egg=aind-disrnn-utils" \
     aind-analysis-arch-result-access==0.8.0 \
