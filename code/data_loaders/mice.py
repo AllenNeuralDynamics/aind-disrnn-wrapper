@@ -42,7 +42,8 @@ class MiceDatasetLoader(DatasetLoader):
     def load(self) -> DatasetBundle:
         if self.multisubject:
             raise NotImplementedError("Multisubject loading is not yet supported.")
-
+        
+        results = []
         for subject in self.subject_ids:
             logger.info("Querying docDB for {}".format(subject))
             subject_results = co.get_subject_assets(
