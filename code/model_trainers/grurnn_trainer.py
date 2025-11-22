@@ -89,8 +89,9 @@ class GrurnnTrainer(ModelTrainer):
 
         # pull parameters (may need to make this pydiantic eventually?)
         n_hidden = self.architecture['n_hidden']
-        learning_rate = self.training['learning_rate']
         output_size = 2 if ignore_policy == "exclude" else 3
+        learning_rate = self.training['learning_rate']
+        n_steps = self.training['n_steps']
         
         
         
