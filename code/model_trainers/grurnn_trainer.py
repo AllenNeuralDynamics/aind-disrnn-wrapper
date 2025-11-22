@@ -13,6 +13,8 @@ import numpy as np
 import optax
 import wandb
 from omegaconf import DictConfig, OmegaConf
+import haiku as hk
+
 
 import aind_disrnn_utils.data_loader as dl
 from aind_disrnn_utils.data_models import disRNNInputSettings
@@ -70,6 +72,11 @@ class GrurnnTrainer(ModelTrainer):
         if dataset_train is None or dataset_eval is None:
             raise ValueError("Dataset bundle must include train and eval splits.")
 
+        # TODO: fix this later? somehow this is an issue with grn_baseline
+        dataset._xs = dataset._xs.astype(float)
+        dataset_train._xs = dataset_train._xs.astype(float)
+        dataset_eval._xs = dataset_eval._xs.astype(float)
+        
         output = {
             "num_trials": metadata.get("num_trials"),
             "num_sessions": metadata.get("num_sessions"),
@@ -90,17 +97,19 @@ class GrurnnTrainer(ModelTrainer):
         # pull parameters (may need to make this pydiantic eventually?)
         n_hidden = self.architecture['n_hidden']
         output_size = 2 if ignore_policy == "exclude" else 3
-        learning_rate = self.training['learning_rate']
+        learning_rate = self.training['lr']
         n_steps = self.training['n_steps']
+        loss = self.training['loss']
+        loss_param = self.training['loss_param']
         
         
         
-        # make network
+        # make network- i assume this should be taken out of def fit? 
         def make_network():
             model = hk.DeepRNN(
             [hk.GRU(n_hidden), hk.Linear(output_size=output_size)]
-        )
-        return model
+            )
+            return model
        
                 
         # TODO: merge this pydantic validation step into disrnn.DisRnnConfig
@@ -119,7 +128,7 @@ class GrurnnTrainer(ModelTrainer):
             training_dataset=dataset_train,
             validation_dataset=dataset_eval,
             opt = optimizer,
-            loss="categorical",
+            loss=loss,
             n_steps=0)
 
 
@@ -129,11 +138,11 @@ class GrurnnTrainer(ModelTrainer):
             make_network = make_network,
             training_dataset=dataset_train,
             validation_dataset=dataset_eval,
-            loss="categorical",
+            loss=loss,
             params=params,
             opt_state=opt_state,
             opt = optax.adam(learning_rate=learning_rate),
-            loss_param = 1,
+            loss_param = loss_param,
             n_steps=n_steps,
             do_plot = True)
         training_time = time.time() - start
