@@ -169,11 +169,15 @@ class GrurnnTrainer(ModelTrainer):
 
 
         df = bundle.raw
-        output_df = dl.add_model_results(
-            df, network_states.__array__(), yhat, ignore_policy=ignore_policy
-        )
+        
+        # TODO: temporarily removing output_df, because somehow it doesn't work when we run it with alex's code? 
+        # i think the easiest thing is that the df should JUST be the df from the test_policy? 
+        # output_df = dl.add_model_results(
+        #     df, network_states.__array__(), yhat, ignore_policy=ignore_policy
+        # )
+        output_df = df
         output_path = self.output_dir / "output_df.csv"
-        output_df.to_csv(output_path, index=False)
+        # output_df.to_csv(output_path, index=False)
 
         params_path = self.output_dir / "params.json"
         with params_path.open("w") as f:
