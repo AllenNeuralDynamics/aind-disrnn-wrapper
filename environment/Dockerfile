@@ -1,14 +1,22 @@
 # hash:sha256:4f567b195522ba414263860e03ae193d69e7c4114b288c652000066eab30db33
 ARG REGISTRY_HOST
-FROM $REGISTRY_HOST/codeocean/pytorch:2.4.0-cuda12.4.0-mambaforge24.5.0-0-python3.12.4-ubuntu22.04
+
+# --- Base image and Jax for CPU (preferred) ---
+FROM $REGISTRY_HOST/codeocean/mambaforge3:24.5.0-0-python3.12.4-ubuntu22.04
+ARG JAX_PKG="jax==0.6.1"
+
+# --- Base image and Jax for GPU ---
+# FROM $REGISTRY_HOST/codeocean/pytorch:2.4.0-cuda12.4.0-mambaforge24.5.0-0-python3.12.4-ubuntu22.04
+# ARG JAX_PKG="jax[cuda12]==0.6.1"
+
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG GIT_ASKPASS
 COPY git-askpass /
 
-
+# --- Other dependencies ---
 RUN pip install -U --no-cache-dir \
-    "jax[cuda12]==0.6.1" \
+    ${JAX_PKG} \
     "git+https://github.com/AllenNeuralDynamics/aind-disentangled-rnns.git@c7b6b9e10b417a833e67f442588f4059ee417033#egg=disentangled-rnns" \
     "git+https://github.com/AllenNeuralDynamics/aind_disrnn_utils.git@94a1b1f23c1bed67983424d188d2bc89b10f4edb#egg=aind-disrnn-utils" \
     aind-analysis-arch-result-access==0.8.0 \
