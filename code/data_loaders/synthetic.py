@@ -44,10 +44,10 @@ class SyntheticCognitiveAgents(DatasetLoader):
         num_trials: int,
         num_sessions: int,
         eval_every_n: int = 2,
-        seed: int | None = None,
         **metadata: object,
     ) -> None:
-        super().__init__(seed=seed)
+        # Random seeds are fully configured via the task/agent dictionaries.
+        super().__init__()
         self.task_config = copy.deepcopy(task)
         self.agent_config = copy.deepcopy(agent)
         self.num_trials = int(num_trials)
@@ -56,6 +56,7 @@ class SyntheticCognitiveAgents(DatasetLoader):
         self.metadata_extras = dict(metadata)
 
     def load(self) -> DatasetBundle:
+        # --- Resolve task and agent classes from config ---
         task_lookup = {
             "coupled_block": CoupledBlockTask,
             "uncoupled_block": UncoupledBlockTask,
@@ -73,7 +74,6 @@ class SyntheticCognitiveAgents(DatasetLoader):
         agent_kwargs = copy.deepcopy(agent_cfg.get("agent_kwargs", {}))
         agent_params = agent_cfg.get("agent_params", {})
 
-        base_dataset_seed = int(self.seed)
         base_task_seed = task_cfg.pop("seed", None)
         base_agent_seed = agent_cfg.get("seed")
         if base_task_seed is not None:
@@ -84,16 +84,17 @@ class SyntheticCognitiveAgents(DatasetLoader):
         session_frames: list[pd.DataFrame] = []
         session_details: list[dict[str, Any]] = []
 
+        # --- Simulate each session ---
         for session_idx in range(self.num_sessions):
             task_kwargs = copy.deepcopy(task_cfg)
-            session_task_seed = self._session_seed(base_task_seed, base_dataset_seed, session_idx)
+            session_task_seed = None if base_task_seed is None else base_task_seed + session_idx
             if session_task_seed is not None:
                 task_kwargs["seed"] = session_task_seed
             task_kwargs.setdefault("num_trials", self.num_trials)
             task_instance = task_class(**task_kwargs)
 
             forager_kwargs = copy.deepcopy(agent_kwargs)
-            session_agent_seed = self._session_seed(base_agent_seed, base_dataset_seed, session_idx)
+            session_agent_seed = None if base_agent_seed is None else base_agent_seed + session_idx
             if session_agent_seed is not None:
                 forager_kwargs["seed"] = session_agent_seed
             forager = agent_class(**forager_kwargs)
@@ -116,6 +117,7 @@ class SyntheticCognitiveAgents(DatasetLoader):
                 }
             )
 
+        # --- Assemble dataframe and disrnn dataset ---
         raw_df = pd.concat(session_frames, ignore_index=True).sort_values(["ses_idx", "trial"])  # type: ignore[arg-type]
         raw_df.reset_index(drop=True, inplace=True)
 
@@ -137,6 +139,7 @@ class SyntheticCognitiveAgents(DatasetLoader):
 
         dataset_train, dataset_eval = rnn_utils.split_dataset(dataset, self.eval_every_n)
 
+        # --- Package bundle metadata ---
         metadata: dict[str, Any] = {
             "num_trials": self.num_trials,
             "num_sessions": self.num_sessions,
@@ -144,7 +147,6 @@ class SyntheticCognitiveAgents(DatasetLoader):
             "task": self.task_config,
             "agent": self.agent_config,
             "seeds": {
-                "dataset": base_dataset_seed,
                 "task": base_task_seed,
                 "agent": base_agent_seed,
             },
@@ -163,13 +165,6 @@ class SyntheticCognitiveAgents(DatasetLoader):
             metadata=metadata,
             extras=extras,
         )
-
-    @staticmethod
-    def _session_seed(configured: int | None, dataset_seed: int | None, session_index: int) -> int | None:
-        base = configured if configured is not None else dataset_seed
-        if base is None:
-            return None
-        return base + session_index
 
     def _session_dataframe(self, session_idx: int, forager: Any, task: Any) -> pd.DataFrame:
         choice_history = np.asarray(forager.get_choice_history(), dtype=int)
