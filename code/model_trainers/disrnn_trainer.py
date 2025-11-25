@@ -208,12 +208,12 @@ class DisrnnTrainer(ModelTrainer):
             lambda: disrnn.HkDisentangledRNN(noiseless_network), params, xs
         )
 
-        df = bundle.raw
-        output_df = dl.add_model_results(
-            df, network_states.__array__(), yhat, ignore_policy=ignore_policy
-        )
-        output_path = self.output_dir / "output_df.csv"
-        output_df.to_csv(output_path, index=False)
+        # df = bundle.raw
+        # output_df = dl.add_model_results(
+        #     df, network_states.__array__(), yhat, ignore_policy=ignore_policy
+        # )
+        # output_path = self.output_dir / "output_df.csv"
+        # output_df.to_csv(output_path, index=False)
 
         params_path = self.output_dir / "params.json"
         with params_path.open("w") as f:
