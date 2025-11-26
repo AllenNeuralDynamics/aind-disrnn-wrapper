@@ -28,6 +28,7 @@ class MiceDatasetLoader(DatasetLoader):
         features: Mapping[str, str],
         eval_every_n: int,
         multisubject: bool = False,
+        batch_mode: Literal["single", "rolling", "random"] = "single",
         seed: int | None = None,
         **extras: object,
     ) -> None:
@@ -37,12 +38,18 @@ class MiceDatasetLoader(DatasetLoader):
         self.features = dict(features)
         self.eval_every_n = eval_every_n
         self.multisubject = multisubject
+        self.batch_mode = batch_mode
         self.extras = extras
 
     def load(self) -> DatasetBundle:
+        
+        # Fix numpy random seed (will affect batch_mode="random")
+        if self.seed is not None:
+            np.random.seed(self.seed)
+        
         if self.multisubject:
             raise NotImplementedError("Multisubject loading is not yet supported.")
-        
+
         results = []
         for subject in self.subject_ids:
             logger.info("Querying docDB for {}".format(subject))
@@ -66,7 +73,10 @@ class MiceDatasetLoader(DatasetLoader):
         nwbs, df = ms_load.make_multisession_trials_df(results["s3_nwb_location"])
 
         dataset = dl.create_disrnn_dataset(
-            df, ignore_policy=self.ignore_policy, features=self.features
+            df,
+            ignore_policy=self.ignore_policy,
+            features=self.features,
+            batch_mode=self.batch_mode,
         )
         dataset_train, dataset_eval = rnn_utils.split_dataset(
             dataset, eval_every_n=self.eval_every_n
