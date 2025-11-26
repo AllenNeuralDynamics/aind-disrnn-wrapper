@@ -28,7 +28,7 @@ class MiceDatasetLoader(DatasetLoader):
         features: Mapping[str, str],
         eval_every_n: int,
         multisubject: bool = False,
-        batch_mode: Literal["single", "rolling", "random"] = "single",
+        batch_mode: Literal["single", "rolling", "random"] = "random",
         seed: int | None = None,
         **extras: object,
     ) -> None:
