@@ -105,6 +105,8 @@ class DisrnnTrainer(ModelTrainer):
             loss_param=self.training["loss_param"],
         )
 
+        logger.info(f'max_grad_norm = {args.max_grad_norm}')
+
         output_size = 2 if ignore_policy == "exclude" else 3
         disrnn_config = disrnn.DisRnnConfig(
             obs_size=dataset._xs.shape[2],
