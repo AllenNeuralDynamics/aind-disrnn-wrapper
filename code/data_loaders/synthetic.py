@@ -145,7 +145,9 @@ class TaskTrainedRNNDatasetLoader(DatasetLoader):
         if self.multisubject:
             raise NotImplementedError("Multisubject loading is not yet supported.")
 
-        df = pd.read_pickle(f'/data/DF-TaskTrainedRNNData/TaskTrainedRNNData-logs_{self.subject_ids.replace(":", "_")}.pkl')
+        df = pd.read_pickle(f'/code/TaskTrainedRNNData-logs_BlockBandit2ArmCoupledEasy-v1-noisy_rl2_10__16:07_13:48:09.pkl')
+
+        # df = pd.read_pickle(f'/data/DF-TaskTrainedRNNData/TaskTrainedRNNData-logs_{self.subject_ids.replace(":", "_")}.pkl')
 
         dataset = create_disrnn_dataset_task_trained_rnn(
             df, ignore_policy=self.ignore_policy, features=self.features
