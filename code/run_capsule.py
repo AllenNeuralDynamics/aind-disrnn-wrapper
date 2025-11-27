@@ -35,14 +35,14 @@ def main() -> None:
     copy_input_folder(config_path)
     save_resolved_config(hydra_config, Path("/results/inputs.yaml"))
     
-    # --- Prepare wandb ---
-    wandb_run = start_wandb_run(hydra_config)
-    loggers = {"wandb": wandb_run} if wandb_run is not None else None
-
     # --- Load data ---
     dataset_loader: DatasetLoader = instantiate(hydra_config.data)
     dataset_bundle = dataset_loader.load()
     logger.info("Loaded dataset bundle with metadata: %s", dataset_bundle.metadata)
+
+    # --- Prepare wandb ---
+    wandb_run = start_wandb_run(hydra_config)
+    loggers = {"wandb": wandb_run} if wandb_run is not None else None
 
     # --- Train model ---
     model_trainer: ModelTrainer = instantiate(hydra_config.model)
