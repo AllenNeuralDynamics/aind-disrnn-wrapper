@@ -144,8 +144,8 @@ class TaskTrainedRNNDatasetLoader(DatasetLoader):
     def load(self) -> DatasetBundle:
         if self.multisubject:
             raise NotImplementedError("Multisubject loading is not yet supported.")
-        
-        df = pd.read_pickle(f'/root/capsule/data/TaskTrainedRNNData-logs_{self.subject_ids}.pkl')
+
+        df = pd.read_pickle(f'/data/TaskTrainedRNNData-logs_{self.subject_ids}.pkl')
 
         dataset = create_disrnn_dataset_task_trained_rnn(
             df, ignore_policy=self.ignore_policy, features=self.features
