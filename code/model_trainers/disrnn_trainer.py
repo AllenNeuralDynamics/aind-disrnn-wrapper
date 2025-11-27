@@ -15,7 +15,7 @@ import wandb
 from omegaconf import DictConfig, OmegaConf
 
 import aind_disrnn_utils.data_loader as dl
-from aind_disrnn_utils.data_models import disRNNInputSettings
+import types
 from disentangled_rnns.library import disrnn, plotting, rnn_utils
 
 from base.interfaces import ModelTrainer
@@ -86,10 +86,7 @@ class DisrnnTrainer(ModelTrainer):
         warmup_key, training_key = jax.random.split(key)
         output["random_key"] = [int(x) for x in np.asarray(key).reshape(-1)]
 
-        # TODO: merge this pydantic validation step into disrnn.DisRnnConfig
-        # Note that I already removed data-specific fields like subject_ids here,
-        # since they are not needed for ModelTrainer class
-        args = disRNNInputSettings(
+        args = types.SimpleNamespace(
             num_latents=self.architecture["latent_size"],
             update_net_n_units_per_layer=self.architecture["update_net_n_units_per_layer"],
             update_net_n_layers=self.architecture["update_net_n_layers"],
@@ -100,12 +97,15 @@ class DisrnnTrainer(ModelTrainer):
             choice_net_latent_penalty=self.penalties["choice_net_latent_penalty"],
             update_net_obs_penalty=self.penalties["update_net_obs_penalty"],
             update_net_latent_penalty=self.penalties["update_net_latent_penalty"],
+            max_grad_norm=self.training["max_grad_norm"],
             n_steps=self.training["n_steps"],
             n_warmup_steps=self.training["n_warmup_steps"],
             learning_rate=self.training["lr"],
             loss=self.training["loss"],
             loss_param=self.training["loss_param"],
         )
+
+        logger.info(f'max_grad_norm = {args.max_grad_norm}')
 
         output_size = 2 if ignore_policy == "exclude" else 3
         disrnn_config = disrnn.DisRnnConfig(
@@ -144,6 +144,7 @@ class DisrnnTrainer(ModelTrainer):
             loss=args.loss,
             loss_param=args.loss_param,
             n_steps=args.n_warmup_steps,
+            max_grad_norm=args.max_grad_norm,
             random_key=warmup_key,
             report_progress_by="wandb",
             wandb_run=wandb_run,
@@ -169,6 +170,7 @@ class DisrnnTrainer(ModelTrainer):
             opt_state=None,
             opt=optax.adam(args.learning_rate),
             n_steps=args.n_steps,
+            max_grad_norm=args.max_grad_norm,
             do_plot=True,
             random_key=training_key,
             report_progress_by="wandb",
