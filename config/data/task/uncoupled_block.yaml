@@ -1,0 +1,9 @@
+type: uncoupled_block
+reward_baiting: true
+
+rwd_prob_array: [0.1, 0.5, 0.9]
+block_min: 20
+block_max: 35
+
+num_trials: ${..num_trials}
+seed: ${seed}

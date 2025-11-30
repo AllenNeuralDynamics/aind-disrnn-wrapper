@@ -1,0 +1,14 @@
+type: coupled_block
+reward_baiting: true
+
+block_min: 40  # Min block length
+block_max: 80  # Max block length
+block_beta: 20  # Time constant of exponential distribution
+p_reward_pairs:
+  - [0.225, 0.225]    # 1:1
+  - [0.1125, 0.3375]  # 1:3
+  - [0.064285714, 0.385714286]  # 1:6
+  - [0.05, 0.40]   # 1:8
+
+num_trials: ${..num_trials}
+seed: ${seed}

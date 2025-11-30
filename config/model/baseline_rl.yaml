@@ -1,0 +1,21 @@
+# See https://github.com/AllenNeuralDynamics/aind-dynamic-foraging-models
+type: baseline_rl
+
+_target_: model_trainers.baseline_rl_trainer.BaselineRLTrainer
+
+agent_class: "ForagerQLearning"
+agent_kwargs:
+  number_of_learning_rate: 2
+  number_of_forget_rate: 1
+  choice_kernel: "none"
+  action_selection: "softmax"
+
+fit_kwargs:
+  DE_kwargs:
+    polish: true
+
+seed: ${seed}
+
+# Your template for the model part of the run name
+run_name_component: >
+  rl_${.agent_class}_L${.agent_kwargs.number_of_learning_rate}F${.agent_kwargs.number_of_forget_rate}CK${.agent_kwargs.choice_kernel}

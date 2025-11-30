@@ -1,0 +1,4 @@
+# Parameters that will be shared across all datasets
+
+eval_every_n: 2  # Fold number for cross-validation
+seed: ${seed}  # Seed for data loader

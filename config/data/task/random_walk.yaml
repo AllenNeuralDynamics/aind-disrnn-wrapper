@@ -1,0 +1,10 @@
+type: random_walk
+reward_baiting: false
+
+p_min: 0.0
+p_max: 1.0
+sigma: 0.15
+mean: 0
+
+num_trials: ${..num_trials}
+seed: ${seed}

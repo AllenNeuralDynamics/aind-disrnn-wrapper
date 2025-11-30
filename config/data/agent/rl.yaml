@@ -1,0 +1,21 @@
+# See https://github.com/AllenNeuralDynamics/aind-dynamic-foraging-models
+type: ${.agent_class}
+
+loader_target: data_loaders.synthetic.SyntheticCognitiveAgents
+
+agent_class: "ForagerQLearning"
+agent_kwargs:
+  number_of_learning_rate: 1
+  number_of_forget_rate: 0
+  choice_kernel: "none"
+  action_selection: "softmax"
+
+agent_params:
+  learn_rate: 0.5
+  # learn_rate_rew: 0.5
+  # learn_rate_unrew: 0.1
+  # forget_rate_unchosen: 0.2
+  softmax_inverse_temperature: 10.0
+  biasL: 0.0
+
+seed: ${seed}
