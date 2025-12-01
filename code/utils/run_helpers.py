@@ -61,6 +61,7 @@ def start_wandb_run(
     dict_config = OmegaConf.to_container(hydra_config, resolve=True)
 
     # Extract & remove original tags
+    wandb_cfg = dict_config.get("wandb", {})
     base_tags = wandb_cfg.pop("tags", []) or []
     extra_tags = [hydra_config.data.type, hydra_config.model.type]
 
