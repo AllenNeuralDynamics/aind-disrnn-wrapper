@@ -1,0 +1,16 @@
+type: synthetic
+
+defaults:
+  - _self_
+  - task: uncoupled_block
+  - agent: rl
+  - base@_here_  # All shared data config
+
+# Data loader class
+_target_: ${.agent.loader_target}
+
+num_trials: 500
+num_sessions: 30
+
+# Your template for the data part of the run name
+run_name_component: synthetic_${.agent.type}_${.task.type}

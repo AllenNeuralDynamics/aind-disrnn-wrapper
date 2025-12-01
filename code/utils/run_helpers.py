@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import shutil
 import sys
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 from omegaconf import DictConfig, OmegaConf
 
@@ -18,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 def find_hydra_config() -> Path | None:
-    """Locate the first config.yaml under /data/jobs."""
+    """Locate the first config.yaml under /data/jobs (Code Ocean compatibility)."""
 
     candidates = list(Path("/data/jobs").rglob("config.yaml"))
     if not candidates:
@@ -32,10 +31,20 @@ def find_hydra_config() -> Path | None:
 
 
 def copy_input_folder(config_path: Path) -> None:
+    """Copy Hydra inputs from Code Ocean mounted folders into /results."""
+
     source_dir = config_path.resolve().parents[1]
     destination_root = Path("/results/inputs")
     destination_root.mkdir(parents=True, exist_ok=True)
     destination_dir = destination_root / source_dir.name
+    logger.info("Copying Hydra inputs from %s to %s", source_dir, destination_dir)
+    shutil.copytree(source_dir, destination_dir, dirs_exist_ok=True)
+
+
+def copy_inputs_for_run(source_dir: Path, destination_dir: Path) -> None:
+    """Copy input tree into the supplied destination (HPC workflow)."""
+
+    destination_dir.mkdir(parents=True, exist_ok=True)
     logger.info("Copying Hydra inputs from %s to %s", source_dir, destination_dir)
     shutil.copytree(source_dir, destination_dir, dirs_exist_ok=True)
 

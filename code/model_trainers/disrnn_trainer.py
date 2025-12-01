@@ -18,8 +18,12 @@ import aind_disrnn_utils.data_loader as dl
 import types
 from disentangled_rnns.library import disrnn, plotting, rnn_utils
 
-from base.interfaces import ModelTrainer
-from base.types import DatasetBundle
+try:
+    from ..base.interfaces import ModelTrainer
+    from ..base.types import DatasetBundle
+except ImportError:  # support Code Ocean script imports
+    from base.interfaces import ModelTrainer
+    from base.types import DatasetBundle
 
 logger = logging.getLogger(__name__)
 
@@ -188,7 +192,7 @@ class DisrnnTrainer(ModelTrainer):
         if wandb_run is not None:
             wandb_run.log({"fig/validation_loss_curve": wandb.Image(str(losses_path))})
 
-        bottlenecks_fig = plotting.plot_bottlenecks(params, disrnn_config, sort_latents=False)
+        bottlenecks_fig = plotting.plot_bottlenecks(params, disrnn_config, sort_latents=True)
         bottlenecks_path = self._save_figure(bottlenecks_fig, "bottlenecks.png")
         if wandb_run is not None:
             wandb_run.log({"fig/bottlenecks": wandb.Image(str(bottlenecks_path))})
@@ -210,12 +214,12 @@ class DisrnnTrainer(ModelTrainer):
             lambda: disrnn.HkDisentangledRNN(noiseless_network), params, xs
         )
 
-        df = bundle.raw
-        output_df = dl.add_model_results(
-            df, network_states.__array__(), yhat, ignore_policy=ignore_policy
-        )
-        output_path = self.output_dir / "output_df.csv"
-        output_df.to_csv(output_path, index=False)
+        # df = bundle.raw
+        # output_df = dl.add_model_results(
+        #     df, network_states.__array__(), yhat, ignore_policy=ignore_policy
+        # )
+        # output_path = self.output_dir / "output_df.csv"
+        # output_df.to_csv(output_path, index=False)
 
         params_path = self.output_dir / "params.json"
         with params_path.open("w") as f:

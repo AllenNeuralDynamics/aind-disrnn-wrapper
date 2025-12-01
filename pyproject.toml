@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=45", "setuptools_scm[toml]>=6.2"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aind-disrnn-wrapper"
+version = "0.1.0"
+description = "Wrapper for training disentangled RNNs on AIND behavioral data"
+readme = "README.md"
+requires-python = ">=3.12"
+license = {text = "MIT"}
+authors = [
+    {name = "Han Hou", email = "houhan@gmail.com"}
+]
+
+dependencies = [
+    "jax==0.6.1",
+    "disentangled-rnns @ git+https://github.com/AllenNeuralDynamics/aind-disentangled-rnns.git@e8fbbb8521599c5ad13a70ca9199dfdb823fcb8c",
+    "aind-disrnn-utils @ git+https://github.com/AllenNeuralDynamics/aind_disrnn_utils.git@4b8defe9ab5c67287e7af3fedf9e07a714a20993",
+    "aind-analysis-arch-result-access==0.8.0",
+    "aind-dynamic-foraging-basic-analysis==0.3.34",
+    "aind-dynamic-foraging-data-utils==0.1.41",
+    "aind-dynamic-foraging-multisession-analysis==0.0.18",
+    "aind-behavior-gym==0.4.4",
+    "aind-dynamic-foraging-models~=0.12.2",
+    "wandb~=0.23.0",
+    "hydra-core~=1.3.0",
+    "omegaconf~=2.3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "black==25.9.0",
+    "isort==7.0.0",
+]
+gpu = [
+    "jax[cuda12]==0.6.1",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["code*"]

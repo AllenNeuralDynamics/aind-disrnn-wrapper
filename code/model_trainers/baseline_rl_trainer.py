@@ -1,7 +1,11 @@
 from __future__ import annotations
 
-from base.interfaces import ModelTrainer
-from base.types import DatasetBundle
+try:
+    from ..base.interfaces import ModelTrainer
+    from ..base.types import DatasetBundle
+except ImportError:  # support Code Ocean script imports
+    from base.interfaces import ModelTrainer
+    from base.types import DatasetBundle
 
 
 class BaselineRLTrainer(ModelTrainer):

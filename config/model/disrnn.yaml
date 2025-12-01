@@ -1,0 +1,37 @@
+# Use conventions here https://github.com/AllenNeuralDynamics/aind_disrnn_utils/blob/main/src/aind_disrnn_utils/data_models.py
+type: disrnn
+
+_target_: code.model_trainers.disrnn_trainer.DisrnnTrainer
+
+architecture:
+  latent_size: 5
+  update_net_n_units_per_layer: 5
+  update_net_n_layers: 3
+  choice_net_n_units_per_layer: 2
+  choice_net_n_layers: 2
+  activation: leaky_relu
+
+penalties:
+  beta: 0.01
+
+  # By default, set all penalties to the same value
+  # You can override them individually if desired
+  latent_penalty: ${.beta}
+  choice_net_latent_penalty: ${.beta}
+  update_net_obs_penalty: ${.beta}
+  update_net_latent_penalty: ${.beta}
+
+training:
+  n_steps: 3000
+  n_warmup_steps: 1000
+  lr: 0.001
+  loss: penalized_categorical
+  loss_param: 1.0
+  max_grad_norm: 1e10  # no gradient clipping by default
+
+seed: ${seed}  # Seed for model trainer
+
+output_dir: ${oc.env:HOME}/outputs/disrnn
+
+# Your template for the model part of the run name
+run_name_component: disrnn_beta${.penalties.beta}_lr${.training.lr}
