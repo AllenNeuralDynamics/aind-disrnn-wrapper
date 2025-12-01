@@ -1,7 +1,7 @@
 # See https://github.com/AllenNeuralDynamics/aind-dynamic-foraging-models
 type: ${.agent_class}
 
-loader_target: data_loaders.synthetic.SyntheticCognitiveAgents
+loader_target: code.data_loaders.synthetic.SyntheticCognitiveAgents
 
 agent_class: "ForagerQLearning"
 agent_kwargs:

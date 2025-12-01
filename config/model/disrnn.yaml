@@ -1,7 +1,7 @@
 # Use conventions here https://github.com/AllenNeuralDynamics/aind_disrnn_utils/blob/main/src/aind_disrnn_utils/data_models.py
 type: disrnn
 
-_target_: model_trainers.disrnn_trainer.DisrnnTrainer
+_target_: code.model_trainers.disrnn_trainer.DisrnnTrainer
 
 architecture:
   latent_size: 5
@@ -30,6 +30,8 @@ training:
   max_grad_norm: 1e10  # no gradient clipping by default
 
 seed: ${seed}  # Seed for model trainer
+
+output_dir: ${oc.env:HOME}/outputs/disrnn
 
 # Your template for the model part of the run name
 run_name_component: disrnn_beta${.penalties.beta}_lr${.training.lr}

@@ -5,7 +5,7 @@ defaults:
   - base@_here_  # All shared data config
 
 # Data loader class
-_target_: data_loaders.mice.MiceDatasetLoader
+_target_: code.data_loaders.mice.MiceDatasetLoader
 subject_ids: [774212]
 multisubject: false
 ignore_policy: exclude

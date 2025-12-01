@@ -18,8 +18,12 @@ import aind_disrnn_utils.data_loader as dl
 import types
 from disentangled_rnns.library import disrnn, plotting, rnn_utils
 
-from base.interfaces import ModelTrainer
-from base.types import DatasetBundle
+try:
+    from ..base.interfaces import ModelTrainer
+    from ..base.types import DatasetBundle
+except ImportError:  # support Code Ocean script imports
+    from base.interfaces import ModelTrainer
+    from base.types import DatasetBundle
 
 logger = logging.getLogger(__name__)
 

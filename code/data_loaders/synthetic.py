@@ -16,8 +16,12 @@ from aind_dynamic_foraging_models import generative_model
 import aind_disrnn_utils.data_loader as dl
 from disentangled_rnns.library import rnn_utils
 
-from base.interfaces import DatasetLoader
-from base.types import DatasetBundle
+try:
+    from ..base.interfaces import DatasetLoader
+    from ..base.types import DatasetBundle
+except ImportError:  # support Code Ocean script imports
+    from base.interfaces import DatasetLoader
+    from base.types import DatasetBundle
 
 
 class SyntheticDatasetLoader(DatasetLoader):

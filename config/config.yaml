@@ -9,7 +9,7 @@ seed: 42
 # W&B logging
 wandb:
   entity: AIND-disRNN  # W&B entity/team name (don't overwrite)
-  dir: ${oc.env:HOME}/outputs/wandb  # Local cache for wandb files
+  dir: ${oc.env:HOME}/outputs/disrnn/wandb  # Local cache for wandb files
   project: test  # Please set your own project name here!
   name: ${data.run_name_component}_${model.run_name_component}  # Consist of data and model parts
 
@@ -21,7 +21,7 @@ hydra:
     chdir: true
   run:
     # Directory for single runs, where the user provides the job id
-    dir: ${oc.env:HOME}/outputs/${job_id}
+    dir: ${oc.env:HOME}/outputs/disrnn/${job_id}
   sweep:
     # Directory for multirun sweeps, where Hydra manages job ids
-    dir: ${oc.env:HOME}/outputs/multirun
+    dir: ${oc.env:HOME}/outputs/disrnn/multirun

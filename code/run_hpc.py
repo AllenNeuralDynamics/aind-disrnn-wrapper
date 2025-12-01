@@ -5,12 +5,12 @@ import logging
 from pathlib import Path
 
 import hydra
-from hydra.utils import instantiate, to_absolute_path
+from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf
 
-from base.interfaces import DatasetLoader, ModelTrainer
-from utils.json_helpers import dictconfig_to_json
-from utils.run_helpers import (
+from .base.interfaces import DatasetLoader, ModelTrainer
+from .utils.json_helpers import dictconfig_to_json
+from .utils.run_helpers import (
     configure_sys_logger,
     copy_inputs_for_run,
     save_resolved_config,
@@ -27,7 +27,7 @@ def main(hydra_config: DictConfig) -> None:
     run_dir = Path.cwd()
 
     # Backup inputs for reproducibility
-    config_root = Path(to_absolute_path("../config"))
+    config_root = Path(__file__).parent.parent / "config"
     copy_inputs_for_run(config_root, run_dir / "inputs")
     save_resolved_config(hydra_config, run_dir / "inputs.yaml")
     json_destination = run_dir / "inputs.json"
