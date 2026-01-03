@@ -114,8 +114,10 @@ class SyntheticCognitiveAgents(DatasetLoader):
 
             forager.perform(task_instance)
             
-            # Compute groundtruth likelihood as an upper bound
-            likelihood_groundtruth = self.compute_groundtruth_likelihood(forager)
+            # Prepare choices (T, 1, 1) and logits (T, 1, 2) for this session
+            choices = np.asarray(forager.choice_history)[:, np.newaxis, np.newaxis]
+            probs = np.asarray(forager.choice_prob).T
+            logits = np.log(probs + 1e-10)[:, np.newaxis, :]
 
             session_df = self._session_dataframe(session_idx, forager, task_instance)
             session_frames.append(session_df)
@@ -128,7 +130,8 @@ class SyntheticCognitiveAgents(DatasetLoader):
                     "agent_class": agent_class_name,
                     "agent_params": forager.get_params(),
                     "task_kwargs": task_kwargs,
-                    "likelihood_groundtruth": likelihood_groundtruth,
+                    "choices": choices,
+                    "logits": logits,
                 }
             )
 
@@ -154,11 +157,23 @@ class SyntheticCognitiveAgents(DatasetLoader):
 
         dataset_train, dataset_eval = rnn_utils.split_dataset(dataset, self.eval_every_n)
 
+        # --- Identify evaluation sessions and compute global groundtruth likelihood ---
+        eval_session_indices = np.arange(1, self.num_sessions, self.eval_every_n)
+        
+        # Concatenate all evaluation sessions along the episode dimension (axis 1)
+        all_eval_choices = np.concatenate([session_details[i]["choices"] for i in eval_session_indices], axis=1)
+        all_eval_logits = np.concatenate([session_details[i]["logits"] for i in eval_session_indices], axis=1)
+        
+        # Compute global normalized likelihood (geometric mean over all trials in all eval sessions)
+        avg_eval_groundtruth = float(rnn_utils.normalized_likelihood(all_eval_choices, all_eval_logits))
+
         # --- Package bundle metadata ---
         metadata: dict[str, Any] = {
             "num_trials": self.num_trials,
             "num_sessions": self.num_sessions,
             "eval_every_n": self.eval_every_n,
+            "eval_session_indices": eval_session_indices.tolist(),
+            "avg_eval_likelihood_groundtruth": avg_eval_groundtruth,
             "task": self.task_config,
             "agent": self.agent_config,
             "seeds": {
@@ -242,21 +257,3 @@ class SyntheticCognitiveAgents(DatasetLoader):
         data["choice_prob_right"] = choice_prob[1, :]
 
         return pd.DataFrame(data)
-
-    def compute_groundtruth_likelihood(self, forager: Any) -> float:
-        """Compute the normalized likelihood with the forager's groundtruth.
-        
-        This uses the agent's internal choice probabilities to compute the 
-        geometric mean probability of the actual choices made.
-        """
-        # Prepare choices: (Timesteps, 1, 1)
-        choices = np.asarray(forager.choice_history)
-        choices = choices[:, np.newaxis, np.newaxis]
-
-        # Prepare logits: (Timesteps, 1, 2)
-        # We use log(probs) as logits because softmax(log(p)) = p
-        probs = np.asarray(forager.choice_prob).T
-        logits = np.log(probs + 1e-10)[:, np.newaxis, :]     
-        
-        # Compute normalized likelihood using rnn_utils
-        return float(rnn_utils.normalized_likelihood(choices, logits))
