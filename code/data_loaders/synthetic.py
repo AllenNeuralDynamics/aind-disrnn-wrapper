@@ -113,6 +113,9 @@ class SyntheticCognitiveAgents(DatasetLoader):
             )
 
             forager.perform(task_instance)
+            
+            # Compute groundtruth likelihood as an upper bound
+            likelihood_groundtruth = self.compute_groundtruth_likelihood(forager)
 
             session_df = self._session_dataframe(session_idx, forager, task_instance)
             session_frames.append(session_df)
@@ -125,6 +128,7 @@ class SyntheticCognitiveAgents(DatasetLoader):
                     "agent_class": agent_class_name,
                     "agent_params": forager.get_params(),
                     "task_kwargs": task_kwargs,
+                    "likelihood_groundtruth": likelihood_groundtruth,
                 }
             )
 
@@ -238,3 +242,21 @@ class SyntheticCognitiveAgents(DatasetLoader):
         data["choice_prob_right"] = choice_prob[1, :]
 
         return pd.DataFrame(data)
+
+    def compute_groundtruth_likelihood(self, forager: Any) -> float:
+        """Compute the normalized likelihood with the forager's groundtruth.
+        
+        This uses the agent's internal choice probabilities to compute the 
+        geometric mean probability of the actual choices made.
+        """
+        # Prepare choices: (Timesteps, 1, 1)
+        choices = np.asarray(forager.choice_history)
+        choices = choices[:, np.newaxis, np.newaxis]
+
+        # Prepare logits: (Timesteps, 1, 2)
+        # We use log(probs) as logits because softmax(log(p)) = p
+        probs = np.asarray(forager.choice_prob).T
+        logits = np.log(probs + 1e-10)[:, np.newaxis, :]     
+        
+        # Compute normalized likelihood using rnn_utils
+        return float(rnn_utils.normalized_likelihood(choices, logits))
