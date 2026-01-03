@@ -223,6 +223,12 @@ class DisrnnTrainer(ModelTrainer):
 
         likelihood = rnn_utils.normalized_likelihood(ys, yhat[:, :, 0:2])
         output["likelihood"] = float(likelihood)
+        
+        # -- Compare to groundtruth likelihood if available --
+        gt_likelihood = metadata.get("avg_eval_likelihood_groundtruth")
+        if gt_likelihood is not None:
+            output["groundtruth_likelihood"] = float(gt_likelihood)
+            output["likelihood_relative_to_groundtruth"] = float(likelihood) / float(gt_likelihood)
 
         # save output to json
         with open(self.output_dir / "output_summary.json", "w") as f:
@@ -232,6 +238,11 @@ class DisrnnTrainer(ModelTrainer):
             wandb_run.summary["final/val_loss"] = float(losses["validation_loss"][-1])
             wandb_run.summary["final/train_loss"] = float(losses["training_loss"][-1])
             wandb_run.summary["likelihood"] = float(likelihood)
+            
+            if gt_likelihood is not None:
+                wandb_run.summary["groundtruth_likelihood"] = float(gt_likelihood)
+                wandb_run.summary["likelihood_relative_to_groundtruth"] = float(likelihood) / float(gt_likelihood)
+
             wandb_run.summary["elapsed_seconds"] = float(training_time)
             wandb_run.summary["warmup_seconds"] = float(warmup_duration)
             
