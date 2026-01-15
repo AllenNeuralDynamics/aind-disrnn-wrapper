@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 def find_hydra_config() -> Path | None:
     """Locate the first config.yaml under /data/jobs."""
 
-    candidates = list(Path("/data/jobs").rglob("config.yaml"))
+    candidates = list(Path("/data/jobs").rglob("config_fast.yaml"))
     if not candidates:
         logger.warning("No config.yaml found under /data/jobs/")
         return None
