@@ -223,7 +223,7 @@ class DisrnnTrainer(ModelTrainer):
 
         df = bundle.raw
         output_df = dl.add_model_results(
-            df, network_states_eval.__array__(), yhat_eval, ignore_policy=ignore_policy
+            df, network_states_full.__array__(), yhat_full, ignore_policy=ignore_policy
         )
         output_path = self.output_dir / "output_df.csv"
         output_df.to_csv(output_path, index=False)
