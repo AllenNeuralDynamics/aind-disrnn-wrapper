@@ -63,7 +63,9 @@ class DisrnnTrainer(ModelTrainer):
 
         dataset = bundle.extras.get("dataset") if bundle.extras else None
         if dataset is None:
-            raise ValueError("Dataset bundle must include the constructed disRNN dataset.")
+            raise ValueError(
+                "Dataset bundle must include the constructed disRNN dataset."
+            )
 
         dataset_train = bundle.train_set
         dataset_eval = bundle.eval_set
@@ -75,7 +77,9 @@ class DisrnnTrainer(ModelTrainer):
             "num_sessions": metadata.get("num_sessions"),
         }
 
-        logger.info("Dataset details: input %s, output %s", dataset._xs.shape, dataset._ys.shape)
+        logger.info(
+            "Dataset details: input %s, output %s", dataset._xs.shape, dataset._ys.shape
+        )
         logger.info(
             "Train/Eval shapes: train=%s eval=%s",
             dataset_train._ys.shape,
@@ -88,9 +92,13 @@ class DisrnnTrainer(ModelTrainer):
 
         args = types.SimpleNamespace(
             num_latents=self.architecture["latent_size"],
-            update_net_n_units_per_layer=self.architecture["update_net_n_units_per_layer"],
+            update_net_n_units_per_layer=self.architecture[
+                "update_net_n_units_per_layer"
+            ],
             update_net_n_layers=self.architecture["update_net_n_layers"],
-            choice_net_n_units_per_layer=self.architecture["choice_net_n_units_per_layer"],
+            choice_net_n_units_per_layer=self.architecture[
+                "choice_net_n_units_per_layer"
+            ],
             choice_net_n_layers=self.architecture["choice_net_n_layers"],
             activation=self.architecture["activation"],
             latent_penalty=self.penalties["latent_penalty"],
@@ -105,7 +113,7 @@ class DisrnnTrainer(ModelTrainer):
             loss_param=self.training["loss_param"],
         )
 
-        logger.info(f'max_grad_norm = {args.max_grad_norm}')
+        logger.info(f"max_grad_norm = {args.max_grad_norm}")
 
         output_size = 2 if ignore_policy == "exclude" else 3
         disrnn_config = disrnn.DisRnnConfig(
@@ -188,7 +196,9 @@ class DisrnnTrainer(ModelTrainer):
         if wandb_run is not None:
             wandb_run.log({"fig/validation_loss_curve": wandb.Image(str(losses_path))})
 
-        bottlenecks_fig = plotting.plot_bottlenecks(params, disrnn_config, sort_latents=False)
+        bottlenecks_fig = plotting.plot_bottlenecks(
+            params, disrnn_config, sort_latents=False
+        )
         bottlenecks_path = self._save_figure(bottlenecks_fig, "bottlenecks.png")
         if wandb_run is not None:
             wandb_run.log({"fig/bottlenecks": wandb.Image(str(bottlenecks_path))})
@@ -205,14 +215,15 @@ class DisrnnTrainer(ModelTrainer):
             if wandb_run is not None:
                 wandb_run.log({f"fig/update_rule_{index}": wandb.Image(str(path))})
 
-        xs, ys = next(dataset_eval)
-        yhat, network_states = rnn_utils.eval_network(
-            lambda: disrnn.HkDisentangledRNN(noiseless_network), params, xs
+        # Get model predictions on full dataset, including the training set
+        xs_full, ys_full = dataset.get_all()
+        yhat_full, network_states_full = rnn_utils.eval_network(
+            lambda: disrnn.HkDisentangledRNN(noiseless_network), params, xs_full
         )
 
         df = bundle.raw
         output_df = dl.add_model_results(
-            df, network_states.__array__(), yhat, ignore_policy=ignore_policy
+            df, network_states_eval.__array__(), yhat_eval, ignore_policy=ignore_policy
         )
         output_path = self.output_dir / "output_df.csv"
         output_df.to_csv(output_path, index=False)
@@ -221,7 +232,12 @@ class DisrnnTrainer(ModelTrainer):
         with params_path.open("w") as f:
             f.write(json.dumps(params, cls=rnn_utils.NpJnpJsonEncoder))
 
-        likelihood = rnn_utils.normalized_likelihood(ys, yhat[:, :, 0:2])
+        # Get likelihood evaluated on just the evaluation dataset
+        xs_eval, ys_eval = dataset_eval.get_all()
+        yhat_eval, network_states_eval = rnn_utils.eval_network(
+            lambda: disrnn.HkDisentangledRNN(noiseless_network), params, xs_eval
+        )
+        likelihood = rnn_utils.normalized_likelihood(ys_eval, yhat_eval[:, :, 0:2])
         output["likelihood"] = float(likelihood)
 
         # save output to json
@@ -234,17 +250,21 @@ class DisrnnTrainer(ModelTrainer):
             wandb_run.summary["likelihood"] = float(likelihood)
             wandb_run.summary["elapsed_seconds"] = float(training_time)
             wandb_run.summary["warmup_seconds"] = float(warmup_duration)
-            
+
             # Upload the whole /results/output folder as an artifact
             # Here I'm using the random id as the name, meaning each run will has its own artifact.
-            artifact_name = f"disrnn-output-{getattr(wandb_run, 'id', None) or 'latest'}"
+            artifact_name = (
+                f"disrnn-output-{getattr(wandb_run, 'id', None) or 'latest'}"
+            )
             artifact = wandb.Artifact(artifact_name, type="training-output")
             artifact.add_dir(str(self.output_dir))
             wandb_run.log_artifact(artifact)
 
         return output
 
-    def _plot_losses(self, losses: Mapping[str, Any], title: str, output_name: str) -> Path:
+    def _plot_losses(
+        self, losses: Mapping[str, Any], title: str, output_name: str
+    ) -> Path:
         fig = plt.figure()
         plt.semilogy(losses["training_loss"], color="black")
         plt.semilogy(losses["validation_loss"], color="tab:red", linestyle="dashed")
