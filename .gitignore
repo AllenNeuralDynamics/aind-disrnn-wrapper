@@ -153,5 +153,9 @@ dmypy.json
 !.vscode/*.code-snippets
 .vscode
 
+.codeocean/
+
+environment/
+
 # Other editable repos
 src
