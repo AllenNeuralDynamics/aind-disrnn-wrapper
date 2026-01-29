@@ -469,19 +469,30 @@ class BaselineRLTrainer(ModelTrainer):
             param_varies = param_std > 1e-6
 
             if param_varies:
-                # Plot histogram of true values
+                # Plot side-by-side histogram of true values (train vs eval)
                 bins = min(15, max(5, n_sessions // 2))
                 
                 # Calculate bin edges based on all values
                 val_range = (np.min(all_vals), np.max(all_vals))
                 bin_edges = np.linspace(val_range[0], val_range[1], bins + 1)
+                bin_width = bin_edges[1] - bin_edges[0]
+                
+                # Compute histogram counts for train and eval
+                train_counts, _ = np.histogram(train_vals, bins=bin_edges) if len(train_vals) > 0 else (np.zeros(bins), None)
+                eval_counts, _ = np.histogram(eval_vals, bins=bin_edges) if len(eval_vals) > 0 else (np.zeros(bins), None)
+                
+                # Plot side-by-side bars
+                bar_width = bin_width * 0.4
+                bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
                 
                 if len(train_vals) > 0:
-                    ax.hist(train_vals, bins=bin_edges, alpha=0.6, color="steelblue",
-                           label=f"Train sessions (n={len(train_vals)})", edgecolor="white")
+                    ax.bar(bin_centers - bar_width/2, train_counts, width=bar_width, 
+                           color="steelblue", alpha=0.8, edgecolor="white",
+                           label=f"Train (n={len(train_vals)})")
                 if len(eval_vals) > 0:
-                    ax.hist(eval_vals, bins=bin_edges, alpha=0.6, color="coral",
-                           label=f"Eval sessions (n={len(eval_vals)})", edgecolor="white")
+                    ax.bar(bin_centers + bar_width/2, eval_counts, width=bar_width,
+                           color="coral", alpha=0.8, edgecolor="white",
+                           label=f"Eval (n={len(eval_vals)})")
 
                 # Add vertical line for fitted value
                 ax.axvline(fitted_val, color="darkgreen", linestyle="--", linewidth=2.5,
