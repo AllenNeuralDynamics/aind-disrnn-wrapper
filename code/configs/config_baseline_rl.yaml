@@ -1,6 +1,11 @@
 # Baseline RL model training configuration
-# This config uses a Q-learning model from aind-dynamic-foraging-models
-# to fit behavioral data and compute likelihood for comparison with disRNN
+# This config uses the same Q-learning model for both simulation and fitting
+# to enable fair comparison of parameter recovery and likelihood metrics
+# 
+# Setup:
+#  - Data simulation uses Hattori2019-style Q-learning (2 learning rates, 1 forget rate)
+#  - Fitting uses identical model structure to recover parameters
+#  - Allows comparison of: fitted vs true parameters, likelihood vs groundtruth
 
 data:
   type: synthetic
@@ -21,23 +26,26 @@ data:
     type: ${.agent_class}
     loader_target: data_loaders.synthetic.SyntheticCognitiveAgents
     agent_class: ForagerQLearning
+    # Use Hattori2019-style Q-learning model (2 learning rates, 1 forget rate)
+    # These agent_kwargs match the model section below for fair comparison
     agent_kwargs:
-      number_of_learning_rate: 1
-      number_of_forget_rate: 0
+      number_of_learning_rate: 2
+      number_of_forget_rate: 1
       choice_kernel: none
       action_selection: softmax
+    # True parameters used for simulation (can compare against fitted params)
     agent_params:
-      learn_rate: 0.5
-      softmax_inverse_temperature: 10.0
+      learn_rate_rew: 0.5
+      learn_rate_unrew: 0.1
+      forget_rate_unchosen: 0.05
+      softmax_inverse_temperature: 5.0
+      biasL: 0.0
+    # Add session-to-session variability to biasL for more realistic data
     agent_params_session_var:
       biasL:
         type: gaussian
-        mean: 0 
+        mean: 0
         std: 1
-      learn_rate:
-        type: uniform
-        min: 0.1
-        max: 0.9
     seed: ${seed}
   eval_every_n: 2
   seed: ${seed}
@@ -70,7 +78,7 @@ model:
     workers: 1  # Number of parallel workers (increase for faster fitting)
     # Other DE options: popsize, mutation, recombination, polish, etc.
   seed: ${seed}
-  run_name_component: baseline_rl_${.agent_class}
+  run_name_component: baseline_rl_${.agent_class}_L${.agent_kwargs.number_of_learning_rate}F${.agent_kwargs.number_of_forget_rate}
 
 seed: 43
 
