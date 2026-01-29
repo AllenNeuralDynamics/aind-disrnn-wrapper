@@ -1,5 +1,6 @@
 """Unit tests for BaselineRLTrainer using aind-dynamic-foraging-models."""
 
+import os
 import numpy as np
 import unittest
 
@@ -403,6 +404,62 @@ class TestBaselineRLTrainer(unittest.TestCase):
         # Just check it's recovered to a reasonable value (not too far from 0.0)
         self.assertLess(abs(float(fitted_params["biasL"])), 2.0,
                       "biasL should be recovered within +/-2.0")
+
+    def test_parameter_recovery_plot(self):
+        """Test that parameter recovery plot is generated correctly."""
+        output_dir = "/tmp/baseline_rl_test_plot"
+        trainer = BaselineRLTrainer(
+            agent_class="ForagerQLearning",
+            agent_kwargs={
+                "number_of_learning_rate": 2,
+                "number_of_forget_rate": 1,
+                "choice_kernel": "none",
+                "action_selection": "softmax",
+            },
+            DE_kwargs={"workers": 1, "maxiter": 3, "popsize": 5},
+            output_dir=output_dir,
+            seed=42,
+        )
+
+        output = trainer.fit(self.bundle)
+
+        # Check that plot path is in output
+        self.assertIn("parameter_recovery_plot_path", output)
+
+        # Check that plot file exists
+        plot_path = output["parameter_recovery_plot_path"]
+        self.assertTrue(os.path.exists(plot_path), f"Plot file not found: {plot_path}")
+
+        # Check that plot file has reasonable size (not empty)
+        file_size = os.path.getsize(plot_path)
+        self.assertGreater(file_size, 1000, "Plot file seems too small (possibly empty)")
+
+        print(f"\n=== Parameter Recovery Plot Test ===")
+        print(f"Plot saved to: {plot_path}")
+        print(f"File size: {file_size} bytes")
+
+        # Print fitted vs true parameters for visual verification
+        fitted_params = output["fitted_params"]
+        true_params = {
+            "learn_rate_rew": 0.5,
+            "learn_rate_unrew": 0.1,
+            "forget_rate_unchosen": 0.05,
+            "softmax_inverse_temperature": 5.0,
+            "biasL": 0.0,
+        }
+
+        print("\nParameter Comparison:")
+        print(f"{'Parameter':<30} {'True':>10} {'Fitted':>10} {'Error':>10}")
+        print("-" * 62)
+        for param in fitted_params:
+            true_val = true_params.get(param, float("nan"))
+            fitted_val = float(fitted_params[param])
+            error = fitted_val - true_val
+            print(f"{param:<30} {true_val:>10.4f} {fitted_val:>10.4f} {error:>+10.4f}")
+
+        print(f"\nLikelihood: {output['likelihood']:.4f}")
+        print(f"Groundtruth: {output['groundtruth_likelihood']:.4f}")
+        print(f"Ratio: {output['likelihood_relative_to_groundtruth']:.4f}")
 
 
 if __name__ == "__main__":
