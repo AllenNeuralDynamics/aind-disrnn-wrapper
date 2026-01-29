@@ -333,14 +333,14 @@ class BaselineRLTrainer(ModelTrainer):
         for sess_idx in range(n_sessions):
             choices = ys[:, sess_idx, 0]
             valid = choices >= 0
-            choices = choices[valid].astype(int)
+            choices = choices[valid].astype(int)  # drop padded trials
             choices_sessions.append(choices)
 
             rewards_prev = xs[:, sess_idx, reward_idx]
             n_trials = len(choices)
             rewards = np.zeros(n_trials, dtype=float)
             if n_trials > 1:
-                rewards[:-1] = rewards_prev[1:n_trials]
+                rewards[:-1] = rewards_prev[1:n_trials]  # shift prev reward to current trial
             rewards_sessions.append(rewards)
 
         return choices_sessions, rewards_sessions
@@ -366,14 +366,18 @@ class BaselineRLTrainer(ModelTrainer):
         total_trials = 0
 
         for choices, choice_prob in zip(choice_sessions, choice_prob_sessions):
-            n_trials = len(choices)
-            for t in range(n_trials):
-                c = int(choices[t])
-                prob = choice_prob[c, t]
-                # Clamp probability to avoid log(0)
-                prob = np.clip(prob, 1e-10, 1.0 - 1e-10)
-                total_log_lik += np.log(prob)
-            total_trials += n_trials
+            n_trials = min(len(choices), choice_prob.shape[1])
+            if n_trials == 0:
+                continue
+            choices_idx = choices[:n_trials].astype(int)
+            valid = choices_idx >= 0  # guard against padded labels
+            if not np.any(valid):
+                continue
+            trial_idx = np.arange(n_trials)[valid]
+            probs = choice_prob[choices_idx[valid], trial_idx]  # gather p(choice_t)
+            probs = np.clip(probs, 1e-10, 1.0 - 1e-10)
+            total_log_lik += float(np.sum(np.log(probs)))
+            total_trials += int(np.sum(valid))
 
         # Normalized likelihood = exp(mean log likelihood)
         if total_trials == 0:
