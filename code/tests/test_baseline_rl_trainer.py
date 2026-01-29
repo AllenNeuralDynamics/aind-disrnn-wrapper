@@ -353,6 +353,57 @@ class TestBaselineRLTrainer(unittest.TestCase):
         # biasL should be clamped to 0.5
         self.assertAlmostEqual(fitted_params["biasL"], 0.5, places=5)
 
+    def test_parameter_recovery(self):
+        """Test that fitted parameters recover true parameters reasonably."""
+        trainer = BaselineRLTrainer(
+            agent_class="ForagerQLearning",
+            agent_kwargs={
+                "number_of_learning_rate": 2,
+                "number_of_forget_rate": 1,
+                "choice_kernel": "none",
+                "action_selection": "softmax",
+            },
+            DE_kwargs={"workers": 1, "maxiter": 10, "popsize": 10},
+            output_dir="/tmp/baseline_rl_test",
+            seed=42,
+        )
+
+        output = trainer.fit(self.bundle)
+        fitted_params = output["fitted_params"]
+
+        # Get true parameters from first session
+        # Note: biasL varies by session due to agent_params_session_var,
+        # so we use the mean true value (0.0) for comparison
+        true_params = {
+            "learn_rate_rew": 0.5,
+            "learn_rate_unrew": 0.1,
+            "forget_rate_unchosen": 0.05,
+            "softmax_inverse_temperature": 5.0,
+            "biasL": 0.0,  # Mean true value (varies per session)
+        }
+
+        # Check that fitted parameters are reasonably close to true values
+        # With limited iterations, allow some error
+        max_allowed_error = 0.5  # 50% max deviation allowed
+
+        for param in ["learn_rate_rew", "learn_rate_unrew", "forget_rate_unchosen",
+                      "softmax_inverse_temperature"]:
+            fitted_val = float(fitted_params[param])
+            true_val = true_params[param]
+            error = abs(fitted_val - true_val)
+            relative_error = error / true_val if true_val != 0 else error
+
+            # Check that error is reasonable (less than max_allowed_error)
+            # Note: with limited DE iterations, we don't expect perfect recovery
+            self.assertLess(relative_error, max_allowed_error,
+                          f"Parameter {param}: fitted={fitted_val:.4f}, "
+                          f"true={true_val:.4f}, error={relative_error:.4f}")
+
+        # biasL recovery is harder due to session-to-session variation
+        # Just check it's recovered to a reasonable value (not too far from 0.0)
+        self.assertLess(abs(float(fitted_params["biasL"])), 2.0,
+                      "biasL should be recovered within +/-2.0")
+
 
 if __name__ == "__main__":
     unittest.main()
