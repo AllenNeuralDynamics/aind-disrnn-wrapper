@@ -290,75 +290,60 @@ class BaselineRLTrainer(ModelTrainer):
             Tuple of (train_choices, train_rewards, eval_choices, eval_rewards)
             where each is a list of 1D numpy arrays (one per session).
         """
-        metadata = bundle.metadata
-        extras = bundle.extras or {}
+        if bundle.train_set is None or bundle.eval_set is None:
+            raise ValueError("Dataset bundle must include train and eval sets.")
 
-        # Try to use session_details from synthetic data loader
-        session_details = extras.get("session_details")
-        eval_every_n = metadata.get("eval_every_n", 2)
+        train_choices, train_rewards = self._extract_from_dataset(
+            bundle.train_set, label="train"
+        )
+        eval_choices, eval_rewards = self._extract_from_dataset(
+            bundle.eval_set, label="eval"
+        )
+        return train_choices, train_rewards, eval_choices, eval_rewards
 
-        if session_details is not None:
-            # Synthetic data path - session_details has per-session info
-            n_sessions = len(session_details)
-            train_choices = []
-            train_rewards = []
-            eval_choices = []
-            eval_rewards = []
+    def _extract_from_dataset(
+        self, dataset: Any, label: str
+    ) -> tuple[List[np.ndarray], List[np.ndarray]]:
+        """Extract per-session choices and rewards from a DatasetRNN split."""
+        xs, ys = dataset.get_all()
+        x_names = list(dataset.x_names)
+        if ys.ndim != 3 or ys.shape[2] != 1:
+            raise ValueError(f"{label} ys has unexpected shape: {ys.shape}")
 
-            for i, sess in enumerate(session_details):
-                # Extract choices and rewards from session_details
-                # choices are stored as (T, 1, 1), we need (T,)
-                choices_arr = np.asarray(sess["choices"]).squeeze()
-                # Rewards need to be extracted from raw dataframe
-                raw_df = bundle.raw
-                sess_df = raw_df[raw_df["ses_idx"] == i].sort_values("trial")
-                rewards_arr = sess_df["earned_reward"].values.astype(float)
-
-                # Determine if this is train or eval session
-                # eval sessions are at indices 1, 1+eval_every_n, 1+2*eval_every_n, ...
-                is_eval = (i % eval_every_n) == (eval_every_n - 1)
-
-                if is_eval:
-                    eval_choices.append(choices_arr)
-                    eval_rewards.append(rewards_arr)
-                else:
-                    train_choices.append(choices_arr)
-                    train_rewards.append(rewards_arr)
-
-            return train_choices, train_rewards, eval_choices, eval_rewards
-
-        # Fallback: reconstruct from raw dataframe
-        raw_df = bundle.raw
-        if raw_df is None:
+        reward_names = ("prev reward", "rewarded", "earned_reward", "reward")
+        reward_idx = None
+        for name in reward_names:
+            if name in x_names:
+                reward_idx = x_names.index(name)
+                break
+        if reward_idx is None:
+            lower_names = [n.lower() for n in x_names]
+            for name in reward_names:
+                if name in lower_names:
+                    reward_idx = lower_names.index(name)
+                    break
+        if reward_idx is None:
             raise ValueError(
-                "Cannot extract session data: no session_details or raw dataframe"
+                f"{label} dataset is missing a reward feature in x_names."
             )
 
-        # Group by session
-        session_groups = raw_df.groupby("ses_idx")
-        n_sessions = len(session_groups)
+        choices_sessions: List[np.ndarray] = []
+        rewards_sessions: List[np.ndarray] = []
+        n_sessions = ys.shape[1]
+        for sess_idx in range(n_sessions):
+            choices = ys[:, sess_idx, 0]
+            valid = choices >= 0
+            choices = choices[valid].astype(int)
+            choices_sessions.append(choices)
 
-        train_choices = []
-        train_rewards = []
-        eval_choices = []
-        eval_rewards = []
+            rewards_prev = xs[:, sess_idx, reward_idx]
+            n_trials = len(choices)
+            rewards = np.zeros(n_trials, dtype=float)
+            if n_trials > 1:
+                rewards[:-1] = rewards_prev[1:n_trials]
+            rewards_sessions.append(rewards)
 
-        for ses_idx, group in session_groups:
-            group = group.sort_values("trial")
-            choices_arr = group["animal_response"].values.astype(int)
-            rewards_arr = group["earned_reward"].values.astype(float)
-
-            # Determine if this is train or eval session
-            is_eval = (ses_idx % eval_every_n) == (eval_every_n - 1)
-
-            if is_eval:
-                eval_choices.append(choices_arr)
-                eval_rewards.append(rewards_arr)
-            else:
-                train_choices.append(choices_arr)
-                train_rewards.append(rewards_arr)
-
-        return train_choices, train_rewards, eval_choices, eval_rewards
+        return choices_sessions, rewards_sessions
 
     def _compute_normalized_likelihood(
         self,
