@@ -10,11 +10,14 @@ import matplotlib
 matplotlib.use("Agg")  # Use non-interactive backend
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
+from matplotlib.transforms import blended_transform_factory
 import numpy as np
 import wandb
 from omegaconf import DictConfig, OmegaConf
 
+from aind_dynamic_foraging_basic_analysis import plot_foraging_session
 from aind_dynamic_foraging_models import generative_model
+from aind_dynamic_foraging_models.generative_model.params import ParamsSymbols
 from disentangled_rnns.library import rnn_utils
 
 from base.interfaces import ModelTrainer
@@ -230,7 +233,35 @@ class BaselineRLTrainer(ModelTrainer):
         eval_every_n = metadata.get("eval_every_n", 2)
         param_recovery_fig = None
 
+        train_gt_params: list[dict[str, Any]] | None = None
+        eval_gt_params: list[dict[str, Any]] | None = None
+
         if session_details is not None:
+            # Map ground-truth params to train/eval session order for annotation.
+            try:
+                n_total_sessions = len(session_details)
+                eval_session_indices = metadata.get("eval_session_indices")
+                if eval_session_indices is None:
+                    eval_session_indices = list(
+                        np.arange(eval_every_n - 1, n_total_sessions, eval_every_n)
+                    )
+                eval_session_indices = [int(i) for i in eval_session_indices]
+                eval_set = set(eval_session_indices)
+                train_session_indices = [
+                    i for i in range(n_total_sessions) if i not in eval_set
+                ]
+
+                train_gt_params = [
+                    dict(session_details[i].get("agent_params", {}))
+                    for i in train_session_indices
+                ]
+                eval_gt_params = [
+                    dict(session_details[i].get("agent_params", {}))
+                    for i in eval_session_indices
+                ]
+            except Exception:
+                logger.exception("Failed to map ground-truth params for annotation")
+
             plot_path = self.output_dir / "parameter_recovery.png"
             param_recovery_fig = self._plot_parameter_recovery(
                 session_details=session_details,
@@ -239,6 +270,37 @@ class BaselineRLTrainer(ModelTrainer):
                 save_path=plot_path,
             )
             output["parameter_recovery_plot_path"] = str(plot_path)
+
+        # --- Generate overview plots for train/eval sessions ---
+        train_overview_fig = None
+        eval_overview_fig = None
+
+        try:
+            train_plot_path = self.output_dir / "train_choice_reward_fitted_prob.png"
+            train_overview_fig = self._plot_choice_reward_and_fitted_prob(
+                choice_sessions=train_choices,
+                reward_sessions=train_rewards,
+                choice_prob_sessions=train_choice_prob_sessions,
+                gt_params_per_session=train_gt_params,
+                param_names_for_gt=list(fitted_params.keys()),
+                label="train",
+                save_path=train_plot_path,
+            )
+            output["train_choice_reward_fitted_prob_plot_path"] = str(train_plot_path)
+
+            eval_plot_path = self.output_dir / "eval_choice_reward_fitted_prob.png"
+            eval_overview_fig = self._plot_choice_reward_and_fitted_prob(
+                choice_sessions=eval_choices,
+                reward_sessions=eval_rewards,
+                choice_prob_sessions=eval_choice_prob_sessions,
+                gt_params_per_session=eval_gt_params,
+                param_names_for_gt=list(fitted_params.keys()),
+                label="eval",
+                save_path=eval_plot_path,
+            )
+            output["eval_choice_reward_fitted_prob_plot_path"] = str(eval_plot_path)
+        except Exception:
+            logger.exception("Failed to generate train/eval overview plots")
 
         # --- Log to wandb ---
         if wandb_run is not None:
@@ -263,6 +325,16 @@ class BaselineRLTrainer(ModelTrainer):
                 wandb_run.log({"parameter_recovery": wandb.Image(param_recovery_fig)})
                 logger.info("Logged parameter recovery plot to W&B")
 
+            if train_overview_fig is not None:
+                wandb_run.log(
+                    {"train_choice_reward_fitted_prob": wandb.Image(train_overview_fig)}
+                )
+
+            if eval_overview_fig is not None:
+                wandb_run.log(
+                    {"eval_choice_reward_fitted_prob": wandb.Image(eval_overview_fig)}
+                )
+
             # Upload output as artifact
             artifact_name = f"baseline-rl-output-{getattr(wandb_run, 'id', None) or 'latest'}"
             artifact = wandb.Artifact(artifact_name, type="training-output")
@@ -273,6 +345,12 @@ class BaselineRLTrainer(ModelTrainer):
         if param_recovery_fig is not None:
             plt.close(param_recovery_fig)
 
+        if train_overview_fig is not None:
+            plt.close(train_overview_fig)
+
+        if eval_overview_fig is not None:
+            plt.close(eval_overview_fig)
+
         logger.info(
             f"Baseline RL fitting complete. "
             f"Eval likelihood: {eval_likelihood:.4f}, "
@@ -280,6 +358,124 @@ class BaselineRLTrainer(ModelTrainer):
         )
 
         return output
+
+    def _plot_choice_reward_and_fitted_prob(
+        self,
+        choice_sessions: List[np.ndarray],
+        reward_sessions: List[np.ndarray],
+        choice_prob_sessions: List[np.ndarray],
+        gt_params_per_session: list[dict[str, Any]] | None,
+        param_names_for_gt: list[str] | None,
+        label: str,
+        save_path: Path,
+    ) -> Figure:
+        """Plot concatenated choice/reward with fitted choice probability overlay.
+
+        This uses the existing plotting function from aind_dynamic_foraging_basic_analysis
+        (the same one used by aind-dynamic-foraging-models), and adds session boundaries.
+        """
+
+        if len(choice_sessions) == 0:
+            raise ValueError(f"No sessions provided for {label} plot")
+
+        if len(choice_sessions) != len(reward_sessions) or len(choice_sessions) != len(
+            choice_prob_sessions
+        ):
+            raise ValueError(
+                f"{label} sessions length mismatch: choices={len(choice_sessions)}, "
+                f"rewards={len(reward_sessions)}, choice_prob={len(choice_prob_sessions)}"
+            )
+
+        # Concatenate for plotting
+        choice_concat = np.concatenate(choice_sessions)
+        reward_concat = np.concatenate(reward_sessions)
+        choice_prob_concat = np.concatenate(choice_prob_sessions, axis=1)
+
+        # Convert (n_actions, n_trials) to p(R) time series
+        denom = choice_prob_concat.sum(axis=0)
+        denom = np.where(denom == 0, 1.0, denom)
+        p_right = choice_prob_concat[1] / denom
+
+        # Dummy p_reward (not used for fitting; keep plot function happy)
+        p_reward_dummy = np.full((2, len(choice_concat)), np.nan)
+
+        fig, axes = plot_foraging_session(
+            choice_history=choice_concat,
+            reward_history=reward_concat,
+            p_reward=p_reward_dummy,
+            fitted_data=p_right,
+            plot_list=["choice", "finished"],
+        )
+
+        # Add vertical lines for session boundaries
+        boundaries = np.cumsum([0] + [len(s) for s in choice_sessions[:-1]])
+        if boundaries.size > 1:
+            for b in boundaries[1:]:
+                axes[0].axvline(x=b, color="0.7", linestyle="--", linewidth=1.0)
+
+        # Add ground-truth parameter annotations at each session start if provided.
+        if gt_params_per_session is not None:
+            if len(gt_params_per_session) != len(choice_sessions):
+                logger.warning(
+                    f"Skipping GT param annotations for {label}: "
+                    f"expected {len(choice_sessions)} sessions, got {len(gt_params_per_session)}"
+                )
+            else:
+                # Match aind-dynamic-foraging-models parameter rendering:
+                # use ParamsSymbols (latex) when available and sort by ParamsSymbols order.
+                names_in = (
+                    list(param_names_for_gt)
+                    if param_names_for_gt is not None
+                    else list(gt_params_per_session[0].keys())
+                )
+                default_order = list(ParamsSymbols.__members__.keys())
+
+                def _sort_key(n: str) -> tuple[int, int | str]:
+                    return (0, default_order.index(n)) if n in default_order else (1, n)
+
+                names = sorted(names_in, key=_sort_key)
+
+                def _render_name(n: str) -> str:
+                    # Match aind-dynamic-foraging-models get_params_str(): latex symbol if known.
+                    try:
+                        return ParamsSymbols[n].value
+                    except KeyError:
+                        return n
+
+                trans = blended_transform_factory(axes[0].transData, axes[0].transAxes)
+                # Place a small, horizontal label at each session boundary.
+                for sess_idx, x0 in enumerate(boundaries.tolist()):
+                    params = gt_params_per_session[sess_idx] or {}
+                    parts: list[str] = []
+                    for k in names:
+                        if k in params:
+                            try:
+                                v = float(params[k])
+                            except Exception:
+                                continue
+                            # Match get_params_str() formatting (decimal places and spacing).
+                            parts.append(f"{_render_name(k)} = {v:.3f}")
+                    text = ", ".join(parts)
+                    if text:
+                        # x offset for first session so it doesn't collide with the y-axis.
+                        x_plot = x0 + (0.5 if sess_idx == 0 else 0.0)
+                        axes[0].text(
+                            x_plot,
+                            1.02,
+                            f"s{sess_idx}: {text}",
+                            transform=trans,
+                            rotation=0,
+                            ha="left",
+                            va="bottom",
+                            fontsize=6,
+                            color="0.25",
+                            clip_on=False,
+                        )
+
+        fig.suptitle(f"{label}: choice/reward with fitted p(R)", fontsize=10)
+        fig.savefig(save_path, dpi=150, bbox_inches="tight", facecolor="white")
+        logger.info(f"Saved {label} overview plot to {save_path}")
+        return fig
 
     def _extract_session_data(
         self, bundle: DatasetBundle
