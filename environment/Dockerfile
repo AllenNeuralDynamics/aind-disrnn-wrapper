@@ -24,6 +24,7 @@ RUN pip install -U --no-cache-dir \
     aind-dynamic-foraging-data-utils==0.1.41 \
     aind-dynamic-foraging-multisession-analysis==0.0.18 \
     aind-dynamic-foraging-models==0.13.0 \
+    aind-behavior-gym==0.4.5 \
     wandb~=0.23.0 \
     hydra-core~=1.3.0 \
     omegaconf~=2.3.0
