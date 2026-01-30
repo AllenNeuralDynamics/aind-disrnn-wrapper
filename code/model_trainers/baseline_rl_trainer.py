@@ -10,7 +10,6 @@ import matplotlib
 matplotlib.use("Agg")  # Use non-interactive backend
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
-from matplotlib.transforms import blended_transform_factory
 import numpy as np
 import wandb
 from omegaconf import DictConfig, OmegaConf
@@ -386,34 +385,23 @@ class BaselineRLTrainer(ModelTrainer):
                 f"rewards={len(reward_sessions)}, choice_prob={len(choice_prob_sessions)}"
             )
 
-        # Concatenate for plotting
-        choice_concat = np.concatenate(choice_sessions)
-        reward_concat = np.concatenate(reward_sessions)
-        choice_prob_concat = np.concatenate(choice_prob_sessions, axis=1)
-
-        # Convert (n_actions, n_trials) to p(R) time series
-        denom = choice_prob_concat.sum(axis=0)
-        denom = np.where(denom == 0, 1.0, denom)
-        p_right = choice_prob_concat[1] / denom
-
-        # Dummy p_reward (not used for fitting; keep plot function happy)
-        p_reward_dummy = np.full((2, len(choice_concat)), np.nan)
-
-        fig, axes = plot_foraging_session(
-            choice_history=choice_concat,
-            reward_history=reward_concat,
-            p_reward=p_reward_dummy,
-            fitted_data=p_right,
-            plot_list=["choice", "finished"],
+        n_sessions = len(choice_sessions)
+        n_cols = min(3, n_sessions)
+        n_rows = (n_sessions + n_cols - 1) // n_cols
+        fig, axes = plt.subplots(
+            n_rows,
+            n_cols,
+            figsize=(5.5 * n_cols, 3.2 * n_rows),
+            squeeze=False,
         )
-
-        # Add vertical lines for session boundaries
-        boundaries = np.cumsum([0] + [len(s) for s in choice_sessions[:-1]])
-        if boundaries.size > 1:
-            for b in boundaries[1:]:
-                axes[0].axvline(x=b, color="0.7", linestyle="--", linewidth=1.0)
+        axes_flat = axes.flatten()
 
         # Add ground-truth parameter annotations at each session start if provided.
+        def _empty_param_text(_: int) -> str:
+            return ""
+
+        _build_param_text = _empty_param_text
+
         if gt_params_per_session is not None:
             if len(gt_params_per_session) != len(choice_sessions):
                 logger.warning(
@@ -442,9 +430,7 @@ class BaselineRLTrainer(ModelTrainer):
                     except KeyError:
                         return n
 
-                trans = blended_transform_factory(axes[0].transData, axes[0].transAxes)
-                # Place a small, horizontal label at each session boundary.
-                for sess_idx, x0 in enumerate(boundaries.tolist()):
+                def build_param_text(sess_idx: int) -> str:
                     params = gt_params_per_session[sess_idx] or {}
                     parts: list[str] = []
                     for k in names:
@@ -453,24 +439,59 @@ class BaselineRLTrainer(ModelTrainer):
                                 v = float(params[k])
                             except Exception:
                                 continue
-                            # Match get_params_str() formatting (decimal places and spacing).
                             parts.append(f"{_render_name(k)} = {v:.3f}")
-                    text = ", ".join(parts)
-                    if text:
-                        # x offset for first session so it doesn't collide with the y-axis.
-                        x_plot = x0 + (0.5 if sess_idx == 0 else 0.0)
-                        axes[0].text(
-                            x_plot,
-                            1.02,
-                            f"s{sess_idx}: {text}",
-                            transform=trans,
-                            rotation=0,
-                            ha="left",
-                            va="bottom",
-                            fontsize=6,
-                            color="0.25",
-                            clip_on=False,
-                        )
+                    return ", ".join(parts)
+
+                _build_param_text = build_param_text
+
+        for sess_idx, ax in enumerate(axes_flat):
+            if sess_idx >= n_sessions:
+                ax.set_visible(False)
+                continue
+
+            choice = choice_sessions[sess_idx]
+            reward = reward_sessions[sess_idx]
+            choice_prob = choice_prob_sessions[sess_idx]
+            denom = choice_prob.sum(axis=0)
+            denom = np.where(denom == 0, 1.0, denom)
+            p_right = choice_prob[1] / denom
+
+            p_reward_dummy = np.full((2, len(choice)), np.nan)
+            _, session_axes = plot_foraging_session(
+                choice_history=choice,
+                reward_history=reward,
+                p_reward=p_reward_dummy,
+                fitted_data=p_right,
+                plot_list=["choice", "finished"],
+                ax=ax,
+            )
+
+            ax_choice = session_axes[0]
+            ax_reward = session_axes[1]
+            choice_legend = ax_choice.get_legend()
+            if choice_legend is not None:
+                choice_legend.remove()
+            reward_legend = ax_reward.get_legend()
+            if reward_legend is not None:
+                reward_legend.remove()
+            ax_reward.set_visible(False)
+            ax_reward.axis("off")
+
+            if gt_params_per_session is not None:
+                text = _build_param_text(sess_idx)
+                if text:
+                    ax_choice.text(
+                        0.02,
+                        1.12,
+                        f"s{sess_idx}: {text}",
+                        transform=ax_choice.transAxes,
+                        rotation=0,
+                        ha="left",
+                        va="bottom",
+                        fontsize=7,
+                        color="0.25",
+                        clip_on=False,
+                    )
 
         fig.suptitle(f"{label}: choice/reward with fitted p(R)", fontsize=10)
         fig.savefig(save_path, dpi=150, bbox_inches="tight", facecolor="white")
