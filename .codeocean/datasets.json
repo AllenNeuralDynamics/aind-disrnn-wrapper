@@ -2,8 +2,16 @@
 	"version": 1,
 	"attached_datasets": [
 		{
+			"id": "4ba57838-f4b7-4215-a9d9-11bccaaf2e1c",
+			"mount": "foraging_nwb_bpod"
+		},
+		{
 			"id": "75e09b6f-2c83-46f5-b0b0-3db52b4b2291",
 			"mount": "DF-TaskTrainedRNNData"
+		},
+		{
+			"id": "f908dd4d-d7ed-4d52-97cf-ccd0e167c659",
+			"mount": "foraging_nwb_bonsai"
 		}
 	]
 }
