@@ -1,0 +1,91 @@
+# Baseline RL model training configuration
+# This config uses the same Q-learning model for both simulation and fitting
+# to enable fair comparison of parameter recovery and likelihood metrics
+# 
+# Setup:
+#  - Data simulation uses Hattori2019-style Q-learning (2 learning rates, 1 forget rate)
+#  - Fitting uses identical model structure to recover parameters
+#  - Allows comparison of: fitted vs true parameters, likelihood vs groundtruth
+
+data:
+  type: synthetic
+  _target_: ${.agent.loader_target}
+  num_trials: 500
+  num_sessions: 30
+  run_name_component: synthetic_${.agent.type}_${.task.type}
+  task:
+    type: random_walk
+    reward_baiting: false
+    p_min: 0.0
+    p_max: 1.0
+    sigma: 0.15
+    mean: 0
+    num_trials: ${..num_trials}
+    seed: ${seed}
+  agent:
+    type: ${.agent_class}
+    loader_target: data_loaders.synthetic.SyntheticCognitiveAgents
+    agent_class: ForagerQLearning
+    # Use Hattori2019-style Q-learning model (2 learning rates, 1 forget rate)
+    # These agent_kwargs match the model section below for fair comparison
+    agent_kwargs:
+      number_of_learning_rate: 2
+      number_of_forget_rate: 1
+      choice_kernel: none
+      action_selection: softmax
+    # True parameters used for simulation (can compare against fitted params)
+    agent_params:
+      learn_rate_rew: 0.5
+      learn_rate_unrew: 0.1
+      forget_rate_unchosen: 0.05
+      softmax_inverse_temperature: 5.0
+      biasL: 0.0
+    # Add session-to-session variability to biasL for more realistic data
+    agent_params_session_var:
+      biasL:
+        type: gaussian
+        mean: 0
+        std: 1
+    seed: ${seed}
+  eval_every_n: 2
+  seed: ${seed}
+
+model:
+  type: baseline_rl
+  _target_: model_trainers.baseline_rl_trainer.BaselineRLTrainer
+  # Agent class from aind_dynamic_foraging_models.generative_model
+  # Options: ForagerQLearning, ForagerLossCounting, ForagerCompareThreshold
+  agent_class: ForagerQLearning
+  # Agent hyperparameters that define the model structure
+  # For ForagerQLearning:
+  #   - number_of_learning_rate: 1 or 2 (1=single rate, 2=separate for rewarded/unrewarded)
+  #   - number_of_forget_rate: 0 or 1 (0=no forgetting, 1=forget unchosen)
+  #   - choice_kernel: "none", "one_step", or "full"
+  #   - action_selection: "softmax" or "epsilon-greedy"
+  agent_kwargs:
+    number_of_learning_rate: 2
+    number_of_forget_rate: 1
+    choice_kernel: none
+    action_selection: softmax
+  # Override default parameter bounds for fitting (optional)
+  # Example: fit_bounds_override: {learn_rate_rew: [0.0, 0.5]}
+  fit_bounds_override: {}
+  # Fix certain parameters to specific values during fitting (optional)
+  # Example: clamp_params: {biasL: 0.0}
+  clamp_params: {}
+  # Differential evolution optimizer settings
+  DE_kwargs:
+    workers: 1  # Number of parallel workers (increase for faster fitting)
+    # Other DE options: popsize, mutation, recombination, polish, etc.
+  seed: ${seed}
+  run_name_component: baseline_rl_${.agent_class}_L${.agent_kwargs.number_of_learning_rate}F${.agent_kwargs.number_of_forget_rate}
+
+seed: 43
+
+wandb:
+  entity: AIND-disRNN
+  dir: /results
+  project: test
+  name: ${data.run_name_component}_${model.run_name_component}
+
+job_id: 0

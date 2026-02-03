@@ -156,7 +156,7 @@ dmypy.json
 .codeocean/
 .claude/
 
-environment/
+environment/postInstall
 
 # Other editable repos
 src
