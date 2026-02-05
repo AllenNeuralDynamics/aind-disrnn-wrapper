@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import copy
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 import pandas as pd
@@ -25,8 +25,16 @@ logger = logging.getLogger(__name__)
 class SyntheticDatasetLoader(DatasetLoader):
     """Placeholder loader for synthetic experiments."""
 
-    def __init__(self, seed: int | None = None, **settings: object) -> None:
+    def __init__(
+        self,
+        seed: int | None = None,
+        batch_size: int | None = None,
+        batch_mode: Literal["single", "rolling", "random"] = "random",
+        **settings: object,
+    ) -> None:
         super().__init__(seed=seed)
+        self.batch_size = batch_size
+        self.batch_mode = batch_mode
         self.settings = settings
 
     def load(self) -> DatasetBundle:
@@ -46,6 +54,8 @@ class SyntheticCognitiveAgents(DatasetLoader):
         num_trials: int,
         num_sessions: int,
         eval_every_n: int = 2,
+        batch_size: int | None = None,
+        batch_mode: Literal["single", "rolling", "random"] = "random",
         **metadata: object,
     ) -> None:
         # Random seeds are fully configured via the task/agent dictionaries.
@@ -55,6 +65,8 @@ class SyntheticCognitiveAgents(DatasetLoader):
         self.num_trials = int(num_trials)
         self.num_sessions = int(num_sessions)
         self.eval_every_n = int(eval_every_n)
+        self.batch_size = batch_size
+        self.batch_mode = batch_mode
         self.metadata_extras = dict(metadata)
 
     def load(self) -> DatasetBundle:
@@ -139,7 +151,12 @@ class SyntheticCognitiveAgents(DatasetLoader):
         raw_df = pd.concat(session_frames, ignore_index=True).sort_values(["ses_idx", "trial"])  # type: ignore[arg-type]
         raw_df.reset_index(drop=True, inplace=True)
 
-        dataset = dl.create_disrnn_dataset(raw_df, ignore_policy="exclude")
+        dataset = dl.create_disrnn_dataset(
+            raw_df,
+            ignore_policy="exclude",
+            batch_size=self.batch_size,
+            batch_mode=self.batch_mode,
+        )
 
         xs, _ = dataset.get_all()
         n_sessions = xs.shape[1]
@@ -174,6 +191,8 @@ class SyntheticCognitiveAgents(DatasetLoader):
             "eval_every_n": self.eval_every_n,
             "eval_session_indices": eval_session_indices.tolist(),
             "avg_eval_likelihood_groundtruth": avg_eval_groundtruth,
+            "batch_size": self.batch_size,
+            "batch_mode": self.batch_mode,
             "task": self.task_config,
             "agent": self.agent_config,
             "seeds": {
