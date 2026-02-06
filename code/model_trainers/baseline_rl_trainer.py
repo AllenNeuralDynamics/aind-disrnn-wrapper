@@ -522,7 +522,8 @@ class BaselineRLTrainer(ModelTrainer):
         self, dataset: Any, label: str
     ) -> tuple[List[np.ndarray], List[np.ndarray]]:
         """Extract per-session choices and rewards from a DatasetRNN split."""
-        xs, ys = dataset.get_all()
+        all_data = dataset.get_all()
+        xs, ys = all_data['xs'], all_data['ys']
         x_names = list(dataset.x_names)
         if ys.ndim != 3 or ys.shape[2] != 1:
             raise ValueError(f"{label} ys has unexpected shape: {ys.shape}")

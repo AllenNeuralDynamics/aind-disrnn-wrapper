@@ -158,8 +158,8 @@ class SyntheticCognitiveAgents(DatasetLoader):
             batch_mode=self.batch_mode,
         )
 
-        xs, _ = dataset.get_all()
-        n_sessions = xs.shape[1]
+        all_data = dataset.get_all()
+        n_sessions = all_data['xs'].shape[1]
         if self.eval_every_n <= 0:
             raise ValueError("eval_every_n must be a positive integer.")
         eval_indices = np.arange(self.eval_every_n - 1, n_sessions, self.eval_every_n)

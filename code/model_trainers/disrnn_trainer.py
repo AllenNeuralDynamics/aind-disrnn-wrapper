@@ -214,9 +214,9 @@ class DisrnnTrainer(ModelTrainer):
                 wandb_run.log({f"fig/update_rule_{index}": wandb.Image(str(path))})
 
         # Get model predictions on full dataset, including the training set
-        xs_full, ys_full = dataset.get_all()
+        all_data_full = dataset.get_all()
         yhat_full, network_states_full = rnn_utils.eval_network(
-            lambda: disrnn.HkDisentangledRNN(noiseless_network), params, xs_full
+            lambda: disrnn.HkDisentangledRNN(noiseless_network), params, all_data_full['xs']
         )
 
         df = bundle.raw
@@ -231,11 +231,11 @@ class DisrnnTrainer(ModelTrainer):
             f.write(json.dumps(params, cls=rnn_utils.NpJnpJsonEncoder))
 
         # Get likelihood evaluated on just the evaluation dataset
-        xs_eval, ys_eval = dataset_eval.get_all()
+        all_data_eval = dataset_eval.get_all()
         yhat_eval, network_states_eval = rnn_utils.eval_network(
-            lambda: disrnn.HkDisentangledRNN(noiseless_network), params, xs_eval
+            lambda: disrnn.HkDisentangledRNN(noiseless_network), params, all_data_eval['xs']
         )
-        likelihood = rnn_utils.normalized_likelihood(ys_eval, yhat_eval[:, :, 0:2])
+        likelihood = rnn_utils.normalized_likelihood(all_data_eval['ys'], yhat_eval[:, :, 0:2])
         output["likelihood"] = float(likelihood)
         
         # -- Compare to groundtruth likelihood if available --
