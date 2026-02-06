@@ -155,6 +155,7 @@ dmypy.json
 
 .codeocean/
 .claude/
+AGENTS.md
 
 environment/postInstall
 
