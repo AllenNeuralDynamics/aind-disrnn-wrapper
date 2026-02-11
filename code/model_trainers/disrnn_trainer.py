@@ -244,10 +244,12 @@ class DisrnnTrainer(ModelTrainer):
 
         return output
 
-    def _plot_losses(self, losses: Mapping[str, Any], title: str, output_name: str) -> Path:
+    def _plot_losses(self, losses: Mapping[str, Any], title: str, output_name: str, log_loss_every: int = 10) -> Path:
         fig = plt.figure()
-        plt.semilogy(losses["training_loss"], color="black")
-        plt.semilogy(losses["validation_loss"], color="tab:red", linestyle="dashed")
+        timepoints = np.array(np.arange(0, len(losses['training_losses'])*log_loss_every, log_loss_every))
+        timepoints[0] = 1
+        plt.semilogy(timepoints, losses["training_loss"], color="black")
+        plt.semilogy(timepoints, losses["validation_loss"], color="tab:red", linestyle="dashed")
         plt.xlabel("Training Step")
         plt.ylabel("Mean Loss")
         plt.legend(("Training Set", "Validation Set"))
