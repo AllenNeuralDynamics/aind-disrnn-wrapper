@@ -204,6 +204,10 @@ class DisrnnTrainer(ModelTrainer):
 
         choice_fig = plotting.plot_choice_rule(params, disrnn_config)
         if choice_fig is not None:
+            axes = choice_fig.get_axes()
+            for ax in axes:
+                ax.axhline(0, alpha=.5)
+                ax.axvline(0, alpha=.5)
             choice_fig.tight_layout()
             choice_path = self._save_figure(choice_fig, "choice_rule.png")
             if wandb_run is not None:
