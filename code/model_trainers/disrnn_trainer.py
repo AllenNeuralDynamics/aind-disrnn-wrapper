@@ -275,7 +275,7 @@ class DisrnnTrainer(ModelTrainer):
         self, losses: Mapping[str, Any], title: str, output_name: str, log_loss_every: int = 10
     ) -> Path:
         fig = plt.figure()
-        timepoints = np.array(np.arange(0, len(losses['training_losses'])*log_loss_every, log_loss_every))
+        timepoints = np.array(np.arange(0, len(losses['training_loss'])*log_loss_every, log_loss_every))
         timepoints[0] = 1
         plt.semilogy(timepoints, losses["training_loss"], color="black")
         plt.semilogy(timepoints, losses["validation_loss"], color="tab:red", linestyle="dashed")
