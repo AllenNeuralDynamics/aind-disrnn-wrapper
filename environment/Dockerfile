@@ -34,6 +34,4 @@ RUN pip install -U --no-cache-dir \
     black==25.9.0 \
     isort==7.0.0
 
-COPY postInstall /
-RUN --mount=type=secret,id=secrets . /run/secrets/secrets \
-    && /postInstall
+RUN --mount=type=secret,id=secrets . /run/secrets/secrets 
