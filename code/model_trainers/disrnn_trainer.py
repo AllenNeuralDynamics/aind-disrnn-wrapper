@@ -6,6 +6,7 @@ import logging
 import time
 from pathlib import Path
 from typing import Any, Dict, Mapping
+from dataclasses import asdict
 
 import jax
 import matplotlib.pyplot as plt
@@ -254,6 +255,11 @@ class DisrnnTrainer(ModelTrainer):
         # save output to json
         with open(self.output_dir / "output_summary.json", "w") as f:
             json.dump(output, f, indent=4)
+
+        # Save config as diciontary
+        disrnn_config_dict = asdict(disrnn_config)
+        with open(self.output_dir / "disrnn_config.json", "w") as f:
+            json.dump(disrnn_config_dict, f, indent=4)
 
         if wandb_run is not None:
             wandb_run.summary["final/val_loss"] = float(losses["validation_loss"][-1])
