@@ -6,6 +6,7 @@ import logging
 import time
 from pathlib import Path
 from typing import Any, Dict, Mapping
+from dataclasses import asdict
 
 import jax
 import matplotlib.pyplot as plt
@@ -197,18 +198,25 @@ class DisrnnTrainer(ModelTrainer):
             wandb_run.log({"fig/validation_loss_curve": wandb.Image(str(losses_path))})
 
         bottlenecks_fig = plotting.plot_bottlenecks(params, disrnn_config, sort_latents=False)
+        bottlenecks_fig.tight_layout()
         bottlenecks_path = self._save_figure(bottlenecks_fig, "bottlenecks.png")
         if wandb_run is not None:
             wandb_run.log({"fig/bottlenecks": wandb.Image(str(bottlenecks_path))})
 
         choice_fig = plotting.plot_choice_rule(params, disrnn_config)
         if choice_fig is not None:
+            axes = choice_fig.get_axes()
+            for ax in axes:
+                ax.axhline(0, alpha=.5)
+                ax.axvline(0, alpha=.5)
+            choice_fig.tight_layout()
             choice_path = self._save_figure(choice_fig, "choice_rule.png")
             if wandb_run is not None:
                 wandb_run.log({"fig/choice_rule": wandb.Image(str(choice_path))})
 
         update_figs = plotting.plot_update_rules(params, disrnn_config)
         for index, fig in enumerate(update_figs):
+            fig.tight_layout()
             path = self._save_figure(fig, f"update_rule_{index}.png")
             if wandb_run is not None:
                 wandb_run.log({f"fig/update_rule_{index}": wandb.Image(str(path))})
@@ -248,6 +256,11 @@ class DisrnnTrainer(ModelTrainer):
         with open(self.output_dir / "output_summary.json", "w") as f:
             json.dump(output, f, indent=4)
 
+        # Save config as diciontary
+        disrnn_config_dict = asdict(disrnn_config)
+        with open(self.output_dir / "disrnn_config.json", "w") as f:
+            json.dump(disrnn_config_dict, f, indent=4)
+
         if wandb_run is not None:
             wandb_run.summary["final/val_loss"] = float(losses["validation_loss"][-1])
             wandb_run.summary["final/train_loss"] = float(losses["training_loss"][-1])
@@ -272,11 +285,13 @@ class DisrnnTrainer(ModelTrainer):
         return output
 
     def _plot_losses(
-        self, losses: Mapping[str, Any], title: str, output_name: str
+        self, losses: Mapping[str, Any], title: str, output_name: str, log_loss_every: int = 10
     ) -> Path:
         fig = plt.figure()
-        plt.semilogy(losses["training_loss"], color="black")
-        plt.semilogy(losses["validation_loss"], color="tab:red", linestyle="dashed")
+        timepoints = np.array(np.arange(0, len(losses['training_loss'])*log_loss_every, log_loss_every))
+        timepoints[0] = 1
+        plt.semilogy(timepoints, losses["training_loss"], color="black")
+        plt.semilogy(timepoints, losses["validation_loss"], color="tab:red", linestyle="dashed")
         plt.xlabel("Training Step")
         plt.ylabel("Mean Loss")
         plt.legend(("Training Set", "Validation Set"))
