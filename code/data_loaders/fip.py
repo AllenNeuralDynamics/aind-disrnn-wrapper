@@ -132,7 +132,7 @@ class FipDatasetLoader(DatasetLoader):
         old_mice = []
         if subject in new_mice:
             results = []
-            for subject in self.subject_ids:
+            for subject in new_mice: # TODO hack because data is missing on docdb
                 logger.info("Querying docDB for {}".format(subject))
                 subject_results = co.get_subject_assets(
                     subject, modality=["behavior","fib"], stage=["STAGE_FINAL", "GRADUATED"]
