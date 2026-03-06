@@ -63,6 +63,7 @@ def make_fip_multisession_trials_df(nwb_list, allow_duplicates=True):
                 data_column = 'data_z',
                 output_col='NE_FIP'
             )
+            nwb.df_trials['NE_FIP'] = nwb.df_trials['NE_FIP'].fillna(0)
             nwbs.append(nwb)
         except Exception as e:
             crash_list.append(n)
