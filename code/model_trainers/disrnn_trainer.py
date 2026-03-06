@@ -203,7 +203,11 @@ class DisrnnTrainer(ModelTrainer):
         if wandb_run is not None:
             wandb_run.log({"fig/bottlenecks": wandb.Image(str(bottlenecks_path))})
 
-        choice_fig = plotting.plot_choice_rule(params, disrnn_config)
+        try:
+            choice_fig = plotting.plot_choice_rule(params, disrnn_config)
+        except Exception as e:
+            choice_fig = None
+            print(e)
         if choice_fig is not None:
             axes = choice_fig.get_axes()
             for ax in axes:
@@ -214,7 +218,11 @@ class DisrnnTrainer(ModelTrainer):
             if wandb_run is not None:
                 wandb_run.log({"fig/choice_rule": wandb.Image(str(choice_path))})
 
-        update_figs = plotting.plot_update_rules(params, disrnn_config)
+        try:
+            update_figs = plotting.plot_update_rules(params, disrnn_config)
+        except Exception as e:
+            update_figs = []
+            print(e)
         for index, fig in enumerate(update_figs):
             fig.tight_layout()
             path = self._save_figure(fig, f"update_rule_{index}.png")
