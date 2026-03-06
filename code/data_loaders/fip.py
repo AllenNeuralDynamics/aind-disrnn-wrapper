@@ -52,7 +52,7 @@ def make_fip_multisession_trials_df(nwb_list, allow_duplicates=True):
             nwb.df_events = nu.create_df_events(nwb, verbose=False)
             nwb.df_licks = a.annotate_licks(nwb)
             nwb.df_trials = tm.compute_trial_metrics(nwb)
-            nwb.df_trials = add_side_bias(nwb)
+            nwb.df_trials = ms_load.add_side_bias(nwb)
             nwb.df_fip = nu.create_df_fip(nwb,verbose=False)
             nwb.df_fip = ed.zscore_fip(nwb.df_fip)
             nwb.df_trials = tm.get_average_signal_window(
