@@ -2,7 +2,8 @@
 set -e
 
 # install updated version of code-server
-VERSION=4.105.1
+# VERSION=4.105.1
+VERSION=4.109.5
 mkdir /.code-server
 cd /.code-server
 curl -fL "https://github.com/coder/code-server/releases/download/v$VERSION/code-server-$VERSION-linux-amd64.tar.gz" \
