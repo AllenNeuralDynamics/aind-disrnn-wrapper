@@ -2,12 +2,12 @@
 ARG REGISTRY_HOST
 
 # --- Base image and Jax for CPU (preferred) ---
-# FROM $REGISTRY_HOST/codeocean/mambaforge3:24.5.0-0-python3.12.4-ubuntu22.04
-# ARG JAX_PKG="jax==0.6.1"
+FROM $REGISTRY_HOST/codeocean/mambaforge3:24.5.0-0-python3.12.4-ubuntu22.04
+ARG JAX_PKG="jax==0.6.1"
 
 # --- Base image and Jax for GPU ---
-FROM $REGISTRY_HOST/codeocean/pytorch:2.4.0-cuda12.4.0-mambaforge24.5.0-0-python3.12.4-ubuntu22.04
-ARG JAX_PKG="jax[cuda12]==0.6.1"
+# FROM $REGISTRY_HOST/codeocean/pytorch:2.4.0-cuda12.4.0-mambaforge24.5.0-0-python3.12.4-ubuntu22.04
+# ARG JAX_PKG="jax[cuda12]==0.6.1"
 
 
 ARG DEBIAN_FRONTEND=noninteractive
