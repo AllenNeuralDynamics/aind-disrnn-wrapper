@@ -34,11 +34,12 @@ def main() -> None:
     # Backup inputs
     copy_input_folder(config_path)
     save_resolved_config(hydra_config, Path("/results/inputs.yaml"))
-    
+
     # --- Prepare wandb ---
     wandb_run = start_wandb_run(hydra_config)
-    loggers = {"wandb": wandb_run} if wandb_run is not None else None
-
+    resolved = OmegaConf.to_container(hydra_config, resolve=True)
+    logger.info("Hydra config (resolved):\n%s", OmegaConf.to_yaml(resolved))
+    
     # --- Load data ---
     dataset_loader: DatasetLoader = instantiate(hydra_config.data)
     dataset_bundle = dataset_loader.load()
@@ -46,6 +47,7 @@ def main() -> None:
 
     # --- Train model ---
     model_trainer: ModelTrainer = instantiate(hydra_config.model)
+    loggers = {"wandb": wandb_run} if wandb_run is not None else None
     output = model_trainer.fit(dataset_bundle, loggers=loggers)
     if wandb_run is not None:
         wandb_run.finish()

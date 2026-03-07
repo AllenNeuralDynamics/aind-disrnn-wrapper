@@ -155,3 +155,7 @@ dmypy.json
 
 # Other editable repos
 src
+code/TaskTrainedRNNData-logs_BlockBandit2ArmCoupledEasy-v1-noisy_rl2_10__16:07_13:48:09.pkl
+code/TaskTrainedRNNData-logs_combined_block_rw.pkl
+code/TaskTrainedRNNData-logs_RandomWalkDF-v0-noisy_rl2_10__28:09_01:45:33.pkl
+code/dataset_bundle_test-mature_only-ignore_include.pkl

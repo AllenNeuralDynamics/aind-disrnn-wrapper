@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Iterable, Mapping
+from typing import Iterable, Literal, Mapping
 
 import numpy as np
 import pandas as pd
@@ -28,6 +28,8 @@ class MiceDatasetLoader(DatasetLoader):
         features: Mapping[str, str],
         eval_every_n: int,
         multisubject: bool = False,
+        batch_size: int | None = None,
+        batch_mode: Literal["single", "rolling", "random"] = "random",
         seed: int | None = None,
         **extras: object,
     ) -> None:
@@ -37,12 +39,19 @@ class MiceDatasetLoader(DatasetLoader):
         self.features = dict(features)
         self.eval_every_n = eval_every_n
         self.multisubject = multisubject
+        self.batch_size = batch_size
+        self.batch_mode = batch_mode
         self.extras = extras
 
     def load(self) -> DatasetBundle:
+        
+        # Fix numpy random seed (will affect batch_mode="random")
+        if self.seed is not None:
+            np.random.seed(self.seed)
+        
         if self.multisubject:
             raise NotImplementedError("Multisubject loading is not yet supported.")
-        
+
         results = []
         for subject in self.subject_ids:
             logger.info("Querying docDB for {}".format(subject))
@@ -66,7 +75,11 @@ class MiceDatasetLoader(DatasetLoader):
         nwbs, df = ms_load.make_multisession_trials_df(results["s3_nwb_location"])
 
         dataset = dl.create_disrnn_dataset(
-            df, ignore_policy=self.ignore_policy, features=self.features
+            df,
+            ignore_policy=self.ignore_policy,
+            features=self.features,
+            batch_size=self.batch_size,
+            batch_mode=self.batch_mode,
         )
         dataset_train, dataset_eval = rnn_utils.split_dataset(
             dataset, eval_every_n=self.eval_every_n
@@ -79,6 +92,8 @@ class MiceDatasetLoader(DatasetLoader):
             "num_trials": len(df),
             "num_sessions": int(df["ses_idx"].nunique()) if "ses_idx" in df else None,
             "multisubject": self.multisubject,
+            "batch_size": self.batch_size,
+            "batch_mode": self.batch_mode,
         }
         metadata.update(self.extras)
 
