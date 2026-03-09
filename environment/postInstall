@@ -47,7 +47,7 @@ if code-server --disable-telemetry --version; then
         code-server --extensions-dir=/.vscode/extensions --install-extension $file
     }
 
-    download_and_install_extension github copilot 1.110.0
+    # download_and_install_extension github copilot 1.110.0
     download_and_install_extension github copilot-chat 0.37.9
 
 else

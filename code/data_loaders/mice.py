@@ -105,3 +105,117 @@ class MiceDatasetLoader(DatasetLoader):
             metadata=metadata,
             extras=extras,
         )
+
+
+class MiceDatasetLoaderFromFile(DatasetLoader):
+    """Load the foraging dataset from a pre-saved dataframe file (pkl or parquet)."""
+
+    def __init__(
+        self,
+        file_path: str | Path,
+        subject_ids: Iterable[int] | None = None,
+        stages: Iterable[str] | None = None,
+        ignore_policy: str = "none",
+        features: Mapping[str, str] | None = None,
+        eval_every_n: int = 10,
+        multisubject: bool = False,
+        batch_size: int | None = None,
+        batch_mode: Literal["single", "rolling", "random"] = "random",
+        seed: int | None = None,
+        **extras: object,
+    ) -> None:
+        super().__init__(seed=seed)
+        self.file_path = Path(file_path)
+        self.subject_ids = list(subject_ids) if subject_ids is not None else None
+        self.stages = list(stages) if stages is not None else None
+        self.ignore_policy = ignore_policy
+        self.features = dict(features) if features is not None else {}
+        self.eval_every_n = eval_every_n
+        self.multisubject = multisubject
+        self.batch_size = batch_size
+        self.batch_mode = batch_mode
+        self.extras = extras
+
+    def load(self) -> DatasetBundle:
+        
+        # Fix numpy random seed (will affect batch_mode="random")
+        if self.seed is not None:
+            np.random.seed(self.seed)
+        
+        if self.multisubject:
+            raise NotImplementedError("Multisubject loading is not yet supported.")
+
+        # Load dataframe from file
+        logger.info(f"Loading dataframe from {self.file_path}")
+        if self.file_path.suffix == ".pkl":
+            df = pd.read_pickle(self.file_path)
+        elif self.file_path.suffix == ".parquet":
+            df = pd.read_parquet(self.file_path)
+        else:
+            raise ValueError(
+                f"Unsupported file format: {self.file_path.suffix}. "
+                "Supported formats are .pkl and .parquet"
+            )
+        
+        logger.info(f"Loaded dataframe with {len(df)} trials")
+        
+        # Filter by subject_ids if provided
+        if self.subject_ids is not None:
+            if "subject_id" in df.columns:
+                df = df[df["subject_id"].isin(self.subject_ids)]
+                logger.info(
+                    f"Filtered to {len(df)} trials for subject_ids: {self.subject_ids}"
+                )
+            else:
+                logger.warning(
+                    "subject_ids filter requested but 'subject_id' column not found in dataframe"
+                )
+        
+        # Filter by stages if provided
+        if self.stages is not None:
+            if "stage" in df.columns:
+                df = df[df["stage"].isin(self.stages)]
+                logger.info(f"Filtered to {len(df)} trials for stages: {self.stages}")
+            else:
+                logger.warning(
+                    "stages filter requested but 'stage' column not found in dataframe"
+                )
+        
+        if len(df) == 0:
+            raise Exception("No data found after filtering")
+
+        # Create dataset
+        dataset = dl.create_disrnn_dataset(
+            df,
+            ignore_policy=self.ignore_policy,
+            features=self.features,
+            batch_size=self.batch_size,
+            batch_mode=self.batch_mode,
+        )
+        dataset_train, dataset_eval = rnn_utils.split_dataset(
+            dataset, eval_every_n=self.eval_every_n
+        )
+        
+        metadata = {
+            "file_path": str(self.file_path),
+            "subject_ids": self.subject_ids,
+            "stages": self.stages,
+            "ignore_policy": self.ignore_policy,
+            "features": self.features,
+            "eval_every_n": self.eval_every_n,
+            "num_trials": len(df),
+            "num_sessions": int(df["ses_idx"].nunique()) if "ses_idx" in df else None,
+            "multisubject": self.multisubject,
+            "batch_size": self.batch_size,
+            "batch_mode": self.batch_mode,
+        }
+        metadata.update(self.extras)
+
+        extras = {"dataset": dataset}
+        return DatasetBundle(
+            raw=df,
+            train_set=dataset_train,
+            eval_set=dataset_eval,
+            metadata=metadata,
+            extras=extras,
+        )

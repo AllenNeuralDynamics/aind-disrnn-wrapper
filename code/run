@@ -3,3 +3,12 @@ set -ex
 
 # This is the master script for the capsule. When you click "Reproducible Run", the code in this file will execute.
 python -u run_capsule.py "$@"
+
+
+# if loading_mice_data
+# python -u load_mice_data.py --all-subjects "$@"
+# python -u load_mice_data.py --subject-ids 778149 778147 753618 "$@"
+# # Load first 3 subjects (default)
+# python load_mice_data.py
+# # Load with stage filtering
+# python load_mice_data.py --num-subjects 10 --stages STAGE_FINAL GRADUATED
