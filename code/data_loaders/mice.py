@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Iterable, Literal, Mapping
+from typing import Iterable, List, Literal, Mapping, Optional
 
 import numpy as np
 import pandas as pd
@@ -218,4 +218,151 @@ class MiceDatasetLoaderFromFile(DatasetLoader):
             eval_set=dataset_eval,
             metadata=metadata,
             extras=extras,
+        )
+
+
+class MiceSnapshotDatasetLoader(DatasetLoader):
+    """Load mice behavioral data from pre-saved snapshot pickle files.
+
+    Subjects are selected in one of two ways:
+
+    * **Direct selection** – pass an explicit list via ``subject_ids``.
+    * **Rank-based slice** – subjects are ranked per curriculum by session
+      count (or mature-session count) and a contiguous slice
+      ``[subject_start, subject_end)`` is taken.  Either bound can be
+      ``None`` (meaning "start from beginning" or "go to end").
+
+    The two mechanisms are mutually exclusive.
+
+    Train/eval splitting is then done by trial index via
+    ``rnn_utils.split_dataset`` (every ``eval_every_n``-th trial → eval).
+
+    Parameters
+    ----------
+    snapshot_paths:
+        Paths to the pickle snapshot files to load.
+    subject_ids:
+        Explicit list of subject IDs to use. When provided,
+        ``subject_start`` and ``subject_end`` are ignored.
+    subject_start:
+        Start index (inclusive, 0-based) of the ranked slice per curriculum.
+    subject_end:
+        End index (exclusive) of the ranked slice per curriculum.
+    ignore_policy:
+        Ignore-policy string passed to :func:`dl.create_disrnn_dataset`.
+    features:
+        Feature mapping passed to :func:`dl.create_disrnn_dataset`.
+    eval_every_n:
+        Every ``eval_every_n``-th trial goes to the eval split.
+    multisubject:
+        Not yet supported; raises ``NotImplementedError`` if ``True``.
+    mature_only:
+        If ``True`` *(default)*, restrict ranking and returned trials to
+        sessions in stage ``STAGE_FINAL`` or ``GRADUATED``.
+        If ``False``, use all sessions.
+    curricula:
+        Curricula to include. Defaults to the three standard foraging
+        curricula (Uncoupled Without Baiting, Uncoupled Baiting, Coupled
+        Baiting).
+    cols_to_retain:
+        Trial-level columns to keep. Falls back to the module default when
+        ``None``.
+    batch_size:
+        Batch size for the disRNN dataset iterator.
+    batch_mode:
+        One of ``"single"``, ``"rolling"``, or ``"random"``.
+    seed:
+        Random seed forwarded to the base class and NumPy.
+    """
+
+    def __init__(
+        self,
+        snapshot_paths: List[str],
+        subject_ids: Optional[List] = None,
+        subject_start: Optional[int] = None,
+        subject_end: Optional[int] = None,
+        ignore_policy: str = "exclude",
+        features: Optional[Mapping[str, str]] = None,
+        eval_every_n: int = 2,
+        multisubject: bool = False,
+        mature_only: bool = True,
+        curricula: Optional[List[str]] = None,
+        cols_to_retain: Optional[List[str]] = None,
+        batch_size: Optional[int] = None,
+        batch_mode: Literal["single", "rolling", "random"] = "random",
+        seed: Optional[int] = None,
+        **extras: object,
+    ) -> None:
+        super().__init__(seed=seed)
+        self.snapshot_paths = [str(p) for p in snapshot_paths]
+        self.subject_ids = list(subject_ids) if subject_ids is not None else None
+        self.subject_start = subject_start
+        self.subject_end = subject_end
+        self.mature_only = mature_only
+        self.curricula = curricula
+        self.cols_to_retain = cols_to_retain
+        self.ignore_policy = ignore_policy
+        self.features = dict(features) if features is not None else {}
+        self.eval_every_n = eval_every_n
+        self.multisubject = multisubject
+        self.batch_size = batch_size
+        self.batch_mode = batch_mode
+        self.extras = extras
+
+    def load(self) -> DatasetBundle:
+        from utils.load_mice_snapshot import load_mice_snapshot  # noqa: PLC0415
+
+        if self.seed is not None:
+            np.random.seed(self.seed)
+
+        if self.multisubject:
+            raise NotImplementedError("Multisubject loading is not yet supported.")
+
+        logger.info("Loading train dataset (mature_only=%s) …", self.mature_only)
+        df, subject_ids = load_mice_snapshot(
+            snapshot_paths=self.snapshot_paths,
+            subject_ids=self.subject_ids,
+            subject_start=self.subject_start,
+            subject_end=self.subject_end,
+            mature_only=self.mature_only,
+            curricula=self.curricula,
+            cols_to_retain=self.cols_to_retain,
+        )
+
+        logger.info("Building disRNN datasets …")
+        dataset = dl.create_disrnn_dataset(
+            df,
+            ignore_policy=self.ignore_policy,
+            features=self.features or None,  # pass None to use library defaults when empty
+            batch_size=self.batch_size,
+            batch_mode=self.batch_mode,
+        )
+        dataset_train, dataset_eval = rnn_utils.split_dataset(
+            dataset, eval_every_n=self.eval_every_n
+        )
+
+        metadata = {
+            "snapshot_paths": self.snapshot_paths,
+            "subject_ids": subject_ids,
+            "subject_start": self.subject_start,
+            "subject_end": self.subject_end,
+            "mature_only": self.mature_only,
+            "curricula": self.curricula,
+            "ignore_policy": self.ignore_policy,
+            "features": self.features,
+            "num_trials": len(df),
+            "num_sessions": (
+                int(df["ses_idx"].nunique()) if "ses_idx" in df.columns else None
+            ),
+            "batch_size": self.batch_size,
+            "batch_mode": self.batch_mode,
+        }
+        metadata.update(self.extras)
+
+        return DatasetBundle(
+            raw=df,
+            train_set=dataset_train,
+            eval_set=dataset_eval,
+            metadata=metadata,
+            extras={"dataset": dataset},
         )

@@ -1,0 +1,59 @@
+# Data config for MiceSnapshotDatasetLoader
+# Controls which subjects and sessions are included in the train/eval splits.
+#
+# Subjects for each split are selected in one of two ways:
+#   1. Rank-based slice: subjects are ranked per curriculum by session count
+#      and a slice [subject_start, subject_end) is taken.
+#   2. Direct selection: pass an explicit list of subject IDs.
+#
+# Usage in config.yaml:
+#   data:
+#     <<: !include data/mice_snapshot.yaml
+
+_target_: data_loaders.mice.MiceSnapshotDatasetLoader
+
+# ── Snapshot files to load ────────────────────────────────────────────────
+snapshot_paths:
+  - /data/mice_behavioral_data_20260309-0_200-185844.pkl
+  - /data/mice_behavioral_data_20260309-200_400-114605.pkl
+  - /data/mice_behavioral_data_20260309-400_600-213302.pkl
+  - /data/mice_behavioral_data_20260310-600_end-120215.pkl
+  - /data/mice_behavioral_data_20260309-misc_778149_778147_753618-215212.pkl
+
+# ── Subject-selection parameters ─────────────────────────────────────────
+# Option 1 – direct list (overrides slice params when non-null):
+subject_ids: null             # e.g. [111, 222, 333]
+# Option 2 – rank-based slice [subject_start, subject_end) per curriculum:
+subject_start: 0              # inclusive, 0-based rank index (null = from beginning)
+subject_end: 6                # exclusive rank index (null = to end of ranked list)
+
+# true  → rank & restrict to STAGE_FINAL / GRADUATED sessions only
+# false → use all sessions for both ranking and data inclusion
+mature_only: true
+
+# ── Curricula to include ─────────────────────────────────────────────────
+# Omit (or set to null) to use the three default foraging curricula.
+curricula:
+  - Uncoupled Without Baiting
+  - Uncoupled Baiting
+  - Coupled Baiting
+
+# ── Columns to keep in the returned DataFrames ───────────────────────────
+# Omit (or set to null) to use the default column set.
+cols_to_retain:
+  - trial
+  - subject_id
+  - ses_idx
+  - animal_response
+  - earned_reward
+
+# ── disRNN dataset parameters ─────────────────────────────────────────────
+# Must be "include" or "exclude".
+ignore_policy: exclude
+# Null → use library defaults (prev choice + prev reward).
+features: null
+eval_every_n: 2
+batch_size: null
+batch_mode: random
+
+seed: ${seed}

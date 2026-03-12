@@ -1,6 +1,7 @@
 """Entry point for disRNN wrapper experiments."""
 
 import logging
+import sys
 import time
 from pathlib import Path
 
@@ -8,6 +9,7 @@ from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf
 
 from base.interfaces import DatasetLoader, ModelTrainer
+from utils.load_mice_snapshot import load_mice_snapshot
 from utils.run_helpers import (
     configure_sys_logger,
     copy_input_folder,
@@ -42,6 +44,19 @@ def main() -> None:
     
     # --- Load data ---
     dataset_loader: DatasetLoader = instantiate(hydra_config.data)
+
+    # When using snapshot-based loading, surface the key selection parameters
+    # so they are clearly visible at the top of the run log.
+    data_cfg = hydra_config.data
+    if hasattr(data_cfg, "mature_only"):
+        logger.info(
+            "Snapshot data loading: mature_only=%s, subject_ids=%s, start=%s, end=%s",
+            data_cfg.mature_only,
+            getattr(data_cfg, "subject_ids", None),
+            getattr(data_cfg, "subject_start", None),
+            getattr(data_cfg, "subject_end", None),
+        )
+
     dataset_bundle = dataset_loader.load()
     logger.info("Loaded dataset bundle with metadata: %s", dataset_bundle.metadata)
 
