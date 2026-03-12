@@ -8,19 +8,16 @@ splits:
 
     # Rank-based slice (subjects ranked 0-2 → train, 3-5 → eval per curriculum)
     df_train, train_ids = load_mice_snapshot(
-        snapshot_paths=["/data/snap_a.pkl"],
         subject_start=0, subject_end=3,
         mature_only=True,
     )
     df_eval, eval_ids = load_mice_snapshot(
-        snapshot_paths=["/data/snap_a.pkl"],
         subject_start=3, subject_end=6,
         mature_only=True,
     )
 
     # Direct subject selection
     df_train, train_ids = load_mice_snapshot(
-        snapshot_paths=["/data/snap_a.pkl"],
         subject_ids=[111, 222, 333],
     )
 """
@@ -34,6 +31,15 @@ from typing import List, Optional, Tuple
 import pandas as pd
 
 logger = logging.getLogger(__name__)
+
+
+SNAPSHOT_PATHS = [
+    '/data/mice_behavioral_data_20260309-0_200-185844.pkl',
+    '/data/mice_behavioral_data_20260309-200_400-114605.pkl',
+    '/data/mice_behavioral_data_20260309-400_600-213302.pkl',
+    '/data/mice_behavioral_data_20260310-600_end-120215.pkl',
+    '/data/mice_behavioral_data_20260309-misc_778149_778147_753618-215212.pkl'
+]
 
 # Stages that qualify a session as "mature"
 MATURE_STAGES: Tuple[str, ...] = ("STAGE_FINAL", "GRADUATED")
@@ -57,10 +63,10 @@ DEFAULT_COLS: List[str] = [
 # Private helpers
 # ---------------------------------------------------------------------------
 
-def _load_snapshot_files(snapshot_paths: List[str | Path]) -> pd.DataFrame:
+def _load_snapshot_files() -> pd.DataFrame:
     """Load and concatenate one or more pickle snapshot files."""
     dfs = []
-    for path in snapshot_paths:
+    for path in SNAPSHOT_PATHS:
         path = Path(path)
         logger.info("Loading snapshot file: %s", path)
         with open(path, "rb") as f:
@@ -75,7 +81,7 @@ def _load_snapshot_files(snapshot_paths: List[str | Path]) -> pd.DataFrame:
     df_all = pd.concat(dfs, ignore_index=True)
     logger.info(
         "Concatenated %d files → %d trials, %d subjects, %d sessions",
-        len(snapshot_paths),
+        len(SNAPSHOT_PATHS),
         len(df_all),
         df_all["subject_id"].nunique(),
         df_all["ses_idx"].nunique(),
@@ -221,7 +227,6 @@ def _select_subjects(
 # ---------------------------------------------------------------------------
 
 def load_mice_snapshot(
-    snapshot_paths: List[str | Path],
     subject_ids: Optional[List] = None,
     subject_start: Optional[int] = None,
     subject_end: Optional[int] = None,
@@ -240,8 +245,6 @@ def load_mice_snapshot(
 
     Parameters
     ----------
-    snapshot_paths:
-        Paths to the pickle snapshot files to load and concatenate.
     subject_ids:
         If provided, these subject IDs are used directly and no ranking is
         performed. Mutually exclusive with ``subject_start``/``subject_end``.
@@ -283,7 +286,7 @@ def load_mice_snapshot(
     if cols_to_retain is None:
         cols_to_retain = DEFAULT_COLS
 
-    df_all = _load_snapshot_files(snapshot_paths)
+    df_all = _load_snapshot_files()
     df_han = _get_han_session_table()
     df_session = _build_session_metadata(df_all, df_han)
 

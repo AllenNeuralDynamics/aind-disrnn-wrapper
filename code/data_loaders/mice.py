@@ -249,8 +249,6 @@ class MiceSnapshotDatasetLoader(DatasetLoader):
 
     Parameters
     ----------
-    snapshot_paths:
-        Paths to the pickle snapshot files to load.
     subject_ids:
         Explicit list of subject IDs to use. When provided,
         ``subject_start`` and ``subject_end`` are ignored.
@@ -287,7 +285,6 @@ class MiceSnapshotDatasetLoader(DatasetLoader):
 
     def __init__(
         self,
-        snapshot_paths: List[str],
         subject_ids: Optional[List] = None,
         subject_start: Optional[int] = None,
         subject_end: Optional[int] = None,
@@ -304,7 +301,6 @@ class MiceSnapshotDatasetLoader(DatasetLoader):
         **extras: object,
     ) -> None:
         super().__init__(seed=seed)
-        self.snapshot_paths = [str(p) for p in snapshot_paths]
         self.subject_ids = list(subject_ids) if subject_ids is not None else None
         self.subject_start = subject_start
         self.subject_end = subject_end
@@ -330,7 +326,6 @@ class MiceSnapshotDatasetLoader(DatasetLoader):
 
         logger.info("Loading train dataset (mature_only=%s) …", self.mature_only)
         df, subject_ids = load_mice_snapshot(
-            snapshot_paths=self.snapshot_paths,
             subject_ids=self.subject_ids,
             subject_start=self.subject_start,
             subject_end=self.subject_end,
@@ -356,7 +351,6 @@ class MiceSnapshotDatasetLoader(DatasetLoader):
             df = df[df["ses_idx"].isin(valid_sessions)]
 
         metadata = {
-            "snapshot_paths": self.snapshot_paths,
             "subject_ids": subject_ids,
             "subject_start": self.subject_start,
             "subject_end": self.subject_end,
