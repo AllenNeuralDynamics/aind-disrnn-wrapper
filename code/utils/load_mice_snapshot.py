@@ -44,9 +44,11 @@ _SNAPSHOT_FILENAMES: List[str] = [
 
 
 # Candidate root directories searched in order; first match wins.
-# - /data/          : CodeOcean pipeline mount
-# - capsule root data/ : local dev (file lives at code/utils/)
-# - tmp * capsule data/ : when running pipeline
+# - /data/                : CodeOcean pipeline mount
+# - capsule root data/    : local dev (file lives at code/utils/)
+# - tmp * capsule data/   : when running inside a Nextflow work directory
+# - /root/capsule/data/   : original capsule workspace, accessible even when
+#                           code is copied to a Nextflow tmp directory
 def _candidate_parent(depth: int) -> "Path | None":
     parents = Path(__file__).resolve().parents
     return parents[depth] / "data" if depth < len(parents) else None
@@ -58,6 +60,7 @@ _CANDIDATE_DATA_DIRS: List[Path] = [
         Path("/data"),
         _candidate_parent(2),
         _candidate_parent(3),
+        Path("/root/capsule/data"),
     ]
     if p is not None
 ]
@@ -65,27 +68,49 @@ _CANDIDATE_DATA_DIRS: List[Path] = [
 def _find_snapshot_paths() -> List[Path]:
     """Resolve snapshot filenames against candidate data directories.
 
-    Tries two layouts for each candidate directory:
+    Tries three layouts for each candidate directory in order:
     1. Subdirectory layout: ``<data_dir>/mice_snapshot_N/<file>.pkl``
        (matches local dev and CodeOcean asset mounts that preserve subfolders)
     2. Flat layout: ``<data_dir>/<file>.pkl``
        (matches CodeOcean / Nextflow pipeline mounts that place all files
        directly under the data root)
+    3. Recursive glob: searches any depth under ``<data_dir>`` for each
+       flat filename (matches pipeline variants where files are nested under
+       an unknown intermediate directory, e.g. ``<data_dir>/jobs/<uuid>/...``
+       or where each asset is placed in its own subdirectory with an
+       unpredictable name).
     """
     # Flat basenames derived from the full relative paths
     _flat_names = [Path(name).name for name in _SNAPSHOT_FILENAMES]
 
     for data_dir in _CANDIDATE_DATA_DIRS:
+        if not data_dir.exists():
+            logger.debug("Candidate data dir does not exist, skipping: %s", data_dir)
+            continue
+
         # Layout 1: subdirectory structure
         paths = [data_dir / name for name in _SNAPSHOT_FILENAMES]
         if all(p.exists() for p in paths):
             logger.info("Found snapshot files (subdir layout) in %s", data_dir)
             return paths
+
         # Layout 2: flat structure
         flat_paths = [data_dir / name for name in _flat_names]
         if all(p.exists() for p in flat_paths):
             logger.info("Found snapshot files (flat layout) in %s", data_dir)
             return flat_paths
+
+        # Layout 3: recursive glob (any nesting depth)
+        found: List[Path] = []
+        for flat_name in _flat_names:
+            matches = sorted(data_dir.rglob(flat_name))
+            if matches:
+                found.append(matches[0])
+        if len(found) == len(_flat_names):
+            logger.info(
+                "Found snapshot files (recursive layout) under %s", data_dir
+            )
+            return found
 
     searched = ", ".join(str(d) for d in _CANDIDATE_DATA_DIRS)
     raise FileNotFoundError(
