@@ -34,11 +34,11 @@ logger = logging.getLogger(__name__)
 
 
 SNAPSHOT_PATHS = [
-    '/data/mice_behavioral_data_20260309-0_200-185844.pkl',
-    '/data/mice_behavioral_data_20260309-200_400-114605.pkl',
-    '/data/mice_behavioral_data_20260309-400_600-213302.pkl',
-    '/data/mice_behavioral_data_20260310-600_end-120215.pkl',
-    '/data/mice_behavioral_data_20260309-misc_778149_778147_753618-215212.pkl'
+    '../../data/mice_behavioral_data_20260309-0_200-185844.pkl',
+    '../../data/mice_behavioral_data_20260309-200_400-114605.pkl',
+    '../../data/mice_behavioral_data_20260309-400_600-213302.pkl',
+    '../../data/mice_behavioral_data_20260310-600_end-120215.pkl',
+    '../../data/mice_behavioral_data_20260309-misc_778149_778147_753618-215212.pkl'
 ]
 
 # Stages that qualify a session as "mature"
