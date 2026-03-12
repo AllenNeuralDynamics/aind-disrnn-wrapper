@@ -23,6 +23,7 @@ splits:
 """
 from __future__ import annotations
 
+import os
 import logging
 import pickle
 from pathlib import Path
@@ -60,7 +61,8 @@ _CANDIDATE_DATA_DIRS: List[Path] = [
         Path("/data"),
         _candidate_parent(2),
         _candidate_parent(3),
-        Path("/root/capsule/data"),
+        # Respect an env var override if set
+        Path(os.environ["DATA_PATH"]) if "DATA_PATH" in os.environ else None,
     ]
     if p is not None
 ]
