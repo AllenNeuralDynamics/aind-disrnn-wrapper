@@ -35,12 +35,13 @@ logger = logging.getLogger(__name__)
 
 # Known snapshot filenames (order is preserved).
 _SNAPSHOT_FILENAMES: List[str] = [
-    "mice_behavioral_data_20260309-0_200-185844.pkl",
-    "mice_behavioral_data_20260309-200_400-114605.pkl",
-    "mice_behavioral_data_20260309-400_600-213302.pkl",
-    "mice_behavioral_data_20260310-600_end-120215.pkl",
-    "mice_behavioral_data_20260309-misc_778149_778147_753618-215212.pkl",
+    "mice_snapshot_4/mice_behavioral_data_20260309-0_200-185844.pkl",
+    "mice_snapshot_3/mice_behavioral_data_20260309-200_400-114605.pkl",
+    "mice_snapshot_2/mice_behavioral_data_20260309-400_600-213302.pkl",
+    "mice_snapshot/mice_behavioral_data_20260310-600_end-120215.pkl",
+    "mice_snapshot_1/mice_behavioral_data_20260309-misc_778149_778147_753618-215212.pkl",
 ]
+
 
 # Candidate root directories searched in order; first match wins.
 # - /data/          : CodeOcean pipeline mount

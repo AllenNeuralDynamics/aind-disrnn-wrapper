@@ -6,8 +6,28 @@
 			"mount": "foraging_nwb_bpod"
 		},
 		{
+			"id": "5beb1741-1285-46dc-bbeb-64c29a4ad158",
+			"mount": "mice_snapshot_4"
+		},
+		{
+			"id": "630a1fe9-2df1-44a5-996a-432a6d099e04",
+			"mount": "mice_snapshot_2"
+		},
+		{
+			"id": "66778003-ad33-41ae-a345-dd4467012e42",
+			"mount": "mice_snapshot"
+		},
+		{
 			"id": "75e09b6f-2c83-46f5-b0b0-3db52b4b2291",
 			"mount": "DF-TaskTrainedRNNData"
+		},
+		{
+			"id": "c1b3e0ee-baff-4cf3-9e62-0790fb2855bb",
+			"mount": "mice_snapshot_3"
+		},
+		{
+			"id": "ccf1dc32-9d83-425e-ae6d-70e183c58778",
+			"mount": "mice_snapshot_1"
 		},
 		{
 			"id": "f908dd4d-d7ed-4d52-97cf-ccd0e167c659",
