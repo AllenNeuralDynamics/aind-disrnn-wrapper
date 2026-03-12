@@ -33,13 +33,35 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 
-SNAPSHOT_PATHS = [
-    '../../data/mice_behavioral_data_20260309-0_200-185844.pkl',
-    '../../data/mice_behavioral_data_20260309-200_400-114605.pkl',
-    '../../data/mice_behavioral_data_20260309-400_600-213302.pkl',
-    '../../data/mice_behavioral_data_20260310-600_end-120215.pkl',
-    '../../data/mice_behavioral_data_20260309-misc_778149_778147_753618-215212.pkl'
+# Known snapshot filenames (order is preserved).
+_SNAPSHOT_FILENAMES: List[str] = [
+    "mice_behavioral_data_20260309-0_200-185844.pkl",
+    "mice_behavioral_data_20260309-200_400-114605.pkl",
+    "mice_behavioral_data_20260309-400_600-213302.pkl",
+    "mice_behavioral_data_20260310-600_end-120215.pkl",
+    "mice_behavioral_data_20260309-misc_778149_778147_753618-215212.pkl",
 ]
+
+# Candidate root directories searched in order; first match wins.
+# - /data/          : CodeOcean pipeline mount
+# - capsule root data/ : local dev (file lives at code/utils/)
+_CANDIDATE_DATA_DIRS: List[Path] = [
+    Path("/data"),
+    Path(__file__).resolve().parents[2] / "data",
+]
+
+
+def _find_snapshot_paths() -> List[Path]:
+    """Resolve snapshot filenames against candidate data directories."""
+    for data_dir in _CANDIDATE_DATA_DIRS:
+        paths = [data_dir / name for name in _SNAPSHOT_FILENAMES]
+        if all(p.exists() for p in paths):
+            logger.info("Found snapshot files in %s", data_dir)
+            return paths
+    searched = ", ".join(str(d) for d in _CANDIDATE_DATA_DIRS)
+    raise FileNotFoundError(
+        f"Could not find all snapshot files in any of: {searched}"
+    )
 
 # Stages that qualify a session as "mature"
 MATURE_STAGES: Tuple[str, ...] = ("STAGE_FINAL", "GRADUATED")
@@ -65,9 +87,9 @@ DEFAULT_COLS: List[str] = [
 
 def _load_snapshot_files() -> pd.DataFrame:
     """Load and concatenate one or more pickle snapshot files."""
+    snapshot_paths = _find_snapshot_paths()
     dfs = []
-    for path in SNAPSHOT_PATHS:
-        path = Path(path)
+    for path in snapshot_paths:
         logger.info("Loading snapshot file: %s", path)
         with open(path, "rb") as f:
             dfs.append(pickle.load(f))
@@ -81,7 +103,7 @@ def _load_snapshot_files() -> pd.DataFrame:
     df_all = pd.concat(dfs, ignore_index=True)
     logger.info(
         "Concatenated %d files → %d trials, %d subjects, %d sessions",
-        len(SNAPSHOT_PATHS),
+        len(snapshot_paths),
         len(df_all),
         df_all["subject_id"].nunique(),
         df_all["ses_idx"].nunique(),
