@@ -41,6 +41,11 @@ _SNAPSHOT_FILENAMES: List[str] = [
     "mice_snapshot_2/mice_behavioral_data_20260309-400_600-213302.pkl",
     "mice_snapshot/mice_behavioral_data_20260310-600_end-120215.pkl",
     "mice_snapshot_1/mice_behavioral_data_20260309-misc_778149_778147_753618-215212.pkl",
+    # "mice_behavioral_data_20260309-0_200-185844.pkl",
+    # "mice_behavioral_data_20260309-200_400-114605.pkl",
+    # "mice_behavioral_data_20260309-400_600-213302.pkl",
+    # "mice_behavioral_data_20260310-600_end-120215.pkl",
+    # "mice_behavioral_data_20260309-misc_778149_778147_753618-215212.pkl",
 ]
 
 
@@ -82,6 +87,9 @@ def _find_snapshot_paths() -> List[Path]:
        or where each asset is placed in its own subdirectory with an
        unpredictable name).
     """
+    # Print all files in /data to the logs
+    logger.info("Contents of /data: %s", os.listdir('/data') if os.path.exists('/data') else "Folder /data does not exist")
+
     # Flat basenames derived from the full relative paths
     _flat_names = [Path(name).name for name in _SNAPSHOT_FILENAMES]
 
