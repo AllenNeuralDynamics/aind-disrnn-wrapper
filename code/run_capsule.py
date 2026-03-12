@@ -60,6 +60,16 @@ def main() -> None:
     dataset_bundle = dataset_loader.load()
     logger.info("Loaded dataset bundle with metadata: %s", dataset_bundle.metadata)
 
+    # Append resolved subject IDs to the wandb run name so rank-based slices
+    # (where subject_ids is null in config) are still identifiable in the UI.
+    resolved_subject_ids = dataset_bundle.metadata.get("subject_ids")
+    if wandb_run is not None and resolved_subject_ids is not None:
+        ids_str = "-".join(str(s) for s in sorted(resolved_subject_ids))
+        new_name = f"{wandb_run.name}_subjs-{ids_str}" if wandb_run.name else f"subs-{ids_str}"
+        wandb_run.name = new_name
+        wandb_run.config.update({"resolved_subject_ids": list(resolved_subject_ids)})
+        logger.info("Updated wandb run name to: %s", new_name)
+
     # --- Train model ---
     model_trainer: ModelTrainer = instantiate(hydra_config.model)
     loggers = {"wandb": wandb_run} if wandb_run is not None else None

@@ -184,6 +184,13 @@ class SyntheticCognitiveAgents(DatasetLoader):
         # Compute global normalized likelihood (geometric mean over all trials in all eval sessions)
         avg_eval_groundtruth = float(rnn_utils.normalized_likelihood(all_eval_choices, all_eval_logits))
 
+        # Align raw df with sessions that survived dataset construction.
+        # create_disrnn_dataset (always ignore_policy="exclude" here) silently
+        # drops sessions whose every trial is ignored (animal_response==2).
+        if "animal_response" in raw_df.columns:
+            valid_sessions = raw_df[raw_df["animal_response"] != 2]["ses_idx"].unique()
+            raw_df = raw_df[raw_df["ses_idx"].isin(valid_sessions)]
+
         # --- Package bundle metadata ---
         metadata: dict[str, Any] = {
             "num_trials": self.num_trials,

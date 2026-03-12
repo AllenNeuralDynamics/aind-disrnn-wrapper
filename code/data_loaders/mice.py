@@ -84,6 +84,12 @@ class MiceDatasetLoader(DatasetLoader):
         dataset_train, dataset_eval = rnn_utils.split_dataset(
             dataset, eval_every_n=self.eval_every_n
         )
+        # Align raw df with sessions that survived dataset construction.
+        # create_disrnn_dataset silently drops sessions whose every trial is
+        # ignored (animal_response==2) when ignore_policy=="exclude".
+        if self.ignore_policy == "exclude" and "animal_response" in df.columns:
+            valid_sessions = df[df["animal_response"] != 2]["ses_idx"].unique()
+            df = df[df["ses_idx"].isin(valid_sessions)]
         metadata = {
             "subject_ids": self.subject_ids,
             "ignore_policy": self.ignore_policy,
@@ -195,7 +201,11 @@ class MiceDatasetLoaderFromFile(DatasetLoader):
         dataset_train, dataset_eval = rnn_utils.split_dataset(
             dataset, eval_every_n=self.eval_every_n
         )
-        
+        # Align raw df with sessions that survived dataset construction.
+        if self.ignore_policy == "exclude" and "animal_response" in df.columns:
+            valid_sessions = df[df["animal_response"] != 2]["ses_idx"].unique()
+            df = df[df["ses_idx"].isin(valid_sessions)]
+
         metadata = {
             "file_path": str(self.file_path),
             "subject_ids": self.subject_ids,
@@ -340,6 +350,10 @@ class MiceSnapshotDatasetLoader(DatasetLoader):
         dataset_train, dataset_eval = rnn_utils.split_dataset(
             dataset, eval_every_n=self.eval_every_n
         )
+        # Align raw df with sessions that survived dataset construction.
+        if self.ignore_policy == "exclude" and "animal_response" in df.columns:
+            valid_sessions = df[df["animal_response"] != 2]["ses_idx"].unique()
+            df = df[df["ses_idx"].isin(valid_sessions)]
 
         metadata = {
             "snapshot_paths": self.snapshot_paths,

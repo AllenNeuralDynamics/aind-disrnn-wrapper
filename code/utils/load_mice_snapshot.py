@@ -107,10 +107,10 @@ def _build_session_metadata(df_all: pd.DataFrame, df_han: pd.DataFrame) -> pd.Da
         )
         matches = df_han[mask]
         if len(matches) == 0:
-            logger.warning(
-                "No HAN row for subject_id=%s, session_date=%s",
-                row["subject_id"], row["session_date"],
-            )
+            # logger.warning(
+            #     "No HAN row for subject_id=%s, session_date=%s",
+            #     row["subject_id"], row["session_date"],
+            # )
             return pd.Series(
                 {"nwb_suffix": None, "current_stage_actual": None, "curriculum_name": None}
             )
