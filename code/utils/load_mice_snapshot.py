@@ -62,14 +62,31 @@ _CANDIDATE_DATA_DIRS: List[Path] = [
     if p is not None
 ]
 
-
 def _find_snapshot_paths() -> List[Path]:
-    """Resolve snapshot filenames against candidate data directories."""
+    """Resolve snapshot filenames against candidate data directories.
+
+    Tries two layouts for each candidate directory:
+    1. Subdirectory layout: ``<data_dir>/mice_snapshot_N/<file>.pkl``
+       (matches local dev and CodeOcean asset mounts that preserve subfolders)
+    2. Flat layout: ``<data_dir>/<file>.pkl``
+       (matches CodeOcean / Nextflow pipeline mounts that place all files
+       directly under the data root)
+    """
+    # Flat basenames derived from the full relative paths
+    _flat_names = [Path(name).name for name in _SNAPSHOT_FILENAMES]
+
     for data_dir in _CANDIDATE_DATA_DIRS:
+        # Layout 1: subdirectory structure
         paths = [data_dir / name for name in _SNAPSHOT_FILENAMES]
         if all(p.exists() for p in paths):
-            logger.info("Found snapshot files in %s", data_dir)
+            logger.info("Found snapshot files (subdir layout) in %s", data_dir)
             return paths
+        # Layout 2: flat structure
+        flat_paths = [data_dir / name for name in _flat_names]
+        if all(p.exists() for p in flat_paths):
+            logger.info("Found snapshot files (flat layout) in %s", data_dir)
+            return flat_paths
+
     searched = ", ".join(str(d) for d in _CANDIDATE_DATA_DIRS)
     raise FileNotFoundError(
         f"Could not find all snapshot files in any of: {searched}"
