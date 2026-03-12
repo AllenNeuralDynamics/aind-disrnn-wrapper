@@ -45,9 +45,20 @@ _SNAPSHOT_FILENAMES: List[str] = [
 # Candidate root directories searched in order; first match wins.
 # - /data/          : CodeOcean pipeline mount
 # - capsule root data/ : local dev (file lives at code/utils/)
+# - tmp * capsule data/ : when running pipeline
+def _candidate_parent(depth: int) -> "Path | None":
+    parents = Path(__file__).resolve().parents
+    return parents[depth] / "data" if depth < len(parents) else None
+
+
 _CANDIDATE_DATA_DIRS: List[Path] = [
-    Path("/data"),
-    Path(__file__).resolve().parents[2] / "data",
+    p
+    for p in [
+        Path("/data"),
+        _candidate_parent(2),
+        _candidate_parent(3),
+    ]
+    if p is not None
 ]
 
 
