@@ -3,10 +3,6 @@
 
 # Set PYTHONPATH for correct module resolution
 import os
-import sys
-pythonpath = "/root/capsule/src/disentangled-rnns"
-if pythonpath not in sys.path:
-    sys.path.insert(0, pythonpath)
 
 import logging
 from pathlib import Path
