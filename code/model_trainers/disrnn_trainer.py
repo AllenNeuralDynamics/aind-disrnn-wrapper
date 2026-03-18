@@ -154,6 +154,7 @@ class DisrnnTrainer(ModelTrainer):
             ),
             plot_choice_rule=bool(self.training.get("plot_choice_rule", False)),
             plot_update_rules=bool(self.training.get("plot_update_rules", False)),
+            save_output_df=bool(self.training.get("save_output_df", False)),
         )
 
         logger.info(f"max_grad_norm = {args.max_grad_norm}")
@@ -680,8 +681,9 @@ class DisrnnTrainer(ModelTrainer):
         output_df = dl.add_model_results(
             df, network_states_full.__array__(), yhat_full, ignore_policy=ignore_policy
         )
-        output_path = self.output_dir / "output_df.csv"
-        output_df.to_csv(output_path, index=False)
+        if args.save_output_df:
+            output_path = self.output_dir / "output_df.csv"
+            output_df.to_csv(output_path, index=False)
 
         params_path = self.output_dir / "params.json"
         with params_path.open("w") as f:
