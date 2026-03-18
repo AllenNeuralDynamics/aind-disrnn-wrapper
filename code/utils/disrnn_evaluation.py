@@ -326,7 +326,7 @@ def plot_disrnn_examples_for_split(
             threshold=open_latent_threshold,
         )
         logger.info(
-            "%s open latents by bottleneck > %.4f: %s",
+            "%s: open latents by bottleneck > %.4f: %s",
             split_name,
             open_latent_threshold,
             open_latents,
@@ -337,7 +337,7 @@ def plot_disrnn_examples_for_split(
             raise ValueError(f"No sessions available for split plotting: {split_name}")
         if len(subject_groups) > max_subjects_to_plot:
             logger.info(
-                "Limiting %s example plotting to first %d subjects (of %d total)",
+                "%s: Limiting example plotting to first %d subjects (of %d total)",
                 split_name,
                 max_subjects_to_plot,
                 len(subject_groups),
@@ -574,7 +574,7 @@ def evaluate_disrnn_on_heldout_subjects(
         yhat_test[:, :, :n_action_logits],
     )
     test_likelihood = float(test_likelihood)
-    logger.info("Held-out test likelihood: %.6f", test_likelihood)
+    logger.info("Held-out test likelihood: %.4f", test_likelihood)
 
     plot_dir = output_dir / output_subdir
     plot_dir.mkdir(parents=True, exist_ok=True)
@@ -645,7 +645,7 @@ def evaluate_disrnn_on_heldout_subjects(
         subject_groups = list(subject_session_rows.groupby("subject_id", sort=False))
         if len(subject_groups) > max_subjects_to_plot:
             logger.info(
-                "Limiting held-out example plotting to first %d subjects (of %d total)",
+                "Held-out: Limiting example plotting to first %d subjects (of %d total)",
                 max_subjects_to_plot,
                 len(subject_groups),
             )

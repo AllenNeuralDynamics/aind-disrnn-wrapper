@@ -1,7 +1,6 @@
 
 """Entry point for disRNN wrapper experiments."""
 
-# Set PYTHONPATH for correct module resolution
 import os
 
 import logging
