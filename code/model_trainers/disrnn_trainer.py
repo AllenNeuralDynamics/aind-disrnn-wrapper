@@ -297,8 +297,6 @@ class DisrnnTrainer(ModelTrainer):
                     report_progress_by="wandb",
                     wandb_run=wandb_run,
                     wandb_step_offset=args.n_warmup_steps + steps_completed,
-                    display_step_offset=steps_completed,
-                    display_total_steps=args.n_steps,
                 )
 
                 all_training_losses.extend(np.asarray(chunk_losses["training_loss"]).tolist())
