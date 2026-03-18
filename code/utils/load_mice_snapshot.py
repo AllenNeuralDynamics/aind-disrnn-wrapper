@@ -88,7 +88,7 @@ def _find_snapshot_paths() -> List[Path]:
        unpredictable name).
     """
     # Print all files in /data to the logs
-    logger.info("Contents of /data: %s", os.listdir('/data') if os.path.exists('/data') else "Folder /data does not exist")
+    # logger.info("Contents of /data: %s", os.listdir('/data') if os.path.exists('/data') else "Folder /data does not exist")
 
     # Flat basenames derived from the full relative paths
     _flat_names = [Path(name).name for name in _SNAPSHOT_FILENAMES]

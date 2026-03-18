@@ -18,6 +18,13 @@ from aind_dynamic_foraging_basic_analysis import plot_foraging_session
 from aind_dynamic_foraging_models import generative_model
 from aind_dynamic_foraging_models.generative_model.params import ParamsSymbols
 from disentangled_rnns.library import rnn_utils
+from utils.baseline_rl_evaluation import (
+    _align_q_session,
+    _extract_q_histories,
+    _normalize_identifier,
+    _plot_q_values_for_session,
+    _safe_filename_component,
+)
 
 from base.interfaces import ModelTrainer
 from base.types import DatasetBundle
@@ -170,6 +177,7 @@ class BaselineRLTrainer(ModelTrainer):
         eval_choice_prob_sessions = eval_agent.perform_closed_loop_multi_session(
             eval_choices, eval_rewards
         )
+        eval_choice_prob_sessions = [np.asarray(arr) for arr in eval_choice_prob_sessions]
 
         # Compute normalized likelihood on evaluation set
         # Convert to format expected by rnn_utils.normalized_likelihood
@@ -183,9 +191,24 @@ class BaselineRLTrainer(ModelTrainer):
         train_choice_prob_sessions = agent.perform_closed_loop_multi_session(
             train_choices, train_rewards
         )
+        train_choice_prob_sessions = [np.asarray(arr) for arr in train_choice_prob_sessions]
         train_likelihood = self._compute_normalized_likelihood(
             train_choices, train_choice_prob_sessions
         )
+
+        train_q_histories = _extract_q_histories(agent, train_choice_prob_sessions)
+        if train_q_histories is None:
+            logger.warning(
+                "Could not find explicit training Q-value histories; using fallback from action values"
+            )
+            train_q_histories = train_choice_prob_sessions
+
+        eval_q_histories = _extract_q_histories(eval_agent, eval_choice_prob_sessions)
+        if eval_q_histories is None:
+            logger.warning(
+                "Could not find explicit evaluation Q-value histories; using fallback from action values"
+            )
+            eval_q_histories = eval_choice_prob_sessions
 
         # --- Build output ---
         output: Dict[str, Any] = {
@@ -232,35 +255,7 @@ class BaselineRLTrainer(ModelTrainer):
         eval_every_n = metadata.get("eval_every_n", 2)
         param_recovery_fig = None
 
-        train_gt_params: list[dict[str, Any]] | None = None
-        eval_gt_params: list[dict[str, Any]] | None = None
-
         if session_details is not None:
-            # Map ground-truth params to train/eval session order for annotation.
-            try:
-                n_total_sessions = len(session_details)
-                eval_session_indices = metadata.get("eval_session_indices")
-                if eval_session_indices is None:
-                    eval_session_indices = list(
-                        np.arange(eval_every_n - 1, n_total_sessions, eval_every_n)
-                    )
-                eval_session_indices = [int(i) for i in eval_session_indices]
-                eval_set = set(eval_session_indices)
-                train_session_indices = [
-                    i for i in range(n_total_sessions) if i not in eval_set
-                ]
-
-                train_gt_params = [
-                    dict(session_details[i].get("agent_params", {}))
-                    for i in train_session_indices
-                ]
-                eval_gt_params = [
-                    dict(session_details[i].get("agent_params", {}))
-                    for i in eval_session_indices
-                ]
-            except Exception:
-                logger.exception("Failed to map ground-truth params for annotation")
-
             plot_path = self.output_dir / "parameter_recovery.png"
             param_recovery_fig = self._plot_parameter_recovery(
                 session_details=session_details,
@@ -270,36 +265,152 @@ class BaselineRLTrainer(ModelTrainer):
             )
             output["parameter_recovery_plot_path"] = str(plot_path)
 
-        # --- Generate overview plots for train/eval sessions ---
-        train_overview_fig = None
-        eval_overview_fig = None
+        # --- Generate heldout-style Q/probability examples for train/eval sessions ---
+        train_examples_summary: dict[str, Any] = {
+            "split": "train",
+            "plotting_failed": True,
+            "error": "not run",
+            "example_sessions": [],
+            "plots": {"q_values_over_trials_examples": []},
+        }
+        eval_examples_summary: dict[str, Any] = {
+            "split": "eval",
+            "plotting_failed": True,
+            "error": "not run",
+            "example_sessions": [],
+            "plots": {"q_values_over_trials_examples": []},
+        }
+
+        default_sessions_per_subject = int(
+            metadata.get("heldout_example_sessions_per_subject", 1)
+        )
+        train_sessions_per_subject = int(
+            metadata.get("train_example_sessions_per_subject", default_sessions_per_subject)
+        )
+        eval_sessions_per_subject = int(
+            metadata.get("eval_example_sessions_per_subject", default_sessions_per_subject)
+        )
+        if train_sessions_per_subject < 0:
+            raise ValueError("train_example_sessions_per_subject must be >= 0")
+        if eval_sessions_per_subject < 0:
+            raise ValueError("eval_example_sessions_per_subject must be >= 0")
+
+        train_session_ids = [f"train_session_{i}" for i in range(n_train_sessions)]
+        eval_session_ids = [f"eval_session_{i}" for i in range(n_eval_sessions)]
+        train_session_subject_ids = ["unknown"] * n_train_sessions
+        eval_session_subject_ids = ["unknown"] * n_eval_sessions
+
+        if (
+            bundle.raw is not None
+            and hasattr(bundle.raw, "columns")
+            and "ses_idx" in bundle.raw.columns
+        ):
+            session_order = list(dict.fromkeys(bundle.raw["ses_idx"].tolist()))
+            n_total_sessions = len(session_order)
+            expected_total = n_train_sessions + n_eval_sessions
+            if n_total_sessions == expected_total:
+                eval_every_n = int(metadata.get("eval_every_n", 2))
+                if eval_every_n <= 0:
+                    raise ValueError(f"Invalid eval_every_n in metadata: {eval_every_n}")
+
+                eval_indices = np.arange(eval_every_n - 1, n_total_sessions, eval_every_n)
+                eval_index_set = set(int(i) for i in eval_indices.tolist())
+                train_indices = [
+                    idx for idx in range(n_total_sessions) if idx not in eval_index_set
+                ]
+
+                if len(train_indices) == n_train_sessions and len(eval_indices) == n_eval_sessions:
+                    train_session_ids = [session_order[idx] for idx in train_indices]
+                    eval_session_ids = [session_order[int(idx)] for idx in eval_indices.tolist()]
+
+                    if "subject_id" in bundle.raw.columns:
+                        session_subject_map: dict[Any, Any] = {}
+                        session_lookup = (
+                            bundle.raw[["ses_idx", "subject_id"]]
+                            .drop_duplicates(subset=["ses_idx"])
+                            .set_index("ses_idx")["subject_id"]
+                            .to_dict()
+                        )
+                        for session_id in session_order:
+                            session_subject_map[session_id] = session_lookup.get(
+                                session_id, "unknown"
+                            )
+                        train_session_subject_ids = [
+                            session_subject_map.get(session_id, "unknown")
+                            for session_id in train_session_ids
+                        ]
+                        eval_session_subject_ids = [
+                            session_subject_map.get(session_id, "unknown")
+                            for session_id in eval_session_ids
+                        ]
+                else:
+                    logger.warning(
+                        "Could not align train/eval split indices to extracted session lists. "
+                        "Using fallback synthetic session IDs."
+                    )
+            else:
+                logger.warning(
+                    "Raw dataframe sessions (%d) do not match split sessions (%d). "
+                    "Using fallback synthetic session IDs.",
+                    n_total_sessions,
+                    expected_total,
+                )
 
         try:
-            train_plot_path = self.output_dir / "train_choice_reward_fitted_prob.png"
-            train_overview_fig = self._plot_choice_reward_and_fitted_prob(
+            train_examples_summary = self._plot_q_value_examples_for_split(
+                split_name="train",
                 choice_sessions=train_choices,
                 reward_sessions=train_rewards,
-                choice_prob_sessions=train_choice_prob_sessions,
-                gt_params_per_session=train_gt_params,
-                param_names_for_gt=list(fitted_params.keys()),
-                label="train",
-                save_path=train_plot_path,
+                q_histories=train_q_histories,
+                session_ids=train_session_ids,
+                session_subject_ids=train_session_subject_ids,
+                sessions_per_subject=train_sessions_per_subject,
+                output_dir=self.output_dir,
             )
-            output["train_choice_reward_fitted_prob_plot_path"] = str(train_plot_path)
+        except Exception as exc:
+            logger.exception("Failed to generate train Q/prob example plots")
+            train_examples_summary = {
+                "split": "train",
+                "plotting_failed": True,
+                "error": str(exc),
+                "example_sessions": [],
+                "plots": {"q_values_over_trials_examples": []},
+            }
 
-            eval_plot_path = self.output_dir / "eval_choice_reward_fitted_prob.png"
-            eval_overview_fig = self._plot_choice_reward_and_fitted_prob(
+        try:
+            eval_examples_summary = self._plot_q_value_examples_for_split(
+                split_name="eval",
                 choice_sessions=eval_choices,
                 reward_sessions=eval_rewards,
-                choice_prob_sessions=eval_choice_prob_sessions,
-                gt_params_per_session=eval_gt_params,
-                param_names_for_gt=list(fitted_params.keys()),
-                label="eval",
-                save_path=eval_plot_path,
+                q_histories=eval_q_histories,
+                session_ids=eval_session_ids,
+                session_subject_ids=eval_session_subject_ids,
+                sessions_per_subject=eval_sessions_per_subject,
+                output_dir=self.output_dir,
             )
-            output["eval_choice_reward_fitted_prob_plot_path"] = str(eval_plot_path)
-        except Exception:
-            logger.exception("Failed to generate train/eval overview plots")
+        except Exception as exc:
+            logger.exception("Failed to generate eval Q/prob example plots")
+            eval_examples_summary = {
+                "split": "eval",
+                "plotting_failed": True,
+                "error": str(exc),
+                "example_sessions": [],
+                "plots": {"q_values_over_trials_examples": []},
+            }
+
+        output["train_q_value_examples"] = train_examples_summary
+        output["eval_q_value_examples"] = eval_examples_summary
+
+        train_plot_paths = train_examples_summary.get("plots", {}).get(
+            "q_values_over_trials_examples", []
+        )
+        eval_plot_paths = eval_examples_summary.get("plots", {}).get(
+            "q_values_over_trials_examples", []
+        )
+        if train_plot_paths:
+            output["train_choice_reward_fitted_prob_plot_path"] = str(train_plot_paths[0])
+        if eval_plot_paths:
+            output["eval_choice_reward_fitted_prob_plot_path"] = str(eval_plot_paths[0])
 
         # --- Log to wandb ---
         if wandb_run is not None:
@@ -324,14 +435,22 @@ class BaselineRLTrainer(ModelTrainer):
                 wandb_run.log({"parameter_recovery": wandb.Image(param_recovery_fig)})
                 logger.info("Logged parameter recovery plot to W&B")
 
-            if train_overview_fig is not None:
+            if train_plot_paths:
                 wandb_run.log(
-                    {"train_choice_reward_fitted_prob": wandb.Image(train_overview_fig)}
+                    {
+                        "train/q_values_over_trials_examples": [
+                            wandb.Image(path) for path in train_plot_paths
+                        ]
+                    }
                 )
 
-            if eval_overview_fig is not None:
+            if eval_plot_paths:
                 wandb_run.log(
-                    {"eval_choice_reward_fitted_prob": wandb.Image(eval_overview_fig)}
+                    {
+                        "eval/q_values_over_trials_examples": [
+                            wandb.Image(path) for path in eval_plot_paths
+                        ]
+                    }
                 )
 
             # Upload output as artifact
@@ -343,12 +462,6 @@ class BaselineRLTrainer(ModelTrainer):
         # Close figure to free memory
         if param_recovery_fig is not None:
             plt.close(param_recovery_fig)
-
-        if train_overview_fig is not None:
-            plt.close(train_overview_fig)
-
-        if eval_overview_fig is not None:
-            plt.close(eval_overview_fig)
 
         logger.info(
             f"Baseline RL fitting complete. "
@@ -497,6 +610,94 @@ class BaselineRLTrainer(ModelTrainer):
         fig.savefig(save_path, dpi=150, bbox_inches="tight", facecolor="white")
         logger.info(f"Saved {label} overview plot to {save_path}")
         return fig
+
+    def _plot_q_value_examples_for_split(
+        self,
+        *,
+        split_name: str,
+        choice_sessions: List[np.ndarray],
+        reward_sessions: List[np.ndarray],
+        q_histories: List[np.ndarray],
+        session_ids: List[Any],
+        session_subject_ids: List[Any],
+        sessions_per_subject: int,
+        output_dir: Path,
+    ) -> Dict[str, Any]:
+        if sessions_per_subject < 0:
+            raise ValueError(f"{split_name}_example_sessions_per_subject must be >= 0")
+        if not (
+            len(choice_sessions)
+            == len(reward_sessions)
+            == len(q_histories)
+            == len(session_ids)
+            == len(session_subject_ids)
+        ):
+            raise ValueError(
+                f"{split_name} split length mismatch: choices={len(choice_sessions)}, "
+                f"rewards={len(reward_sessions)}, q_histories={len(q_histories)}, "
+                f"session_ids={len(session_ids)}, subject_ids={len(session_subject_ids)}"
+            )
+
+        split_dir = output_dir / split_name
+        split_dir.mkdir(parents=True, exist_ok=True)
+
+        examples: list[dict[str, Any]] = []
+        q_plot_paths: list[str] = []
+
+        if sessions_per_subject > 0:
+            sessions_by_subject: dict[Any, list[int]] = {}
+            for idx, subject_id in enumerate(session_subject_ids):
+                sessions_by_subject.setdefault(subject_id, []).append(idx)
+
+            for subject_id, indices in sessions_by_subject.items():
+                for idx in indices[:sessions_per_subject]:
+                    choices = choice_sessions[idx]
+                    rewards = reward_sessions[idx]
+                    q_session = _align_q_session(q_histories[idx], len(choices))
+
+                    fig = _plot_q_values_for_session(
+                        choices=choices,
+                        rewards=rewards,
+                        q_values=q_session,
+                    )
+                    session_id = session_ids[idx]
+                    fig.suptitle(f"Session {_normalize_identifier(session_id)}", fontsize=14)
+                    fig.subplots_adjust(top=0.93)
+
+                    out_path = (
+                        split_dir
+                        / (
+                            f"q_values_over_trials_subject_{_safe_filename_component(subject_id)}"
+                            f"_session_{_safe_filename_component(session_id)}.png"
+                        )
+                    )
+                    fig.savefig(out_path)
+                    plt.close(fig)
+
+                    q_plot_paths.append(str(out_path))
+                    examples.append(
+                        {
+                            "subject_id": _normalize_identifier(subject_id),
+                            "session_id": _normalize_identifier(session_id),
+                            "q_values_over_trials": str(out_path),
+                        }
+                    )
+
+        summary: Dict[str, Any] = {
+            "split": split_name,
+            "num_sessions": int(len(choice_sessions)),
+            "example_sessions_per_subject": int(sessions_per_subject),
+            "example_sessions": examples,
+            "plots": {
+                "q_values_over_trials_examples": q_plot_paths,
+            },
+        }
+
+        summary_path = split_dir / f"{split_name}_baseline_rl_examples_summary.json"
+        with summary_path.open("w") as f:
+            json.dump(summary, f, indent=2)
+
+        return summary
 
     def _extract_session_data(
         self, bundle: DatasetBundle
