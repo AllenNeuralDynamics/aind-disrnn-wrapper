@@ -157,7 +157,7 @@ def plot_gru_examples_for_split(
     yhat_logits: np.ndarray,
     sessions_per_subject: int,
     max_subjects_to_plot: int = 6,
-    n_action_logits: int | None = None,
+    n_action_logits: int,
     wandb_run: Any | None = None,
 ) -> dict[str, Any]:
     """Generate example plots for a GRU split using hidden states directly."""
@@ -220,10 +220,8 @@ def plot_gru_examples_for_split(
                 f"Found sessions={len(session_index_by_id)} states={states.shape[1]}"
             )
 
-        if n_action_logits is None or n_action_logits <= 0:
-            n_action_logits = int(logits.shape[2] - 1)
         if n_action_logits <= 0:
-            raise ValueError(f"Invalid number of action logits inferred for split '{split_name}'")
+            raise ValueError(f"Invalid number of action logits for split '{split_name}'")
 
         probs_for_coloring = _prob_from_logits(
             logits[:, :, :n_action_logits],
