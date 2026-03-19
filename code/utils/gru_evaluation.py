@@ -100,6 +100,21 @@ def add_gru_model_results(
     return output_df
 
 
+def _require_n_action_logits(dataset: Any, yhat: np.ndarray, *, context: str) -> int:
+    n_action_logits = int(getattr(dataset, "n_classes", 0))
+    if n_action_logits <= 0:
+        raise ValueError(
+            f"GRU {context} requires dataset.n_classes to be set to a positive integer."
+        )
+    actual_output_size = int(np.asarray(yhat).shape[2])
+    if actual_output_size != n_action_logits:
+        raise ValueError(
+            f"GRU {context} logits shape mismatch: dataset.n_classes={n_action_logits} "
+            f"but yhat.shape[2]={actual_output_size}"
+        )
+    return n_action_logits
+
+
 def _project_hidden_states_to_pcs(
     states: np.ndarray,
     *,
@@ -425,13 +440,11 @@ def evaluate_gru_on_heldout_subjects(
         xs_test,
     )
 
-    n_action_logits = int(getattr(dataset_test, "n_classes", 0))
-    if n_action_logits <= 0:
-        n_action_logits = int(np.asarray(yhat_test).shape[2] - 1)
-    if n_action_logits <= 0:
-        raise ValueError(
-            f"Invalid number of action logits inferred for held-out eval: {n_action_logits}"
-        )
+    n_action_logits = _require_n_action_logits(
+        dataset_test,
+        np.asarray(yhat_test),
+        context="held-out eval",
+    )
 
     test_likelihood = rnn_utils.normalized_likelihood(
         ys_test,

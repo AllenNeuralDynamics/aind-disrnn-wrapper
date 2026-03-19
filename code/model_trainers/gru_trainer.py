@@ -38,6 +38,21 @@ def _to_dict(config: Mapping[str, Any] | DictConfig) -> Dict[str, Any]:
     return dict(config)
 
 
+def _require_n_action_logits(dataset: Any, yhat: np.ndarray, *, context: str) -> int:
+    n_action_logits = int(getattr(dataset, "n_classes", 0))
+    if n_action_logits <= 0:
+        raise ValueError(
+            f"GRU {context} requires dataset.n_classes to be set to a positive integer."
+        )
+    actual_output_size = int(np.asarray(yhat).shape[2])
+    if actual_output_size != n_action_logits:
+        raise ValueError(
+            f"GRU {context} logits shape mismatch: dataset.n_classes={n_action_logits} "
+            f"but yhat.shape[2]={actual_output_size}"
+        )
+    return n_action_logits
+
+
 class GruTrainer(ModelTrainer):
     """Trainer that mirrors the disRNN pipeline for GRU models."""
 
@@ -268,13 +283,11 @@ class GruTrainer(ModelTrainer):
                         params,
                         xs_eval_all,
                     )
-                    n_action_logits_ckpt = int(getattr(dataset_eval, "n_classes", 0))
-                    if n_action_logits_ckpt <= 0:
-                        n_action_logits_ckpt = int(np.asarray(yhat_eval_ckpt).shape[2] - 1)
-                    if n_action_logits_ckpt <= 0:
-                        raise ValueError(
-                            "Invalid number of action logits inferred for checkpoint eval likelihood."
-                        )
+                    n_action_logits_ckpt = _require_n_action_logits(
+                        dataset_eval,
+                        np.asarray(yhat_eval_ckpt),
+                        context="checkpoint eval",
+                    )
                     eval_likelihood_ckpt = float(
                         rnn_utils.normalized_likelihood(
                             ys_eval_all,
@@ -322,11 +335,11 @@ class GruTrainer(ModelTrainer):
                         checkpoint_record["output_df_path"] = str(output_df_ckpt_path)
 
                     if should_plot_split_examples_ckpt:
-                        n_action_logits_ckpt_full = int(getattr(dataset_eval, "n_classes", 0))
-                        if n_action_logits_ckpt_full <= 0:
-                            n_action_logits_ckpt_full = int(
-                                np.asarray(yhat_full_ckpt).shape[2] - 1
-                            )
+                        n_action_logits_ckpt_full = _require_n_action_logits(
+                            dataset,
+                            np.asarray(yhat_full_ckpt),
+                            context="checkpoint full-dataset plotting",
+                        )
                         split_summaries_ckpt = self._generate_split_examples(
                             output_dir=checkpoint_dir,
                             output_df=output_df_ckpt,
@@ -527,13 +540,11 @@ class GruTrainer(ModelTrainer):
 
         xs_eval, ys_eval = dataset_eval.get_all()
         yhat_eval, _ = rnn_utils.eval_network(make_network, params, xs_eval)
-        n_action_logits = int(getattr(dataset_eval, "n_classes", 0))
-        if n_action_logits <= 0:
-            n_action_logits = int(np.asarray(yhat_eval).shape[2] - 1)
-        if n_action_logits <= 0:
-            raise ValueError(
-                f"Invalid number of action logits inferred for eval likelihood: {n_action_logits}"
-            )
+        n_action_logits = _require_n_action_logits(
+            dataset_eval,
+            np.asarray(yhat_eval),
+            context="final eval",
+        )
 
         likelihood = rnn_utils.normalized_likelihood(
             ys_eval,
