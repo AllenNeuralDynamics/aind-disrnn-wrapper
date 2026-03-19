@@ -874,6 +874,12 @@ def load_disrnn_heldout_subject_data(config_source: Any) -> dict[str, Any]:
         batch_size=heldout_cfg.batch_size,
         batch_mode=heldout_cfg.batch_mode,
     )
+    # Keep held-out raw data aligned with sessions that survive dataset construction.
+    # create_disrnn_dataset can silently drop sessions whose every trial is ignored
+    # when ignore_policy == "exclude", which would otherwise break add_model_results.
+    if heldout_cfg.ignore_policy == "exclude" and "animal_response" in df_test.columns:
+        valid_sessions = df_test[df_test["animal_response"] != 2]["ses_idx"].unique()
+        df_test = df_test[df_test["ses_idx"].isin(valid_sessions)].copy()
     xs_test, ys_test = dataset_test.get_all()
 
     return {
