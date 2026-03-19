@@ -182,6 +182,7 @@ def plot_gru_examples_for_split(
 
     try:
         hidden_units = list(range(int(states.shape[2])))
+        plotted_hidden_units = hidden_units[:5]
         projected_states, explained_variance_ratio = _project_hidden_states_to_pcs(states)
 
         subject_groups = _iter_subject_session_groups(output_df)
@@ -280,7 +281,7 @@ def plot_gru_examples_for_split(
                     choices=choices[:n_trials],
                     rewards=rewards[:n_trials],
                     latents=latents[:n_trials],
-                    open_latents=hidden_units,
+                    open_latents=plotted_hidden_units,
                     action_probabilities=action_probabilities[:n_trials],
                 )
                 fig_trials.suptitle(f"Session {_normalize_identifier(session_id)}", fontsize=14)
@@ -314,6 +315,7 @@ def plot_gru_examples_for_split(
             "example_sessions_per_subject": sessions_per_subject,
             "example_max_subjects": max_subjects_to_plot,
             "hidden_units": hidden_units,
+            "plotted_hidden_units": plotted_hidden_units,
             "state_space_basis": "pca",
             "pca_explained_variance_ratio": explained_variance_ratio.tolist(),
             "example_session": selected_examples[0]["session_id"],
@@ -450,6 +452,7 @@ def evaluate_gru_on_heldout_subjects(
 
     states = np.asarray(network_states_test)
     open_hidden_units = list(range(int(states.shape[2])))
+    plotted_hidden_units = open_hidden_units[:5]
     projected_states, explained_variance_ratio = _project_hidden_states_to_pcs(states)
 
     session_ids = output_df["ses_idx"].unique()
@@ -535,7 +538,7 @@ def evaluate_gru_on_heldout_subjects(
                     choices=choices[:n_trials],
                     rewards=rewards[:n_trials],
                     latents=latents[:n_trials],
-                    open_latents=open_hidden_units,
+                    open_latents=plotted_hidden_units,
                     action_probabilities=action_probabilities[:n_trials],
                 )
                 fig_trials.suptitle(
@@ -625,6 +628,7 @@ def evaluate_gru_on_heldout_subjects(
             "heldout_example_sessions_per_subject": sessions_per_subject,
             "example_max_subjects": max_subjects_to_plot,
             "open_hidden_units": open_hidden_units,
+            "plotted_hidden_units": plotted_hidden_units,
             "state_space_basis": "pca",
             "pca_explained_variance_ratio": explained_variance_ratio.tolist(),
             "example_session": selected_examples[0]["session_id"],
@@ -647,6 +651,7 @@ def evaluate_gru_on_heldout_subjects(
             "heldout_example_sessions_per_subject": sessions_per_subject,
             "example_max_subjects": max_subjects_to_plot,
             "open_hidden_units": open_hidden_units,
+            "plotted_hidden_units": plotted_hidden_units,
             "state_space_basis": "pca",
             "pca_explained_variance_ratio": explained_variance_ratio.tolist(),
             "plotting_failed": True,

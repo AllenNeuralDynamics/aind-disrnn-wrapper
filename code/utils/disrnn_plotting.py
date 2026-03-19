@@ -220,25 +220,20 @@ def plot_latents_in_space(
         raise ValueError("Need at least two latent dimensions to plot latent space")
 
     num_dims = len(selected_latents)
-    n_axes = num_dims * (num_dims - 1) / 2
-    n_cols = num_dims
-    n_rows = int(n_axes / n_cols) + (n_axes % n_cols > 0)
-    if n_rows == 1:
-        n_rows = 2
+    n_axes = num_dims * (num_dims - 1) // 2
+    n_cols = min(num_dims, n_axes)
+    n_rows = int(np.ceil(n_axes / n_cols))
 
-    fig, axs = plt.subplots(
-        nrows=n_rows,
-        ncols=n_cols,
+    fig = plt.figure(
         figsize=(6 * n_cols, 4 * n_rows),
         dpi=fig_dpi,
     )
-    axs = np.atleast_2d(axs)
 
     ax_id = 0
     for i, latent_x in enumerate(selected_latents):
         for j, latent_y in enumerate(selected_latents):
             if i < j:
-                ax = axs[int(ax_id / n_cols), ax_id % n_cols]
+                ax = fig.add_subplot(n_rows, n_cols, ax_id + 1)
                 scatter = ax.scatter(
                     latent_points[:, latent_x],
                     latent_points[:, latent_y],
