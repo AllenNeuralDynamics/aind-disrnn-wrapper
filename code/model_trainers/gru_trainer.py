@@ -21,11 +21,12 @@ from disentangled_rnns.library import rnn_utils
 from base.interfaces import ModelTrainer
 from base.types import DatasetBundle
 from models.gru_network import make_gru_network
-from utils.disrnn_evaluation import HeldoutEvalConfig, plot_disrnn_examples_for_split
+from utils.disrnn_evaluation import HeldoutEvalConfig
 from utils.gru_evaluation import (
     add_gru_model_results,
     evaluate_gru_on_heldout_subjects,
     load_gru_heldout_subject_data,
+    plot_gru_examples_for_split,
 )
 
 logger = logging.getLogger(__name__)
@@ -726,13 +727,12 @@ class GruTrainer(ModelTrainer):
             split_output_df["ses_idx"] = split_output_df["ses_idx"].astype(str)
 
             try:
-                split_summary = plot_disrnn_examples_for_split(
+                split_summary = plot_gru_examples_for_split(
                     split_name=split_name,
                     output_dir=output_dir,
                     output_df=split_output_df,
                     network_states=np.asarray(network_states_full)[:, split_indices, :],
                     yhat_logits=np.asarray(yhat_full)[:, split_indices, :],
-                    params=params,
                     sessions_per_subject=split_sessions_per_subject,
                     max_subjects_to_plot=max_subjects_to_plot,
                     n_action_logits=n_action_logits,

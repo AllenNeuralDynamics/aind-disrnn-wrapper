@@ -158,6 +158,7 @@ def plot_latents_in_space(
     color_label: str,
     selected_latents: Sequence[int] | None = None,
     example_run: np.ndarray | None = None,
+    axis_label_prefix: str = "Latent",
     color_minmax: tuple[float, float] = (0.0, 1.0),
     fig_dpi: int = 100,
 ) -> plt.Figure:
@@ -177,6 +178,8 @@ def plot_latents_in_space(
         Latent indices to include in the pairwise plot grid.
     example_run:
         Optional array ``[n_trials, n_latents_selected]`` to overlay as a trajectory.
+    axis_label_prefix:
+        Prefix used for axis labels, e.g. ``Latent`` or ``PC``.
     color_minmax:
         Tuple ``(vmin, vmax)`` for color scaling.
     fig_dpi:
@@ -247,8 +250,8 @@ def plot_latents_in_space(
                     alpha=0.9,
                 )
                 ax.set_title("Latent space trajectory", fontsize=18)
-                ax.set_xlabel(f"Latent {latent_x}", fontsize=16)
-                ax.set_ylabel(f"Latent {latent_y}", fontsize=16)
+                ax.set_xlabel(f"{axis_label_prefix} {latent_x}", fontsize=16)
+                ax.set_ylabel(f"{axis_label_prefix} {latent_y}", fontsize=16)
                 ax.tick_params(axis="both", which="major", labelsize=11)
                 fig.colorbar(scatter, ax=ax, label=color_label)
 

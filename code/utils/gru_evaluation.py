@@ -14,7 +14,6 @@ from disentangled_rnns.library import rnn_utils
 from models.gru_network import make_gru_network
 from utils.disrnn_evaluation import (
     HeldoutEvalConfig,
-    _get_open_latents_from_params,
     _load_saved_params,
     _normalize_identifier,
     _prob_from_logits,
@@ -22,6 +21,7 @@ from utils.disrnn_evaluation import (
     _resolve_heldout_eval_config,
     _resolve_output_dir,
     _safe_filename_component,
+    _iter_subject_session_groups,
     load_disrnn_heldout_subject_data,
 )
 from utils.disrnn_plotting import (
@@ -31,9 +31,6 @@ from utils.disrnn_plotting import (
 )
 
 logger = logging.getLogger(__name__)
-
-OPEN_HIDDEN_THRESHOLD = 0.03
-
 
 def add_gru_model_results(
     df_trials: Any,
@@ -101,6 +98,270 @@ def add_gru_model_results(
         output_df.loc[session_mask, prob_cols] = probs[:session_len, session_index, :]
 
     return output_df
+
+
+def _project_hidden_states_to_pcs(
+    states: np.ndarray,
+    *,
+    max_components: int = 3,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Project hidden states onto the top principal components."""
+    states = np.asarray(states, dtype=float)
+    if states.ndim != 3:
+        raise ValueError(f"Expected hidden states to be 3D, got shape={states.shape}")
+
+    n_hidden = int(states.shape[2])
+    n_components = max(1, min(int(max_components), n_hidden))
+
+    flat_states = states.reshape(-1, n_hidden)
+    centered = flat_states - flat_states.mean(axis=0, keepdims=True)
+
+    if n_hidden == 1:
+        projected = centered
+        explained = np.array([1.0], dtype=float)
+    else:
+        _, singular_values, vh = np.linalg.svd(centered, full_matrices=False)
+        components = vh[:n_components]
+        projected = centered @ components.T
+        variances = singular_values**2
+        total_variance = float(np.sum(variances))
+        if total_variance <= 0:
+            explained = np.zeros(n_components, dtype=float)
+        else:
+            explained = (variances[:n_components] / total_variance).astype(float)
+
+    return projected.reshape(states.shape[0], states.shape[1], n_components), explained
+
+
+def plot_gru_examples_for_split(
+    *,
+    split_name: str,
+    output_dir: Path,
+    output_df: Any,
+    network_states: np.ndarray,
+    yhat_logits: np.ndarray,
+    sessions_per_subject: int,
+    max_subjects_to_plot: int = 6,
+    n_action_logits: int | None = None,
+    wandb_run: Any | None = None,
+) -> dict[str, Any]:
+    """Generate example plots for a GRU split using hidden states directly."""
+    if sessions_per_subject < 0:
+        raise ValueError("sessions_per_subject must be >= 0.")
+    if max_subjects_to_plot < 0:
+        raise ValueError("max_subjects_to_plot must be >= 0.")
+
+    output_df = output_df.copy()
+    states = np.asarray(network_states)
+    logits = np.asarray(yhat_logits)
+    if states.ndim != 3:
+        raise ValueError(f"Expected network_states 3D, got shape={states.shape}")
+    if logits.ndim != 3:
+        raise ValueError(f"Expected yhat_logits 3D, got shape={logits.shape}")
+
+    split_dir = output_dir / split_name
+    split_dir.mkdir(parents=True, exist_ok=True)
+
+    if sessions_per_subject == 0:
+        summary = {
+            "split": split_name,
+            "num_sessions": int(output_df["ses_idx"].nunique()) if "ses_idx" in output_df.columns else 0,
+            "num_trials": int(len(output_df)),
+            "plotting_skipped": True,
+            "example_sessions_per_subject": 0,
+            "example_max_subjects": max_subjects_to_plot,
+            "plots": {
+                "latents_over_trials_examples": [],
+                "latents_in_space_examples": [],
+            },
+        }
+        summary_path = split_dir / "split_eval_summary.json"
+        with summary_path.open("w") as f:
+            json.dump(summary, f, indent=2)
+        return summary
+
+    try:
+        hidden_units = list(range(int(states.shape[2])))
+        projected_states, explained_variance_ratio = _project_hidden_states_to_pcs(states)
+
+        subject_groups = _iter_subject_session_groups(output_df)
+        if not subject_groups:
+            raise ValueError(f"No sessions available for split plotting: {split_name}")
+        if len(subject_groups) > max_subjects_to_plot:
+            logger.info(
+                "%s: Limiting example plotting to first %d subjects (of %d total)",
+                split_name,
+                max_subjects_to_plot,
+                len(subject_groups),
+            )
+        subject_groups = subject_groups[:max_subjects_to_plot]
+
+        session_order = list(dict.fromkeys(output_df["ses_idx"].tolist()))
+        session_index_by_id = {session_id: index for index, session_id in enumerate(session_order)}
+        if len(session_index_by_id) != states.shape[1]:
+            raise ValueError(
+                "Split plotting requires output_df session order to match network states. "
+                f"Found sessions={len(session_index_by_id)} states={states.shape[1]}"
+            )
+
+        if n_action_logits is None or n_action_logits <= 0:
+            n_action_logits = int(logits.shape[2] - 1)
+        if n_action_logits <= 0:
+            raise ValueError(f"Invalid number of action logits inferred for split '{split_name}'")
+
+        probs_for_coloring = _prob_from_logits(
+            logits[:, :, :n_action_logits],
+            class_index=1 if n_action_logits > 1 else 0,
+        )
+        color_label = "P(right)" if n_action_logits == 2 else "P(class_1)"
+        selected_latents = list(range(projected_states.shape[2]))
+        run_len = min(30, states.shape[0])
+
+        latent_cols = sorted([c for c in output_df.columns if c.startswith("latent_")])
+        if not latent_cols:
+            raise ValueError(f"No latent columns found in model outputs for split: {split_name}")
+
+        selected_examples: list[dict[str, Any]] = []
+        trial_plot_paths: list[Path] = []
+        space_plot_paths: list[Path] = []
+
+        for subject_id, session_ids in subject_groups:
+            selected_session_ids = session_ids[:sessions_per_subject]
+            session_indices = [
+                session_index_by_id[s_id]
+                for s_id in session_ids
+                if s_id in session_index_by_id
+            ]
+            if not session_indices:
+                continue
+
+            subject_states = projected_states[:, session_indices, :]
+            subject_colors = probs_for_coloring[:, session_indices]
+            example_run = subject_states[:run_len, 0, :][:, selected_latents]
+            subject_states_points = subject_states.reshape(-1, subject_states.shape[2])
+            subject_color_points = subject_colors.reshape(-1)
+
+            fig_space = plot_latents_in_space(
+                latent_states=subject_states_points,
+                color_values=subject_color_points,
+                color_label=color_label,
+                selected_latents=selected_latents,
+                example_run=example_run,
+                axis_label_prefix="PC",
+            )
+            fig_space.suptitle(str(_normalize_identifier(session_ids[0])), fontsize=14)
+            fig_space.subplots_adjust(top=0.93)
+            subject_space_plot_path = save_figure(
+                fig_space,
+                split_dir / f"latents_in_space_subject_{_safe_filename_component(subject_id)}.png",
+            )
+            space_plot_paths.append(subject_space_plot_path)
+
+            for session_id in selected_session_ids:
+                session_df = output_df[output_df["ses_idx"] == session_id].sort_values("trial")
+                latents = session_df[latent_cols].to_numpy()
+                choices = session_df["animal_response"].to_numpy()
+                rewards = session_df["earned_reward"].astype(int).to_numpy()
+                session_index = session_index_by_id[session_id]
+                action_probabilities = _probs_from_logits_2d(
+                    logits[:, session_index, :n_action_logits]
+                )
+
+                n_trials = min(
+                    latents.shape[0],
+                    choices.shape[0],
+                    rewards.shape[0],
+                    action_probabilities.shape[0],
+                )
+                if n_trials <= 0:
+                    continue
+
+                fig_trials = plot_latents_over_trials(
+                    choices=choices[:n_trials],
+                    rewards=rewards[:n_trials],
+                    latents=latents[:n_trials],
+                    open_latents=hidden_units,
+                    action_probabilities=action_probabilities[:n_trials],
+                )
+                fig_trials.suptitle(f"Session {_normalize_identifier(session_id)}", fontsize=14)
+                fig_trials.subplots_adjust(top=0.92)
+                trials_plot_path = save_figure(
+                    fig_trials,
+                    split_dir
+                    / (
+                        f"latents_over_trials_subject_{_safe_filename_component(subject_id)}"
+                        f"_session_{_safe_filename_component(session_id)}.png"
+                    ),
+                )
+                trial_plot_paths.append(trials_plot_path)
+                selected_examples.append(
+                    {
+                        "subject_id": _normalize_identifier(subject_id),
+                        "session_id": _normalize_identifier(session_id),
+                        "latents_over_trials": str(trials_plot_path),
+                    }
+                )
+
+        if not selected_examples:
+            raise ValueError(f"Could not select any sessions for example plotting: {split_name}")
+        if not space_plot_paths:
+            raise ValueError(f"Could not generate latent-space plots for split: {split_name}")
+
+        summary = {
+            "split": split_name,
+            "num_sessions": int(len(session_order)),
+            "num_trials": int(len(output_df)),
+            "example_sessions_per_subject": sessions_per_subject,
+            "example_max_subjects": max_subjects_to_plot,
+            "hidden_units": hidden_units,
+            "state_space_basis": "pca",
+            "pca_explained_variance_ratio": explained_variance_ratio.tolist(),
+            "example_session": selected_examples[0]["session_id"],
+            "example_subject": selected_examples[0]["subject_id"],
+            "example_sessions": selected_examples,
+            "plots": {
+                "latents_over_trials_examples": [str(p) for p in trial_plot_paths],
+                "latents_in_space_examples": [str(p) for p in space_plot_paths],
+            },
+        }
+    except Exception as exc:
+        logger.warning("Split plotting failed for %s: %s", split_name, exc)
+        summary = {
+            "split": split_name,
+            "num_sessions": int(output_df["ses_idx"].nunique()) if "ses_idx" in output_df.columns else 0,
+            "num_trials": int(len(output_df)),
+            "plotting_failed": True,
+            "error": str(exc),
+            "example_sessions_per_subject": sessions_per_subject,
+            "plots": {
+                "latents_over_trials_examples": [],
+                "latents_in_space_examples": [],
+            },
+        }
+
+    summary_path = split_dir / "split_eval_summary.json"
+    with summary_path.open("w") as f:
+        json.dump(summary, f, indent=2)
+
+    if wandb_run is not None and not summary.get("plotting_failed", False):
+        import wandb
+
+        wandb_trial_images = [
+            wandb.Image(str(path))
+            for path in summary["plots"]["latents_over_trials_examples"]
+        ]
+        wandb_space_images = [
+            wandb.Image(str(path))
+            for path in summary["plots"]["latents_in_space_examples"]
+        ]
+        wandb_run.log(
+            {
+                f"{split_name}/latents_over_trials_examples": wandb_trial_images,
+                f"{split_name}/latents_in_space_examples": wandb_space_images,
+            }
+        )
+
+    return summary
 
 
 def load_gru_heldout_subject_data(config_source: Any) -> dict[str, Any]:
@@ -187,17 +448,9 @@ def evaluate_gru_on_heldout_subjects(
         ignore_policy=ignore_policy,
     )
 
-    open_hidden_threshold = OPEN_HIDDEN_THRESHOLD
-    open_hidden_units = _get_open_latents_from_params(
-        params,
-        latent_size=int(np.asarray(network_states_test).shape[2]),
-        threshold=open_hidden_threshold,
-    )
-    logger.info(
-        "Held-out GRU hidden units selected with threshold %.4f: %s",
-        open_hidden_threshold,
-        open_hidden_units,
-    )
+    states = np.asarray(network_states_test)
+    open_hidden_units = list(range(int(states.shape[2])))
+    projected_states, explained_variance_ratio = _project_hidden_states_to_pcs(states)
 
     session_ids = output_df["ses_idx"].unique()
     if len(session_ids) == 0:
@@ -310,7 +563,6 @@ def evaluate_gru_on_heldout_subjects(
         if not selected_examples:
             raise ValueError("Could not select any held-out sessions for example plotting.")
 
-        states = np.asarray(network_states_test)
         session_order = list(dict.fromkeys(df_test["ses_idx"].tolist()))
         session_index_by_id = {session_id: index for index, session_id in enumerate(session_order)}
         prob_class_index = 1 if n_action_logits > 1 else 0
@@ -319,12 +571,8 @@ def evaluate_gru_on_heldout_subjects(
             class_index=prob_class_index,
         )
         color_label = "P(right)" if n_action_logits == 2 else f"P(class_{prob_class_index})"
-        selected_latents = [
-            int(i) for i in open_hidden_units if 0 <= int(i) < states.shape[2]
-        ][:4]
-        if len(selected_latents) < 2:
-            selected_latents = list(range(min(4, states.shape[2])))
-        run_len = min(30, states.shape[0])
+        selected_latents = list(range(projected_states.shape[2]))
+        run_len = min(30, projected_states.shape[0])
 
         space_plot_paths: list[Path] = []
         for subject_id, subject_rows in selected_subject_groups:
@@ -337,7 +585,7 @@ def evaluate_gru_on_heldout_subjects(
             if not session_indices:
                 continue
 
-            subject_states = states[:, session_indices, :]
+            subject_states = projected_states[:, session_indices, :]
             subject_colors = probs_for_coloring[:, session_indices]
             example_session_id = subject_sessions[0]
             example_run = subject_states[:run_len, 0, :][:, selected_latents]
@@ -350,6 +598,7 @@ def evaluate_gru_on_heldout_subjects(
                 color_label=color_label,
                 selected_latents=selected_latents,
                 example_run=example_run,
+                axis_label_prefix="PC",
             )
             fig_space.suptitle(
                 str(_normalize_identifier(example_session_id)),
@@ -375,8 +624,9 @@ def evaluate_gru_on_heldout_subjects(
             "test_likelihood": test_likelihood,
             "heldout_example_sessions_per_subject": sessions_per_subject,
             "example_max_subjects": max_subjects_to_plot,
-            "heldout_open_hidden_threshold": open_hidden_threshold,
             "open_hidden_units": open_hidden_units,
+            "state_space_basis": "pca",
+            "pca_explained_variance_ratio": explained_variance_ratio.tolist(),
             "example_session": selected_examples[0]["session_id"],
             "example_subject": selected_examples[0]["subject_id"],
             "example_sessions": selected_examples,
@@ -396,8 +646,9 @@ def evaluate_gru_on_heldout_subjects(
             "test_likelihood": test_likelihood,
             "heldout_example_sessions_per_subject": sessions_per_subject,
             "example_max_subjects": max_subjects_to_plot,
-            "heldout_open_hidden_threshold": open_hidden_threshold,
             "open_hidden_units": open_hidden_units,
+            "state_space_basis": "pca",
+            "pca_explained_variance_ratio": explained_variance_ratio.tolist(),
             "plotting_failed": True,
             "error": str(exc),
             "plots": {
