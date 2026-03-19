@@ -1,0 +1,77 @@
+# GRU model training configuration
+#
+# This mirrors the current disRNN pipeline shape while using the plain Haiku GRU
+# architecture shown in the upstream disentangled_rnns GRU notebook.
+
+data:
+  type: synthetic
+  _target_: ${.agent.loader_target}
+  num_trials: 500
+  num_sessions: 30
+  run_name_component: synthetic_${.agent.type}_${.task.type}
+  task:
+    type: random_walk
+    reward_baiting: false
+    p_min: 0.0
+    p_max: 1.0
+    sigma: 0.15
+    mean: 0
+    num_trials: ${..num_trials}
+    seed: ${seed}
+  agent:
+    type: ${.agent_class}
+    loader_target: data_loaders.synthetic.SyntheticCognitiveAgents
+    agent_class: ForagerQLearning
+    agent_kwargs:
+      number_of_learning_rate: 2
+      number_of_forget_rate: 1
+      choice_kernel: none
+      action_selection: softmax
+    agent_params:
+      learn_rate_rew: 0.5
+      learn_rate_unrew: 0.1
+      forget_rate_unchosen: 0.05
+      softmax_inverse_temperature: 5.0
+      biasL: 0.0
+    agent_params_session_var:
+      biasL:
+        type: gaussian
+        mean: 0
+        std: 1
+    seed: ${seed}
+  eval_every_n: 2
+  seed: ${seed}
+
+model:
+  type: gru
+  _target_: model_trainers.gru_trainer.GruTrainer
+  architecture:
+    hidden_size: 16
+    num_layers: 1
+  training:
+    lr: 1e-3
+    n_steps: 1000
+    loss: categorical
+    loss_param: 1
+    max_grad_norm: 1.0
+    checkpoint_every_n_steps: 0
+    checkpoint_eval_on_eval_split: true
+    checkpoint_log_eval_to_wandb: true
+    checkpoint_plot_split_examples_every_n: 5
+    checkpoint_save_output_df_every_n: 0
+    checkpoint_log_split_examples_to_wandb: true
+    checkpoint_keep_media_files: true
+    checkpoint_run_heldout_eval: true
+    checkpoint_include_final_in_heldout: false
+    save_output_df: true
+  run_name_component: gru_H${.architecture.hidden_size}
+
+seed: 43
+
+wandb:
+  entity: AIND-disRNN
+  dir: /results
+  project: test
+  name: ${data.run_name_component}_${model.run_name_component}
+
+job_id: 0
