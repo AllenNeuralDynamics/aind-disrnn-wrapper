@@ -16,7 +16,6 @@ import pandas as pd
 import wandb
 from omegaconf import DictConfig, OmegaConf
 
-import aind_disrnn_utils.data_loader as dl
 from disentangled_rnns.library import rnn_utils
 
 from base.interfaces import ModelTrainer
@@ -24,6 +23,7 @@ from base.types import DatasetBundle
 from models.gru_network import make_gru_network
 from utils.disrnn_evaluation import HeldoutEvalConfig, plot_disrnn_examples_for_split
 from utils.gru_evaluation import (
+    add_gru_model_results,
     evaluate_gru_on_heldout_subjects,
     load_gru_heldout_subject_data,
 )
@@ -308,7 +308,7 @@ class GruTrainer(ModelTrainer):
                         params,
                         xs_full_for_checkpoint,
                     )
-                    output_df_ckpt = dl.add_model_results(
+                    output_df_ckpt = add_gru_model_results(
                         df_for_checkpoint.copy(),
                         np.asarray(network_states_full_ckpt),
                         np.asarray(yhat_full_ckpt),
@@ -510,7 +510,7 @@ class GruTrainer(ModelTrainer):
         )
 
         df = bundle.raw
-        output_df = dl.add_model_results(
+        output_df = add_gru_model_results(
             df,
             np.asarray(network_states_full),
             np.asarray(yhat_full),

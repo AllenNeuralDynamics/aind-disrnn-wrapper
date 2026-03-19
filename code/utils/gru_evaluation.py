@@ -9,7 +9,6 @@ from typing import Any
 
 import numpy as np
 
-import aind_disrnn_utils.data_loader as dl
 from disentangled_rnns.library import rnn_utils
 
 from models.gru_network import make_gru_network
@@ -34,6 +33,74 @@ from utils.disrnn_plotting import (
 logger = logging.getLogger(__name__)
 
 OPEN_HIDDEN_THRESHOLD = 0.03
+
+
+def add_gru_model_results(
+    df_trials: Any,
+    network_states: np.ndarray,
+    yhat: np.ndarray,
+    *,
+    ignore_policy: str,
+) -> Any:
+    """Attach GRU hidden states and output logits/probabilities to the trial dataframe.
+
+    The upstream ``add_model_results`` helper is disRNN-oriented and expects a
+    particular output layout. GRU runs only need hidden-state trajectories plus
+    action logits, so we align those tensors back onto the filtered trial rows
+    directly.
+    """
+    output_df = df_trials.copy()
+    if ignore_policy == "exclude" and "animal_response" in output_df.columns:
+        output_df = output_df[output_df["animal_response"] != 2].copy()
+
+    if "ses_idx" not in output_df.columns or "trial" not in output_df.columns:
+        raise ValueError("GRU output dataframe requires 'ses_idx' and 'trial' columns.")
+
+    output_df = output_df.sort_values(["ses_idx", "trial"]).copy()
+
+    states = np.asarray(network_states)
+    logits = np.asarray(yhat)
+    if states.ndim != 3:
+        raise ValueError(f"Expected GRU network_states to be 3D, got shape={states.shape}")
+    if logits.ndim != 3:
+        raise ValueError(f"Expected GRU yhat to be 3D, got shape={logits.shape}")
+    if states.shape[:2] != logits.shape[:2]:
+        raise ValueError(
+            "GRU states/logits shape mismatch: "
+            f"states={states.shape} logits={logits.shape}"
+        )
+
+    session_order = list(dict.fromkeys(output_df["ses_idx"].tolist()))
+    if len(session_order) != states.shape[1]:
+        raise ValueError(
+            "Session mismatch between dataframe and GRU outputs: "
+            f"df_sessions={len(session_order)} model_sessions={states.shape[1]}"
+        )
+
+    latent_cols = [f"latent_{idx}" for idx in range(states.shape[2])]
+    logit_cols = [f"choice_logit_{idx}" for idx in range(logits.shape[2])]
+
+    logits_stable = logits - np.max(logits, axis=-1, keepdims=True)
+    probs = np.exp(logits_stable)
+    probs /= np.sum(probs, axis=-1, keepdims=True)
+    prob_cols = [f"choice_prob_{idx}" for idx in range(probs.shape[2])]
+
+    for col in [*latent_cols, *logit_cols, *prob_cols]:
+        output_df[col] = np.nan
+
+    for session_index, session_id in enumerate(session_order):
+        session_mask = output_df["ses_idx"] == session_id
+        session_len = int(session_mask.sum())
+        if session_len > states.shape[0]:
+            raise ValueError(
+                "More dataframe rows than GRU timepoints for session "
+                f"{session_id}: rows={session_len} timepoints={states.shape[0]}"
+            )
+        output_df.loc[session_mask, latent_cols] = states[:session_len, session_index, :]
+        output_df.loc[session_mask, logit_cols] = logits[:session_len, session_index, :]
+        output_df.loc[session_mask, prob_cols] = probs[:session_len, session_index, :]
+
+    return output_df
 
 
 def load_gru_heldout_subject_data(config_source: Any) -> dict[str, Any]:
@@ -113,7 +180,7 @@ def evaluate_gru_on_heldout_subjects(
     plot_dir = output_dir / output_subdir
     plot_dir.mkdir(parents=True, exist_ok=True)
 
-    output_df = dl.add_model_results(
+    output_df = add_gru_model_results(
         df_test.copy(),
         np.asarray(network_states_test),
         np.asarray(yhat_test),
