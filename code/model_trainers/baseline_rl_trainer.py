@@ -414,7 +414,7 @@ class BaselineRLTrainer(ModelTrainer):
 
         # --- Log to wandb ---
         if wandb_run is not None:
-            wandb_run.summary["likelihood"] = float(eval_likelihood)
+            wandb_run.summary["eval_likelihood"] = float(eval_likelihood)
             wandb_run.summary["likelihood_train"] = float(train_likelihood)
             wandb_run.summary["agent_class"] = self.agent_class
             wandb_run.summary["n_free_params"] = fitting_result.k_model

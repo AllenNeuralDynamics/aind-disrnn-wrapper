@@ -404,7 +404,7 @@ def evaluate_baseline_rl_on_heldout_subjects(
     if wandb_run is not None:
         import wandb
 
-        wandb_run.summary["heldout/test_likelihood"] = float(test_likelihood)
+        wandb_run.summary["heldout_test_likelihood"] = float(test_likelihood)
         wandb_run.summary["heldout/num_test_sessions"] = int(len(choice_sessions))
         wandb_run.summary["heldout/num_test_trials"] = int(sum(len(x) for x in choice_sessions))
         wandb_run.summary["heldout/example_sessions_per_subject"] = sessions_per_subject
