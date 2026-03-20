@@ -125,8 +125,14 @@ class DisrnnTrainer(ModelTrainer):
             checkpoint_eval_on_eval_split=bool(
                 self.training.get("checkpoint_eval_on_eval_split", True)
             ),
+            checkpoint_eval_on_train_split=bool(
+                self.training.get("checkpoint_eval_on_train_split", True)
+            ),
             checkpoint_log_eval_to_wandb=bool(
                 self.training.get("checkpoint_log_eval_to_wandb", True)
+            ),
+            checkpoint_log_train_to_wandb=bool(
+                self.training.get("checkpoint_log_train_to_wandb", True)
             ),
             checkpoint_plot_split_examples_every_n=int(
                 self.training.get("checkpoint_plot_split_examples_every_n", 5)
@@ -249,6 +255,7 @@ class DisrnnTrainer(ModelTrainer):
             all_validation_losses: list[float] = []
             steps_completed = 0
             opt_state = None
+            xs_train_all, ys_train_all = dataset_train.get_all()
             xs_eval_all, ys_eval_all = dataset_eval.get_all()
             xs_full_for_checkpoint, _ = dataset.get_all()
             df_for_checkpoint = bundle.raw
@@ -311,6 +318,30 @@ class DisrnnTrainer(ModelTrainer):
                 checkpoint_params_path = checkpoint_dir / "params.json"
                 with checkpoint_params_path.open("w") as f:
                     f.write(json.dumps(params, cls=rnn_utils.NpJnpJsonEncoder))
+
+                train_likelihood_ckpt: float | None = None
+                if args.checkpoint_eval_on_train_split:
+                    yhat_train_ckpt, _ = rnn_utils.eval_network(
+                        lambda: disrnn.HkDisentangledRNN(noiseless_network),
+                        params,
+                        xs_train_all,
+                    )
+                    n_action_logits_train_ckpt = int(getattr(dataset_train, "n_classes", 0))
+                    if n_action_logits_train_ckpt <= 0:
+                        n_action_logits_train_ckpt = int(
+                            np.asarray(yhat_train_ckpt).shape[2] - 1
+                        )
+                    if n_action_logits_train_ckpt <= 0:
+                        raise ValueError(
+                            "Invalid number of action logits inferred for checkpoint train likelihood."
+                        )
+                    train_likelihood_ckpt = float(
+                        rnn_utils.normalized_likelihood(
+                            ys_train_all,
+                            yhat_train_ckpt[:, :, :n_action_logits_train_ckpt],
+                        )
+                    )
+
                 eval_likelihood_ckpt: float | None = None
                 if args.checkpoint_eval_on_eval_split:
                     yhat_eval_ckpt, _ = rnn_utils.eval_network(
@@ -336,6 +367,8 @@ class DisrnnTrainer(ModelTrainer):
                     "step": int(steps_completed),
                     "params_path": str(checkpoint_params_path),
                 }
+                if train_likelihood_ckpt is not None:
+                    checkpoint_record["train_likelihood"] = train_likelihood_ckpt
                 if eval_likelihood_ckpt is not None:
                     checkpoint_record["eval_likelihood"] = eval_likelihood_ckpt
 
@@ -443,7 +476,18 @@ class DisrnnTrainer(ModelTrainer):
                         )
                         checkpoint_record["split_examples"] = split_summaries_ckpt
 
-                checkpoint_records.append(checkpoint_record)
+                if (
+                    wandb_run is not None
+                    and args.checkpoint_log_train_to_wandb
+                    and train_likelihood_ckpt is not None
+                ):
+                    wandb_run.log(
+                        {
+                            "checkpoint/train_likelihood": train_likelihood_ckpt,
+                            "checkpoint/step": int(steps_completed),
+                        },
+                        step=args.n_warmup_steps + int(steps_completed),
+                    )
 
                 if (
                     wandb_run is not None

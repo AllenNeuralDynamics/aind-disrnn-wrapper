@@ -124,8 +124,14 @@ class GruTrainer(ModelTrainer):
             checkpoint_eval_on_eval_split=bool(
                 self.training.get("checkpoint_eval_on_eval_split", True)
             ),
+            checkpoint_eval_on_train_split=bool(
+                self.training.get("checkpoint_eval_on_train_split", True)
+            ),
             checkpoint_log_eval_to_wandb=bool(
                 self.training.get("checkpoint_log_eval_to_wandb", True)
+            ),
+            checkpoint_log_train_to_wandb=bool(
+                self.training.get("checkpoint_log_train_to_wandb", True)
             ),
             checkpoint_plot_split_examples_every_n=int(
                 self.training.get("checkpoint_plot_split_examples_every_n", 5)
@@ -214,6 +220,7 @@ class GruTrainer(ModelTrainer):
             all_training_losses: list[float] = []
             all_validation_losses: list[float] = []
             steps_completed = 0
+            xs_train_all, ys_train_all = dataset_train.get_all()
             xs_eval_all, ys_eval_all = dataset_eval.get_all()
             xs_full_for_checkpoint, _ = dataset.get_all()
             df_for_checkpoint = bundle.raw
@@ -276,6 +283,25 @@ class GruTrainer(ModelTrainer):
                 with checkpoint_params_path.open("w") as f:
                     f.write(json.dumps(params, cls=rnn_utils.NpJnpJsonEncoder))
 
+                train_likelihood_ckpt: float | None = None
+                if args.checkpoint_eval_on_train_split:
+                    yhat_train_ckpt, _ = rnn_utils.eval_network(
+                        make_network,
+                        params,
+                        xs_train_all,
+                    )
+                    n_action_logits_train_ckpt = _require_n_action_logits(
+                        dataset_train,
+                        np.asarray(yhat_train_ckpt),
+                        context="checkpoint train",
+                    )
+                    train_likelihood_ckpt = float(
+                        rnn_utils.normalized_likelihood(
+                            ys_train_all,
+                            np.asarray(yhat_train_ckpt)[:, :, :n_action_logits_train_ckpt],
+                        )
+                    )
+
                 eval_likelihood_ckpt: float | None = None
                 if args.checkpoint_eval_on_eval_split:
                     yhat_eval_ckpt, _ = rnn_utils.eval_network(
@@ -299,6 +325,8 @@ class GruTrainer(ModelTrainer):
                     "step": int(steps_completed),
                     "params_path": str(checkpoint_params_path),
                 }
+                if train_likelihood_ckpt is not None:
+                    checkpoint_record["train_likelihood"] = train_likelihood_ckpt
                 if eval_likelihood_ckpt is not None:
                     checkpoint_record["eval_likelihood"] = eval_likelihood_ckpt
 
@@ -359,6 +387,19 @@ class GruTrainer(ModelTrainer):
                         checkpoint_record["split_examples"] = split_summaries_ckpt
 
                 checkpoint_records.append(checkpoint_record)
+
+                if (
+                    wandb_run is not None
+                    and args.checkpoint_log_train_to_wandb
+                    and train_likelihood_ckpt is not None
+                ):
+                    wandb_run.log(
+                        {
+                            "checkpoint/train_likelihood": train_likelihood_ckpt,
+                            "checkpoint/step": int(steps_completed),
+                        },
+                        step=int(steps_completed),
+                    )
 
                 if (
                     wandb_run is not None

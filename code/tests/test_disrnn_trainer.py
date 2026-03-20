@@ -1,4 +1,4 @@
-"""Smoke tests for GruTrainer."""
+"""Smoke tests for DisrnnTrainer."""
 
 from __future__ import annotations
 
@@ -9,21 +9,21 @@ from pathlib import Path
 
 try:
     from data_loaders.synthetic import SyntheticCognitiveAgents
-    from model_trainers.gru_trainer import GruTrainer
+    from model_trainers.disrnn_trainer import DisrnnTrainer
 
-    GRU_DEPS_AVAILABLE = True
-    GRU_IMPORT_ERROR = None
+    DISRNN_DEPS_AVAILABLE = True
+    DISRNN_IMPORT_ERROR = None
 except ModuleNotFoundError as exc:
-    GRU_DEPS_AVAILABLE = False
-    GRU_IMPORT_ERROR = exc
+    DISRNN_DEPS_AVAILABLE = False
+    DISRNN_IMPORT_ERROR = exc
 
 
 @unittest.skipUnless(
-    GRU_DEPS_AVAILABLE,
-    f"GRU trainer dependencies unavailable: {GRU_IMPORT_ERROR}",
+    DISRNN_DEPS_AVAILABLE,
+    f"disRNN trainer dependencies unavailable: {DISRNN_IMPORT_ERROR}",
 )
-class TestGruTrainer(unittest.TestCase):
-    """Test suite for GruTrainer."""
+class TestDisrnnTrainer(unittest.TestCase):
+    """Test suite for DisrnnTrainer."""
 
     def setUp(self):
         self.loader = SyntheticCognitiveAgents(
@@ -66,73 +66,46 @@ class TestGruTrainer(unittest.TestCase):
             eval_every_n=2,
         )
         self.bundle = self.loader.load()
-        self.output_dir = Path(tempfile.mkdtemp(prefix="gru_trainer_test_"))
+        self.output_dir = Path(tempfile.mkdtemp(prefix="disrnn_trainer_test_"))
 
     def tearDown(self):
         shutil.rmtree(self.output_dir, ignore_errors=True)
 
-    def test_instantiation(self):
-        trainer = GruTrainer(
-            architecture={"hidden_size": 8, "num_layers": 1},
-            training={
-                "lr": 1e-3,
-                "n_steps": 1,
-                "loss": "categorical",
-                "loss_param": 1,
-                "max_grad_norm": 1.0,
-            },
-            seed=42,
-        )
-        self.assertEqual(trainer.architecture["hidden_size"], 8)
-        self.assertEqual(trainer.architecture["num_layers"], 1)
-        self.assertEqual(trainer.seed, 42)
-
-    def test_fit_basic(self):
-        trainer = GruTrainer(
-            architecture={"hidden_size": 8, "num_layers": 1},
-            training={
-                "lr": 1e-3,
-                "n_steps": 5,
-                "loss": "categorical",
-                "loss_param": 1,
-                "max_grad_norm": 1.0,
-                "checkpoint_every_n_steps": 0,
-                "save_output_df": True,
-            },
-            output_dir=str(self.output_dir),
-            seed=42,
-        )
-
-        output = trainer.fit(self.bundle)
-
-        self.assertIn("likelihood", output)
-        self.assertIn("training_time", output)
-        self.assertIn("split_examples", output)
-        self.assertIn("random_key", output)
-        self.assertIsInstance(output["likelihood"], float)
-        self.assertGreaterEqual(output["likelihood"], 0.0)
-        self.assertLessEqual(output["likelihood"], 1.0)
-
-        self.assertTrue((self.output_dir / "params.json").exists())
-        self.assertTrue((self.output_dir / "output_summary.json").exists())
-        self.assertTrue((self.output_dir / "gru_config.json").exists())
-        self.assertTrue((self.output_dir / "output_df.csv").exists())
-
     def test_checkpoint_training(self):
-        trainer = GruTrainer(
-            architecture={"hidden_size": 8, "num_layers": 1},
+        trainer = DisrnnTrainer(
+            architecture={
+                "latent_size": 4,
+                "update_net_n_units_per_layer": 8,
+                "update_net_n_layers": 2,
+                "choice_net_n_units_per_layer": 4,
+                "choice_net_n_layers": 1,
+                "activation": "leaky_relu",
+            },
+            penalties={
+                "latent_penalty": 1e-3,
+                "choice_net_latent_penalty": 1e-3,
+                "update_net_obs_penalty": 1e-3,
+                "update_net_latent_penalty": 1e-3,
+            },
             training={
                 "lr": 1e-3,
                 "n_steps": 4,
-                "loss": "categorical",
-                "loss_param": 1,
+                "n_warmup_steps": 1,
+                "loss": "penalized_categorical",
+                "loss_param": 1.0,
                 "max_grad_norm": 1.0,
                 "checkpoint_every_n_steps": 2,
                 "checkpoint_plot_split_examples_every_n": 0,
                 "checkpoint_save_output_df_every_n": 0,
                 "checkpoint_log_eval_to_wandb": False,
+                "checkpoint_log_train_to_wandb": False,
                 "checkpoint_log_split_examples_to_wandb": False,
                 "checkpoint_run_heldout_eval": False,
+                "checkpoint_plot_choice_rule": False,
+                "checkpoint_plot_update_rules": False,
+                "plot_choice_rule": False,
+                "plot_update_rules": False,
+                "save_output_df": False,
             },
             output_dir=str(self.output_dir),
             seed=42,

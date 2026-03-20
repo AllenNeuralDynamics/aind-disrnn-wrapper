@@ -159,7 +159,9 @@ model:
     n_warmup_steps: 10
     checkpoint_every_n_steps: 10             # 0 disables intermediate checkpoints
     checkpoint_eval_on_eval_split: true        # compute eval-split likelihood at each checkpoint
+    checkpoint_eval_on_train_split: true       # compute train-split likelihood at each checkpoint
     checkpoint_log_eval_to_wandb: true         # log checkpoint eval likelihood to W&B
+    checkpoint_log_train_to_wandb: true        # log checkpoint train likelihood to W&B
     checkpoint_plot_split_examples_every_n: 10  # 0 disables checkpoint training/eval split example plots
     checkpoint_save_output_df_every_n: 0       # 0 disables per-checkpoint output_df.csv snapshots
     checkpoint_log_split_examples_to_wandb: true # log checkpoint split-example images to W&B
