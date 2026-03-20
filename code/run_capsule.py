@@ -32,6 +32,16 @@ from utils.run_helpers import (
 logger = logging.getLogger(__name__)
 
 
+def _is_multisubject_disrnn_run(hydra_config) -> bool:
+    model_type = getattr(hydra_config.model, "type", None)
+    architecture_cfg = getattr(hydra_config.model, "architecture", None)
+    return bool(
+        model_type == "disrnn"
+        and architecture_cfg is not None
+        and getattr(architecture_cfg, "multisubject", False)
+    )
+
+
 def main() -> None:
     configure_sys_logger()
 
@@ -80,7 +90,7 @@ def main() -> None:
     # (where subject_ids is null in config) are still identifiable in the UI.
     resolved_subject_ids = dataset_bundle.metadata.get("subject_ids")
     if wandb_run is not None and resolved_subject_ids is not None:
-        ids_str = "-".join(str(s) for s in sorted(resolved_subject_ids))
+        ids_str = "-".join(str(s) for s in resolved_subject_ids)
         new_name = f"{wandb_run.name}_subjs-{ids_str}" if wandb_run.name else f"subs-{ids_str}"
         wandb_run.name = new_name
         wandb_run.config.update({"resolved_subject_ids": list(resolved_subject_ids)})
@@ -88,10 +98,12 @@ def main() -> None:
 
     heldout_test_data = None
     model_type = getattr(hydra_config.model, "type", None)
+    is_multisubject_disrnn = _is_multisubject_disrnn_run(hydra_config)
     if (
         model_type in {"disrnn", "gru"}
         and hasattr(hydra_config.data, "mature_only")
         and heldout_cfg.enabled
+        and not is_multisubject_disrnn
     ):
         try:
             if model_type == "disrnn":
@@ -103,6 +115,11 @@ def main() -> None:
                 "Preloading held-out test data failed; evaluation will fall back to lazy loading: %s",
                 exc,
             )
+    elif is_multisubject_disrnn and heldout_cfg.enabled:
+        logger.info(
+            "Skipping held-out preload for multisubject disRNN; v1 supports seen-subject "
+            "personalization only."
+        )
 
     # --- Train model ---
     model_trainer: ModelTrainer = instantiate(
@@ -122,7 +139,11 @@ def main() -> None:
                 item for item in raw_checkpoint_heldout if isinstance(item, dict)
             ]
 
-    if hasattr(hydra_config.data, "mature_only") and heldout_cfg.enabled:
+    if (
+        hasattr(hydra_config.data, "mature_only")
+        and heldout_cfg.enabled
+        and not is_multisubject_disrnn
+    ):
         heldout_summary = None
         try:
             if model_type == "disrnn":
@@ -311,6 +332,11 @@ def main() -> None:
 
         if heldout_summary is not None:
             output["heldout_test"] = heldout_summary
+    elif is_multisubject_disrnn and heldout_cfg.enabled:
+        logger.info(
+            "Skipping final held-out evaluation for multisubject disRNN; v1 supports "
+            "seen-subject personalization only."
+        )
 
     if wandb_run is not None:
         wandb_run.finish()

@@ -5,7 +5,7 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import Any, Dict, Mapping
+from typing import Any, Callable, Dict, Mapping
 from dataclasses import asdict
 
 import jax
@@ -18,15 +18,22 @@ from omegaconf import DictConfig, OmegaConf
 
 import aind_disrnn_utils.data_loader as dl
 import types
-from disentangled_rnns.library import disrnn, plotting, rnn_utils
+from disentangled_rnns.library import disrnn, multisubject_disrnn, plotting, rnn_utils
 
 from base.interfaces import ModelTrainer
 from base.types import DatasetBundle
+from models import multisubject_disrnn as local_multisubject_disrnn
 from utils.disrnn_evaluation import plot_disrnn_examples_for_split
 from utils.disrnn_evaluation import (
     HeldoutEvalConfig,
     evaluate_disrnn_on_heldout_subjects,
     load_disrnn_heldout_subject_data,
+)
+from utils.multisubject import (
+    convert_local_params_to_upstream_multisubject,
+    extract_subject_embeddings_from_params,
+    save_subject_index_map,
+    subject_embeddings_to_dataframe,
 )
 
 logger = logging.getLogger(__name__)
@@ -36,6 +43,27 @@ def _to_dict(config: Mapping[str, Any] | DictConfig) -> Dict[str, Any]:
     if isinstance(config, DictConfig):
         return OmegaConf.to_container(config, resolve=True)  # type: ignore[return-value]
     return dict(config)
+
+
+def _is_multisubject_mode(
+    architecture: Mapping[str, Any],
+    metadata: Mapping[str, Any],
+) -> bool:
+    return bool(architecture.get("multisubject", False) or metadata.get("multisubject", False))
+
+
+def _get_architecture_value(
+    architecture: Mapping[str, Any],
+    key: str,
+    *,
+    default: Any = None,
+    alias: str | None = None,
+) -> Any:
+    if key in architecture:
+        return architecture[key]
+    if alias is not None and alias in architecture:
+        return architecture[alias]
+    return default
 
 
 class DisrnnTrainer(ModelTrainer):
@@ -58,6 +86,191 @@ class DisrnnTrainer(ModelTrainer):
         self.heldout_data = heldout_data
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+
+    def _build_network_configs(
+        self,
+        *,
+        dataset: Any,
+        ignore_policy: str,
+        metadata: Mapping[str, Any],
+    ) -> tuple[Any, Any]:
+        """Create train/eval configs for single- or multisubject disRNN."""
+        output_size = 2 if ignore_policy == "exclude" else 3
+        is_multisubject = _is_multisubject_mode(self.architecture, metadata)
+
+        if is_multisubject:
+            num_subjects = int(
+                metadata.get("num_subjects")
+                or len(metadata.get("subject_ids", []))
+            )
+            if num_subjects <= 0:
+                raise ValueError(
+                    "Multisubject disRNN requires metadata.num_subjects or metadata.subject_ids."
+                )
+            plot_subject_index = int(
+                _get_architecture_value(
+                    self.architecture,
+                    "plot_subject_index",
+                    default=0,
+                )
+            )
+            if plot_subject_index < 0 or plot_subject_index >= num_subjects:
+                raise ValueError(
+                    "architecture.plot_subject_index must be in "
+                    f"[0, {num_subjects - 1}], got {plot_subject_index}."
+                )
+            subject_embedding_size = _get_architecture_value(
+                self.architecture,
+                "subject_embedding_size",
+            )
+            if subject_embedding_size is None or int(subject_embedding_size) <= 0:
+                raise ValueError(
+                    "Multisubject disRNN requires architecture.subject_embedding_size > 0."
+                )
+
+            config = multisubject_disrnn.MultisubjectDisRnnConfig(
+                obs_size=int(dataset._xs.shape[2] - 1),
+                output_size=output_size,
+                x_names=dataset.x_names,
+                y_names=dataset.y_names,
+                latent_size=self.architecture["latent_size"],
+                update_net_n_units_per_layer=self.architecture[
+                    "update_net_n_units_per_layer"
+                ],
+                update_net_n_layers=self.architecture["update_net_n_layers"],
+                choice_net_n_units_per_layer=self.architecture[
+                    "choice_net_n_units_per_layer"
+                ],
+                choice_net_n_layers=self.architecture["choice_net_n_layers"],
+                activation=self.architecture["activation"],
+                noiseless_mode=False,
+                latent_penalty=self.penalties["latent_penalty"],
+                choice_net_latent_penalty=self.penalties["choice_net_latent_penalty"],
+                update_net_obs_penalty=self.penalties["update_net_obs_penalty"],
+                update_net_latent_penalty=self.penalties["update_net_latent_penalty"],
+                max_n_subjects=num_subjects,
+                subject_embedding_size=int(subject_embedding_size),
+                subj_penalty=float(
+                    _get_architecture_value(
+                        self.architecture,
+                        "subject_penalty",
+                        default=0.0,
+                        alias="subj_penalty",
+                    )
+                ),
+                update_net_subj_penalty=float(
+                    _get_architecture_value(
+                        self.architecture,
+                        "update_net_subject_penalty",
+                        default=0.0,
+                        alias="update_net_subj_penalty",
+                    )
+                ),
+                choice_net_subj_penalty=float(
+                    _get_architecture_value(
+                        self.architecture,
+                        "choice_net_subject_penalty",
+                        default=0.0,
+                        alias="choice_net_subj_penalty",
+                    )
+                ),
+            )
+        else:
+            config = disrnn.DisRnnConfig(
+                obs_size=dataset._xs.shape[2],
+                output_size=output_size,
+                x_names=dataset.x_names,
+                y_names=dataset.y_names,
+                latent_size=self.architecture["latent_size"],
+                update_net_n_units_per_layer=self.architecture[
+                    "update_net_n_units_per_layer"
+                ],
+                update_net_n_layers=self.architecture["update_net_n_layers"],
+                choice_net_n_units_per_layer=self.architecture[
+                    "choice_net_n_units_per_layer"
+                ],
+                choice_net_n_layers=self.architecture["choice_net_n_layers"],
+                activation=self.architecture["activation"],
+                noiseless_mode=False,
+                latent_penalty=self.penalties["latent_penalty"],
+                choice_net_latent_penalty=self.penalties["choice_net_latent_penalty"],
+                update_net_obs_penalty=self.penalties["update_net_obs_penalty"],
+                update_net_latent_penalty=self.penalties["update_net_latent_penalty"],
+            )
+
+        noiseless_network = copy.deepcopy(config)
+        noiseless_network.latent_penalty = 0
+        noiseless_network.choice_net_latent_penalty = 0
+        noiseless_network.update_net_obs_penalty = 0
+        noiseless_network.update_net_latent_penalty = 0
+        noiseless_network.l2_scale = 0
+        noiseless_network.noiseless_mode = True
+        return config, noiseless_network
+
+    def _make_network_factory(
+        self,
+        config: Any,
+        *,
+        multisubject: bool,
+    ) -> Callable[[], Any]:
+        if multisubject:
+            return lambda: local_multisubject_disrnn.MultisubjectDisRnn(config)
+        return lambda: disrnn.HkDisentangledRNN(config)
+
+    def _subject_plot_context(
+        self,
+        *,
+        params: Any,
+        multisubject: bool,
+    ) -> tuple[np.ndarray | None, int | None]:
+        if not multisubject:
+            return None, None
+
+        plot_subject_index = int(
+            _get_architecture_value(
+                self.architecture,
+                "plot_subject_index",
+                default=0,
+            )
+        )
+        subject_embeddings = extract_subject_embeddings_from_params(params)
+        if plot_subject_index < 0 or plot_subject_index >= subject_embeddings.shape[0]:
+            raise ValueError(
+                "architecture.plot_subject_index is out of range for saved subject embeddings: "
+                f"{plot_subject_index} not in [0, {subject_embeddings.shape[0] - 1}]"
+            )
+        return np.asarray(subject_embeddings[plot_subject_index], dtype=float), plot_subject_index
+
+    def _save_multisubject_artifacts(
+        self,
+        *,
+        params: Any,
+        metadata: Mapping[str, Any],
+    ) -> dict[str, str]:
+        subject_id_to_index = metadata.get("subject_id_to_index")
+        index_to_subject_id = metadata.get("index_to_subject_id")
+        if not isinstance(subject_id_to_index, dict) or not isinstance(index_to_subject_id, dict):
+            raise ValueError(
+                "Multisubject artifact export requires subject_id_to_index and "
+                "index_to_subject_id in bundle metadata."
+            )
+
+        subject_index_map_path = save_subject_index_map(
+            self.output_dir / "subject_index_map.json",
+            subject_id_to_index=subject_id_to_index,
+            index_to_subject_id=index_to_subject_id,
+        )
+        subject_embeddings = extract_subject_embeddings_from_params(params)
+        subject_embeddings_df = subject_embeddings_to_dataframe(
+            index_to_subject_id,
+            subject_embeddings,
+        )
+        subject_embeddings_path = self.output_dir / "subject_embeddings.pkl"
+        subject_embeddings_df.to_pickle(subject_embeddings_path)
+        return {
+            "subject_index_map": str(subject_index_map_path),
+            "subject_embeddings": str(subject_embeddings_path),
+        }
 
     def fit(
         self,
@@ -86,6 +299,8 @@ class DisrnnTrainer(ModelTrainer):
             "num_trials": metadata.get("num_trials"),
             "num_sessions": metadata.get("num_sessions"),
         }
+        is_multisubject = _is_multisubject_mode(self.architecture, metadata)
+        output["multisubject"] = bool(is_multisubject)
 
         logger.info(
             "Dataset details: input %s, output %s", dataset._xs.shape, dataset._ys.shape
@@ -164,38 +379,24 @@ class DisrnnTrainer(ModelTrainer):
         )
 
         logger.info(f"max_grad_norm = {args.max_grad_norm}")
-
-        output_size = 2 if ignore_policy == "exclude" else 3
-        disrnn_config = disrnn.DisRnnConfig(
-            obs_size=dataset._xs.shape[2],
-            output_size=output_size,
-            x_names=dataset.x_names,
-            y_names=dataset.y_names,
-            latent_size=args.num_latents,
-            update_net_n_units_per_layer=args.update_net_n_units_per_layer,
-            update_net_n_layers=args.update_net_n_layers,
-            choice_net_n_units_per_layer=args.choice_net_n_units_per_layer,
-            choice_net_n_layers=args.choice_net_n_layers,
-            activation=args.activation,
-            noiseless_mode=False,
-            latent_penalty=args.latent_penalty,
-            choice_net_latent_penalty=args.choice_net_latent_penalty,
-            update_net_obs_penalty=args.update_net_obs_penalty,
-            update_net_latent_penalty=args.update_net_latent_penalty,
+        disrnn_config, noiseless_network = self._build_network_configs(
+            dataset=dataset,
+            ignore_policy=ignore_policy,
+            metadata=metadata,
         )
-
-        noiseless_network = copy.deepcopy(disrnn_config)
-        noiseless_network.latent_penalty = 0
-        noiseless_network.choice_net_latent_penalty = 0
-        noiseless_network.update_net_obs_penalty = 0
-        noiseless_network.update_net_latent_penalty = 0
-        noiseless_network.l2_scale = 0
-        noiseless_network.noiseless_mode = True
+        make_train_network = self._make_network_factory(
+            disrnn_config,
+            multisubject=is_multisubject,
+        )
+        make_noiseless_network = self._make_network_factory(
+            noiseless_network,
+            multisubject=is_multisubject,
+        )
 
         logger.info("Running warmup training phase")
         warmup_start = time.time()
         params, warmup_opt_state, warmup_losses = rnn_utils.train_network(
-            lambda: disrnn.HkDisentangledRNN(noiseless_network),
+            make_noiseless_network,
             dataset_train,
             dataset_eval,
             opt=optax.adam(args.learning_rate),
@@ -230,7 +431,7 @@ class DisrnnTrainer(ModelTrainer):
         checkpoint_heldout_summaries: list[dict[str, Any]] = []
         if args.checkpoint_every_n_steps == 0:
             params, opt_state, losses = rnn_utils.train_network(
-                lambda: disrnn.HkDisentangledRNN(disrnn_config),
+                make_train_network,
                 dataset_train,
                 dataset_eval,
                 loss=args.loss,
@@ -263,7 +464,12 @@ class DisrnnTrainer(ModelTrainer):
             heldout_eval_cfg = None
             heldout_test_data = self.heldout_data
             runtime_heldout_cfg = HeldoutEvalConfig.from_data_cfg(metadata)
-            if runtime_heldout_cfg.enabled:
+            if runtime_heldout_cfg.enabled and is_multisubject:
+                logger.info(
+                    "Skipping checkpoint held-out evaluation for multisubject disRNN; "
+                    "v1 supports seen-subject personalization only."
+                )
+            elif runtime_heldout_cfg.enabled:
                 heldout_eval_cfg = OmegaConf.create(
                     {
                         "data": asdict(runtime_heldout_cfg),
@@ -290,7 +496,7 @@ class DisrnnTrainer(ModelTrainer):
                     args.n_steps - steps_completed,
                 )
                 params, opt_state, chunk_losses = rnn_utils.train_network(
-                    lambda: disrnn.HkDisentangledRNN(disrnn_config),
+                    make_train_network,
                     dataset_train,
                     dataset_eval,
                     loss=args.loss,
@@ -322,7 +528,7 @@ class DisrnnTrainer(ModelTrainer):
                 train_likelihood_ckpt: float | None = None
                 if args.checkpoint_eval_on_train_split:
                     yhat_train_ckpt, _ = rnn_utils.eval_network(
-                        lambda: disrnn.HkDisentangledRNN(noiseless_network),
+                        make_noiseless_network,
                         params,
                         xs_train_all,
                     )
@@ -345,7 +551,7 @@ class DisrnnTrainer(ModelTrainer):
                 eval_likelihood_ckpt: float | None = None
                 if args.checkpoint_eval_on_eval_split:
                     yhat_eval_ckpt, _ = rnn_utils.eval_network(
-                        lambda: disrnn.HkDisentangledRNN(noiseless_network),
+                        make_noiseless_network,
                         params,
                         xs_eval_all,
                     )
@@ -388,8 +594,19 @@ class DisrnnTrainer(ModelTrainer):
                     plt.close(bottlenecks_fig_ckpt)
                     checkpoint_plot_paths["bottlenecks"] = str(bottlenecks_path_ckpt)
 
+                    plot_subject_embedding_ckpt, plot_subject_index_ckpt = (
+                        self._subject_plot_context(
+                            params=params,
+                            multisubject=is_multisubject,
+                        )
+                    )
+
                     if args.checkpoint_plot_choice_rule:
-                        choice_fig_ckpt = plotting.plot_choice_rule(params, disrnn_config)
+                        choice_fig_ckpt = plotting.plot_choice_rule(
+                            params,
+                            disrnn_config,
+                            subj_embedding=plot_subject_embedding_ckpt,
+                        )
                         if choice_fig_ckpt is not None:
                             axes = choice_fig_ckpt.get_axes()
                             for ax in axes:
@@ -402,7 +619,16 @@ class DisrnnTrainer(ModelTrainer):
                             checkpoint_plot_paths["choice_rule"] = str(choice_path_ckpt)
 
                     if args.checkpoint_plot_update_rules:
-                        update_figs_ckpt = plotting.plot_update_rules(params, disrnn_config)
+                        params_for_update_rules_ckpt = (
+                            convert_local_params_to_upstream_multisubject(params)
+                            if is_multisubject
+                            else params
+                        )
+                        update_figs_ckpt = plotting.plot_update_rules(
+                            params_for_update_rules_ckpt,
+                            disrnn_config,
+                            subj_ind=plot_subject_index_ckpt,
+                        )
                         update_rule_paths_ckpt: list[str] = []
                         for index, fig_ckpt in enumerate(update_figs_ckpt):
                             fig_ckpt.tight_layout()
@@ -436,7 +662,7 @@ class DisrnnTrainer(ModelTrainer):
                 )
                 if should_plot_split_examples_ckpt or should_save_output_df_ckpt:
                     yhat_full_ckpt, network_states_full_ckpt = rnn_utils.eval_network(
-                        lambda: disrnn.HkDisentangledRNN(noiseless_network),
+                        make_noiseless_network,
                         params,
                         xs_full_for_checkpoint,
                     )
@@ -695,8 +921,17 @@ class DisrnnTrainer(ModelTrainer):
         if wandb_run is not None:
             wandb_run.log({"fig/bottlenecks": wandb.Image(str(bottlenecks_path))})
 
+        plot_subject_embedding, plot_subject_index = self._subject_plot_context(
+            params=params,
+            multisubject=is_multisubject,
+        )
+
         if args.plot_choice_rule:
-            choice_fig = plotting.plot_choice_rule(params, disrnn_config)
+            choice_fig = plotting.plot_choice_rule(
+                params,
+                disrnn_config,
+                subj_embedding=plot_subject_embedding,
+            )
             if choice_fig is not None:
                 axes = choice_fig.get_axes()
                 for ax in axes:
@@ -708,7 +943,16 @@ class DisrnnTrainer(ModelTrainer):
                     wandb_run.log({"fig/choice_rule": wandb.Image(str(choice_path))})
 
         if args.plot_update_rules:
-            update_figs = plotting.plot_update_rules(params, disrnn_config)
+            params_for_update_rules = (
+                convert_local_params_to_upstream_multisubject(params)
+                if is_multisubject
+                else params
+            )
+            update_figs = plotting.plot_update_rules(
+                params_for_update_rules,
+                disrnn_config,
+                subj_ind=plot_subject_index,
+            )
             for index, fig in enumerate(update_figs):
                 fig.tight_layout()
                 path = self._save_figure(fig, f"update_rule_{index}.png")
@@ -718,7 +962,7 @@ class DisrnnTrainer(ModelTrainer):
         # Get model predictions on full dataset, including the training set
         xs_full, ys_full = dataset.get_all()
         yhat_full, network_states_full = rnn_utils.eval_network(
-            lambda: disrnn.HkDisentangledRNN(noiseless_network), params, xs_full
+            make_noiseless_network, params, xs_full
         )
 
         df = bundle.raw
@@ -732,11 +976,16 @@ class DisrnnTrainer(ModelTrainer):
         params_path = self.output_dir / "params.json"
         with params_path.open("w") as f:
             f.write(json.dumps(params, cls=rnn_utils.NpJnpJsonEncoder))
+        if is_multisubject:
+            output["subject_artifacts"] = self._save_multisubject_artifacts(
+                params=params,
+                metadata=metadata,
+            )
 
         # Get likelihood evaluated on just the evaluation dataset
         xs_eval, ys_eval = dataset_eval.get_all()
         yhat_eval, network_states_eval = rnn_utils.eval_network(
-            lambda: disrnn.HkDisentangledRNN(noiseless_network), params, xs_eval
+            make_noiseless_network, params, xs_eval
         )
         n_action_logits = int(getattr(dataset_eval, "n_classes", 0))
         if n_action_logits <= 0:
@@ -881,15 +1130,52 @@ class DisrnnTrainer(ModelTrainer):
                 f"df_sessions={len(session_order)} model_sessions={n_sessions_full}"
             )
 
-        eval_every_n = int(metadata.get("eval_every_n", 2))
-        if eval_every_n <= 0:
-            raise ValueError(f"Invalid eval_every_n in metadata: {eval_every_n}")
+        train_session_ids_meta = metadata.get("train_session_ids")
+        eval_session_ids_meta = metadata.get("eval_session_ids")
+        if train_session_ids_meta is not None or eval_session_ids_meta is not None:
+            if not isinstance(train_session_ids_meta, list) or not isinstance(
+                eval_session_ids_meta, list
+            ):
+                raise ValueError(
+                    "metadata.train_session_ids and metadata.eval_session_ids must both be lists "
+                    "when either is provided."
+                )
+            session_index_by_id = {
+                session_id: index for index, session_id in enumerate(session_order)
+            }
+            missing_train_sessions = [
+                session_id
+                for session_id in train_session_ids_meta
+                if session_id not in session_index_by_id
+            ]
+            missing_eval_sessions = [
+                session_id
+                for session_id in eval_session_ids_meta
+                if session_id not in session_index_by_id
+            ]
+            if missing_train_sessions or missing_eval_sessions:
+                raise ValueError(
+                    "Split example metadata references sessions not present in output_df. "
+                    f"Missing train={missing_train_sessions}, missing eval={missing_eval_sessions}"
+                )
+            train_indices = np.asarray(
+                [session_index_by_id[session_id] for session_id in train_session_ids_meta],
+                dtype=int,
+            )
+            eval_indices = np.asarray(
+                [session_index_by_id[session_id] for session_id in eval_session_ids_meta],
+                dtype=int,
+            )
+        else:
+            eval_every_n = int(metadata.get("eval_every_n", 2))
+            if eval_every_n <= 0:
+                raise ValueError(f"Invalid eval_every_n in metadata: {eval_every_n}")
 
-        eval_indices = np.arange(eval_every_n - 1, n_sessions_full, eval_every_n)
-        train_indices = np.array(
-            [idx for idx in range(n_sessions_full) if idx not in set(eval_indices)],
-            dtype=int,
-        )
+            eval_indices = np.arange(eval_every_n - 1, n_sessions_full, eval_every_n)
+            train_indices = np.array(
+                [idx for idx in range(n_sessions_full) if idx not in set(eval_indices)],
+                dtype=int,
+            )
 
         split_summaries: dict[str, Any] = {}
         sessions_per_subject_by_split = {

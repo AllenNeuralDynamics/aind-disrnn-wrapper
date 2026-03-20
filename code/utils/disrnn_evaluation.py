@@ -150,6 +150,11 @@ def _load_saved_params(params_path: Path) -> Any:
 def _build_network_configs(model_cfg: Any, dataset: Any, ignore_policy: str) -> tuple[Any, Any]:
     architecture = model_cfg.architecture
     penalties = model_cfg.penalties
+    if bool(getattr(architecture, "multisubject", False)):
+        raise ValueError(
+            "Held-out subject evaluation is not supported for multisubject disRNN. "
+            "v1 only supports seen-subject personalization."
+        )
 
     output_size = 2 if ignore_policy == "exclude" else 3
     disrnn_config = disrnn.DisRnnConfig(
@@ -532,6 +537,11 @@ def evaluate_disrnn_on_heldout_subjects(
     if not heldout_cfg.enabled:
         logger.info("Held-out evaluation disabled (no test subject selectors configured).")
         return None
+    if bool(getattr(model_cfg.architecture, "multisubject", False)):
+        raise ValueError(
+            "Held-out subject evaluation is not supported for multisubject disRNN. "
+            "v1 only supports seen-subject personalization."
+        )
     heldout_cfg.validate()
 
     output_dir = _resolve_output_dir(model_cfg)

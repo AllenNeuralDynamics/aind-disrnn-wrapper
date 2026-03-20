@@ -5,11 +5,23 @@ from __future__ import annotations
 import shutil
 import tempfile
 import unittest
+import json
 from pathlib import Path
 
 try:
+    import numpy as np
+    import pandas as pd
+    import aind_disrnn_utils.data_loader as dl
+    from disentangled_rnns.library import rnn_utils
+
+    from base.types import DatasetBundle
     from data_loaders.synthetic import SyntheticCognitiveAgents
     from model_trainers.disrnn_trainer import DisrnnTrainer
+    from utils.multisubject import (
+        build_subject_index_maps,
+        compute_train_eval_session_ids,
+        merge_datasets_with_subject_index,
+    )
 
     DISRNN_DEPS_AVAILABLE = True
     DISRNN_IMPORT_ERROR = None
@@ -121,6 +133,136 @@ class TestDisrnnTrainer(unittest.TestCase):
             self.assertGreaterEqual(checkpoint["train_likelihood"], 0.0)
             self.assertLessEqual(checkpoint["train_likelihood"], 1.0)
         self.assertTrue((self.output_dir / "checkpoints" / "index.json").exists())
+
+    def test_multisubject_training_exports_subject_artifacts(self):
+        raw_df = self.bundle.raw.copy()
+        raw_df["subject_id"] = np.where(raw_df["ses_idx"].astype(int) < 3, 711041, 793446)
+        raw_df["source_ses_idx"] = raw_df["ses_idx"]
+        raw_df["ses_idx"] = raw_df.apply(
+            lambda row: f"{int(row['subject_id'])}__{int(row['source_ses_idx'])}",
+            axis=1,
+        )
+
+        ordered_subject_ids, subject_id_to_index, index_to_subject_id = build_subject_index_maps(
+            [711041, 793446]
+        )
+
+        full_datasets = []
+        train_datasets = []
+        eval_datasets = []
+        ordered_frames = []
+        subject_indices = []
+        full_session_ids = []
+        train_session_ids = []
+        eval_session_ids = []
+
+        for subject_id in ordered_subject_ids:
+            subject_df = raw_df[raw_df["subject_id"] == subject_id].copy()
+            subject_df = subject_df.sort_values(["ses_idx", "trial"]).reset_index(drop=True)
+            session_ids = list(dict.fromkeys(subject_df["ses_idx"].tolist()))
+            train_ids, eval_ids = compute_train_eval_session_ids(session_ids, eval_every_n=2)
+            subject_df["subject_index"] = subject_id_to_index[subject_id]
+
+            dataset = dl.create_disrnn_dataset(
+                subject_df,
+                ignore_policy="exclude",
+                batch_size=None,
+                batch_mode="random",
+            )
+            dataset_train, dataset_eval = rnn_utils.split_dataset(dataset, eval_every_n=2)
+
+            full_datasets.append(dataset)
+            train_datasets.append(dataset_train)
+            eval_datasets.append(dataset_eval)
+            ordered_frames.append(subject_df)
+            subject_indices.append(subject_id_to_index[subject_id])
+            full_session_ids.extend(session_ids)
+            train_session_ids.extend(train_ids)
+            eval_session_ids.extend(eval_ids)
+
+        merged_dataset = merge_datasets_with_subject_index(full_datasets, subject_indices)
+        merged_train = merge_datasets_with_subject_index(train_datasets, subject_indices)
+        merged_eval = merge_datasets_with_subject_index(eval_datasets, subject_indices)
+        merged_raw_df = pd.concat(ordered_frames, ignore_index=True)
+        merged_raw_df["ses_idx"] = pd.Categorical(
+            merged_raw_df["ses_idx"],
+            categories=full_session_ids,
+            ordered=True,
+        )
+        merged_raw_df = merged_raw_df.sort_values(["ses_idx", "trial"]).reset_index(drop=True)
+        merged_raw_df["ses_idx"] = merged_raw_df["ses_idx"].astype(str)
+
+        multisubject_bundle = DatasetBundle(
+            raw=merged_raw_df,
+            train_set=merged_train,
+            eval_set=merged_eval,
+            metadata={
+                "ignore_policy": "exclude",
+                "eval_every_n": 2,
+                "multisubject": True,
+                "subject_ids": ordered_subject_ids,
+                "subject_id_to_index": subject_id_to_index,
+                "index_to_subject_id": index_to_subject_id,
+                "num_subjects": len(ordered_subject_ids),
+                "num_trials": len(merged_raw_df),
+                "num_sessions": len(full_session_ids),
+                "train_session_ids": train_session_ids,
+                "eval_session_ids": eval_session_ids,
+            },
+            extras={"dataset": merged_dataset},
+        )
+
+        trainer = DisrnnTrainer(
+            architecture={
+                "multisubject": True,
+                "latent_size": 4,
+                "update_net_n_units_per_layer": 8,
+                "update_net_n_layers": 2,
+                "choice_net_n_units_per_layer": 4,
+                "choice_net_n_layers": 1,
+                "activation": "leaky_relu",
+                "subject_embedding_size": 3,
+                "subject_penalty": 1e-3,
+                "update_net_subject_penalty": 1e-3,
+                "choice_net_subject_penalty": 1e-3,
+                "plot_subject_index": 0,
+            },
+            penalties={
+                "latent_penalty": 1e-3,
+                "choice_net_latent_penalty": 1e-3,
+                "update_net_obs_penalty": 1e-3,
+                "update_net_latent_penalty": 1e-3,
+            },
+            training={
+                "lr": 1e-3,
+                "n_steps": 2,
+                "n_warmup_steps": 1,
+                "loss": "penalized_categorical",
+                "loss_param": 1.0,
+                "max_grad_norm": 1.0,
+                "checkpoint_every_n_steps": 0,
+                "checkpoint_run_heldout_eval": False,
+                "plot_choice_rule": False,
+                "plot_update_rules": False,
+                "save_output_df": False,
+            },
+            output_dir=str(self.output_dir),
+            seed=42,
+        )
+
+        output = trainer.fit(multisubject_bundle)
+
+        self.assertTrue(output["multisubject"])
+        self.assertIn("subject_artifacts", output)
+        self.assertTrue((self.output_dir / "subject_index_map.json").exists())
+        self.assertTrue((self.output_dir / "subject_embeddings.pkl").exists())
+
+        subject_embeddings_df = pd.read_pickle(self.output_dir / "subject_embeddings.pkl")
+        self.assertEqual(subject_embeddings_df["subject_id"].tolist(), [711041, 793446])
+
+        params = json.loads((self.output_dir / "params.json").read_text())
+        self.assertIn("multisubject_dis_rnn", params)
+        self.assertIn("subject_embeddings", params["multisubject_dis_rnn"])
 
 
 if __name__ == "__main__":
