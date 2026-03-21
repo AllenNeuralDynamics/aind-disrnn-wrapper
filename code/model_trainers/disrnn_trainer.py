@@ -107,16 +107,10 @@ class DisrnnTrainer(ModelTrainer):
                 raise ValueError(
                     "Multisubject disRNN requires metadata.num_subjects or metadata.subject_ids."
                 )
-            plot_subject_index = int(
-                _get_architecture_value(
-                    self.architecture,
-                    "plot_subject_index",
-                    default=0,
-                )
-            )
+            plot_subject_index = int(self.training.get("plot_subject_index", 0))
             if plot_subject_index < 0 or plot_subject_index >= num_subjects:
                 raise ValueError(
-                    "architecture.plot_subject_index must be in "
+                    "training.plot_subject_index must be in "
                     f"[0, {num_subjects - 1}], got {plot_subject_index}."
                 )
             subject_embedding_size = _get_architecture_value(
@@ -150,29 +144,12 @@ class DisrnnTrainer(ModelTrainer):
                 update_net_latent_penalty=self.penalties["update_net_latent_penalty"],
                 max_n_subjects=num_subjects,
                 subject_embedding_size=int(subject_embedding_size),
-                subj_penalty=float(
-                    _get_architecture_value(
-                        self.architecture,
-                        "subject_penalty",
-                        default=0.0,
-                        alias="subj_penalty",
-                    )
-                ),
+                subj_penalty=float(self.penalties.get("subject_penalty", 0.0)),
                 update_net_subj_penalty=float(
-                    _get_architecture_value(
-                        self.architecture,
-                        "update_net_subject_penalty",
-                        default=0.0,
-                        alias="update_net_subj_penalty",
-                    )
+                    self.penalties.get("update_net_subject_penalty", 0.0)
                 ),
                 choice_net_subj_penalty=float(
-                    _get_architecture_value(
-                        self.architecture,
-                        "choice_net_subject_penalty",
-                        default=0.0,
-                        alias="choice_net_subj_penalty",
-                    )
+                    self.penalties.get("choice_net_subject_penalty", 0.0)
                 ),
             )
         else:
@@ -226,17 +203,11 @@ class DisrnnTrainer(ModelTrainer):
         if not multisubject:
             return None, None
 
-        plot_subject_index = int(
-            _get_architecture_value(
-                self.architecture,
-                "plot_subject_index",
-                default=0,
-            )
-        )
+        plot_subject_index = int(self.training.get("plot_subject_index", 0))
         subject_embeddings = extract_subject_embeddings_from_params(params)
         if plot_subject_index < 0 or plot_subject_index >= subject_embeddings.shape[0]:
             raise ValueError(
-                "architecture.plot_subject_index is out of range for saved subject embeddings: "
+                "training.plot_subject_index is out of range for saved subject embeddings: "
                 f"{plot_subject_index} not in [0, {subject_embeddings.shape[0] - 1}]"
             )
         return np.asarray(subject_embeddings[plot_subject_index], dtype=float), plot_subject_index
