@@ -170,7 +170,7 @@ class DisrnnTrainer(ModelTrainer):
                     "Multisubject disRNN requires architecture.subject_embedding_size > 0."
                 )
 
-            config = multisubject_disrnn.MultisubjectDisRnnConfig(
+            config = local_multisubject_disrnn.MultisubjectDisRnnConfig(
                 obs_size=int(dataset._xs.shape[2] - 1),
                 output_size=output_size,
                 x_names=dataset.x_names,
@@ -192,6 +192,9 @@ class DisrnnTrainer(ModelTrainer):
                 update_net_latent_penalty=self.penalties["update_net_latent_penalty"],
                 max_n_subjects=num_subjects,
                 subject_embedding_size=int(subject_embedding_size),
+                use_global_subject_bottleneck=bool(
+                    self.architecture.get("use_global_subject_bottleneck", True)
+                ),
                 subj_penalty=float(self.penalties.get("subject_penalty", 0.0)),
                 update_net_subj_penalty=float(
                     self.penalties.get("update_net_subject_penalty", 0.0)

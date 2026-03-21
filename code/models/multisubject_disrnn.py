@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 import haiku as hk
 import jax.numpy as jnp
 import numpy as np
@@ -9,11 +11,27 @@ from disentangled_rnns.library import disrnn
 from disentangled_rnns.library import multisubject_disrnn as upstream_multisubject_disrnn
 
 
-MultisubjectDisRnnConfig = upstream_multisubject_disrnn.MultisubjectDisRnnConfig
+@dataclasses.dataclass
+class MultisubjectDisRnnConfig(upstream_multisubject_disrnn.MultisubjectDisRnnConfig):
+    """Local extension of the upstream config for wrapper-only switches."""
+
+    use_global_subject_bottleneck: bool = True
 
 
 class MultisubjectDisRnn(upstream_multisubject_disrnn.MultisubjectDisRnn):
     """Multisubject disRNN with a learned embedding row per subject."""
+
+    def __init__(self, config: MultisubjectDisRnnConfig):
+        self._use_global_subject_bottleneck = bool(
+            getattr(config, "use_global_subject_bottleneck", True)
+        )
+        super().__init__(config)
+
+    def _build_subj_emb_global_bottleneck(self):
+        if not self._use_global_subject_bottleneck:
+            self._subj_emb_global_sigma = None
+            return
+        super()._build_subj_emb_global_bottleneck()
 
     def __call__(self, inputs: jnp.ndarray, prev_latents: jnp.ndarray):
         batch_size = inputs.shape[0]
@@ -40,12 +58,13 @@ class MultisubjectDisRnn(upstream_multisubject_disrnn.MultisubjectDisRnn):
             axis=1,
         )
 
-        subject_embeddings, kl_cost = disrnn.information_bottleneck(
-            inputs=subject_embeddings,
-            sigmas=self._subj_emb_global_sigma,
-            noiseless_mode=self._noiseless_mode,
-        )
-        penalty += self._subj_penalty * kl_cost
+        if self._use_global_subject_bottleneck:
+            subject_embeddings, kl_cost = disrnn.information_bottleneck(
+                inputs=subject_embeddings,
+                sigmas=self._subj_emb_global_sigma,
+                noiseless_mode=self._noiseless_mode,
+            )
+            penalty += self._subj_penalty * kl_cost
 
         subj_emb_for_update_net = jnp.tile(
             jnp.expand_dims(subject_embeddings, 2),

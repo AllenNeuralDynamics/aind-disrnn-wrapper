@@ -6,6 +6,7 @@ import shutil
 import tempfile
 import unittest
 import json
+import types
 from pathlib import Path
 
 try:
@@ -296,6 +297,54 @@ class TestDisrnnTrainer(unittest.TestCase):
         expected_row2 = np.exp([2.0, 0.0])
         expected_row2 = expected_row2 / expected_row2.sum()
         np.testing.assert_allclose(probs[2], expected_row2)
+
+    def test_multisubject_config_can_disable_global_subject_bottleneck(self):
+        trainer = DisrnnTrainer(
+            architecture={
+                "multisubject": True,
+                "latent_size": 4,
+                "update_net_n_units_per_layer": 8,
+                "update_net_n_layers": 2,
+                "choice_net_n_units_per_layer": 4,
+                "choice_net_n_layers": 1,
+                "activation": "leaky_relu",
+                "subject_embedding_size": 3,
+                "use_global_subject_bottleneck": False,
+            },
+            penalties={
+                "latent_penalty": 1e-3,
+                "choice_net_latent_penalty": 1e-3,
+                "update_net_obs_penalty": 1e-3,
+                "update_net_latent_penalty": 1e-3,
+                "subject_penalty": 1e-3,
+                "update_net_subject_penalty": 1e-3,
+                "choice_net_subject_penalty": 1e-3,
+            },
+            training={
+                "lr": 1e-3,
+                "n_steps": 2,
+                "n_warmup_steps": 1,
+                "loss": "penalized_categorical",
+                "loss_param": 1.0,
+                "max_grad_norm": 1.0,
+                "plot_subject_index": 0,
+            },
+            output_dir=str(self.output_dir),
+            seed=42,
+        )
+
+        dummy_dataset = types.SimpleNamespace(
+            _xs=np.zeros((5, 2, 3), dtype=float),
+            x_names=["Subject ID", "prev choice", "prev reward"],
+            y_names=["choice"],
+        )
+        config, _ = trainer._build_network_configs(
+            dataset=dummy_dataset,
+            ignore_policy="exclude",
+            metadata={"multisubject": True, "num_subjects": 2},
+        )
+
+        self.assertFalse(config.use_global_subject_bottleneck)
 
 
 if __name__ == "__main__":

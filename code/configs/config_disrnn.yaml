@@ -162,6 +162,7 @@ model:
     choice_net_n_layers: 0
     activation: leaky_relu
     subject_embedding_size: 4
+    use_global_subject_bottleneck: true
   penalties:
     beta: 0.001
     latent_penalty: ${.beta}
