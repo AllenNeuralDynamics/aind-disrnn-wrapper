@@ -1,32 +1,67 @@
 # GRU model training configuration
-#
-# This mirrors the current disRNN pipeline shape while using the plain Haiku GRU
-# architecture shown in the upstream disentangled_rnns GRU notebook.
 
+
+# # mice_snapshot
+# data:
+#   type: mice_snapshot
+#   _target_: data_loaders.mice.MiceSnapshotDatasetLoader
+#   subject_ids: null
+#   subject_start: 0
+#   subject_end: 2
+#   test_subject_ids: null        # e.g. [444, 555, 666]
+#   test_subject_start: 2      # inclusive, 0-based rank index
+#   test_subject_end: 3        # exclusive rank index
+#   # ── Held-out test subject selection ─────────────────────────────────────
+#   # Leave all null to disable post-training held-out test-subject evaluation.
+#   # Selection follows the same rules as train subjects:
+#   #   1) direct list via test_subject_ids, or
+#   #   2) rank-based slice [test_subject_start, test_subject_end) per curriculum.
+#   heldout_example_sessions_per_subject: 1  # >=0; 0 skips held-out example plotting
+#   train_example_sessions_per_subject: 1    # >=0; 0 skips training example plotting
+#   eval_example_sessions_per_subject: 1     # >=0; 0 skips eval example plotting
+#   example_max_subjects: 3                  # >=0; cap subjects used for train/eval/held-out examples
+
+#   mature_only: true
+#   curricula:
+#     - Uncoupled Without Baiting
+#     - Uncoupled Baiting
+#     - Coupled Baiting
+#   multisubject: false
+#   ignore_policy: exclude
+#   features: null
+#   eval_every_n: 2
+#   batch_size: null
+#   batch_mode: random
+#   run_name_component: mice_snapshot
+#   seed: ${seed}
+
+
+# mice_snapshot, multi-subject
 data:
   type: mice_snapshot
   _target_: data_loaders.mice.MiceSnapshotDatasetLoader
   subject_ids: null
   subject_start: 0
   subject_end: 2
+  test_subject_ids: null        # e.g. [444, 555, 666]
+  test_subject_start: 2      # inclusive, 0-based rank index
+  test_subject_end: 3        # exclusive rank index
   # ── Held-out test subject selection ─────────────────────────────────────
   # Leave all null to disable post-training held-out test-subject evaluation.
   # Selection follows the same rules as train subjects:
   #   1) direct list via test_subject_ids, or
   #   2) rank-based slice [test_subject_start, test_subject_end) per curriculum.
-  test_subject_ids: null        # e.g. [444, 555, 666]
-  test_subject_start: 2      # inclusive, 0-based rank index
-  test_subject_end: 3        # exclusive rank index
   heldout_example_sessions_per_subject: 1  # >=0; 0 skips held-out example plotting
   train_example_sessions_per_subject: 1    # >=0; 0 skips training example plotting
   eval_example_sessions_per_subject: 1     # >=0; 0 skips eval example plotting
-  example_max_subjects: 6                  # >=0; cap subjects used for train/eval/held-out examples
+  example_max_subjects: 3                  # >=0; cap subjects used for train/eval/held-out examples
 
   mature_only: true
   curricula:
     - Uncoupled Without Baiting
     - Uncoupled Baiting
     - Coupled Baiting
+  multisubject: true
   ignore_policy: exclude
   features: null
   eval_every_n: 2
@@ -35,6 +70,9 @@ data:
   run_name_component: mice_snapshot
   seed: ${seed}
 
+
+####################################################################
+# # gru
 model:
   type: gru
   _target_: model_trainers.gru_trainer.GruTrainer
@@ -61,6 +99,8 @@ model:
     save_output_df: true
   run_name_component: gru_H${.architecture.hidden_size}
 
+
+####################################################################
 seed: 43
 
 wandb:

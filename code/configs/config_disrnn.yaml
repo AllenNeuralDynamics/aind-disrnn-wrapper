@@ -1,3 +1,7 @@
+# disrnn model training configuration
+
+
+# # synthetic_task_trained_rnn
 # data:
 #   type: synthetic_task_trained_rnn
 #   _target_: data_loaders.synthetic.TaskTrainedRNNDatasetLoader
@@ -13,6 +17,7 @@
 #   seed: ${seed}
 
 
+# # mice
 # data:
 #   type: mice
 #   _target_: data_loaders.mice.MiceDatasetLoader
@@ -88,7 +93,7 @@ data:
     - Uncoupled Without Baiting
     - Uncoupled Baiting
     - Coupled Baiting
-  multisubject: false
+  multisubject: true
   ignore_policy: exclude
   features: null
   eval_every_n: 2
@@ -149,12 +154,12 @@ model:
   type: disrnn
   _target_: model_trainers.disrnn_trainer.DisrnnTrainer
   architecture:
-    multisubject: false
+    multisubject: true
     latent_size: 5
     update_net_n_units_per_layer: 16
     update_net_n_layers: 5
     choice_net_n_units_per_layer: 4
-    choice_net_n_layers: 1
+    choice_net_n_layers: 0
     activation: leaky_relu
     subject_embedding_size: 4
   penalties:
@@ -163,9 +168,9 @@ model:
     choice_net_latent_penalty: ${.beta}
     update_net_obs_penalty: ${.beta}
     update_net_latent_penalty: ${.beta}
-    subject_penalty: 0.0
-    update_net_subject_penalty: 0.0
-    choice_net_subject_penalty: 0.0
+    subject_penalty: ${.beta}
+    update_net_subject_penalty: ${.beta}
+    choice_net_subject_penalty: ${.beta}
   training:
     n_steps: 20
     n_warmup_steps: 10
@@ -182,7 +187,7 @@ model:
     checkpoint_keep_media_files: false  # false: keep checkpoint visuals in W&B only
     plot_choice_rule: false
     plot_update_rules: false
-    plot_subject_index: 0
+    plot_subject_index: 0   # which subject’s embedding is used for rule plots
     checkpoint_plot_choice_rule: false
     checkpoint_plot_update_rules: false
     save_output_df: false
@@ -194,6 +199,7 @@ model:
   run_name_component: disrnn_beta${.penalties.beta}_lr${.training.lr}
 
 
+# # baseline_rl
 # model:
 #   type: baseline_rl
 #   _target_: model_trainers.baseline_rl_trainer.BaselineRLTrainer
