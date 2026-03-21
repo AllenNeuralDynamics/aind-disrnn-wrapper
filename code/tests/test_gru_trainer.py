@@ -106,12 +106,16 @@ class TestGruTrainer(unittest.TestCase):
         output = trainer.fit(self.bundle)
 
         self.assertIn("likelihood", output)
+        self.assertIn("likelihood_train", output)
         self.assertIn("training_time", output)
         self.assertIn("split_examples", output)
         self.assertIn("random_key", output)
         self.assertIsInstance(output["likelihood"], float)
+        self.assertIsInstance(output["likelihood_train"], float)
         self.assertGreaterEqual(output["likelihood"], 0.0)
         self.assertLessEqual(output["likelihood"], 1.0)
+        self.assertGreaterEqual(output["likelihood_train"], 0.0)
+        self.assertLessEqual(output["likelihood_train"], 1.0)
 
         self.assertTrue((self.output_dir / "params.json").exists())
         self.assertTrue((self.output_dir / "output_summary.json").exists())

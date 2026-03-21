@@ -53,6 +53,51 @@ def _require_n_action_logits(dataset: Any, yhat: np.ndarray, *, context: str) ->
     return n_action_logits
 
 
+def _log_heldout_dataset_details(heldout_data: dict[str, Any] | None) -> None:
+    if not heldout_data:
+        return
+
+    xs_test = heldout_data.get("xs_test")
+    ys_test = heldout_data.get("ys_test")
+    if xs_test is None or ys_test is None:
+        dataset_test = heldout_data.get("dataset_test")
+        if dataset_test is not None:
+            xs_test = getattr(dataset_test, "_xs", None)
+            ys_test = getattr(dataset_test, "_ys", None)
+
+    if xs_test is None or ys_test is None:
+        return
+
+    logger.info(
+        "Held-out test shapes: input %s, output %s",
+        np.asarray(xs_test).shape,
+        np.asarray(ys_test).shape,
+    )
+
+
+def _log_dataset_split_details(
+    *,
+    dataset: Any,
+    dataset_train: Any,
+    dataset_eval: Any,
+) -> None:
+    logger.info(
+        "Full dataset shapes: input %s, output %s",
+        dataset._xs.shape,
+        dataset._ys.shape,
+    )
+    logger.info(
+        "Training split shapes: input %s, output %s",
+        dataset_train._xs.shape,
+        dataset_train._ys.shape,
+    )
+    logger.info(
+        "Eval split shapes: input %s, output %s",
+        dataset_eval._xs.shape,
+        dataset_eval._ys.shape,
+    )
+
+
 class GruTrainer(ModelTrainer):
     """Trainer that mirrors the disRNN pipeline for GRU models."""
 
@@ -98,14 +143,12 @@ class GruTrainer(ModelTrainer):
             "num_sessions": metadata.get("num_sessions"),
         }
 
-        logger.info(
-            "Dataset details: input %s, output %s", dataset._xs.shape, dataset._ys.shape
+        _log_dataset_split_details(
+            dataset=dataset,
+            dataset_train=dataset_train,
+            dataset_eval=dataset_eval,
         )
-        logger.info(
-            "Train/Eval shapes: train=%s eval=%s",
-            dataset_train._ys.shape,
-            dataset_eval._ys.shape,
-        )
+        _log_heldout_dataset_details(self.heldout_data)
 
         key = jax.random.PRNGKey(self.seed)
         output["random_key"] = [int(x) for x in np.asarray(key).reshape(-1)]
@@ -242,6 +285,7 @@ class GruTrainer(ModelTrainer):
                     try:
                         heldout_test_data = load_gru_heldout_subject_data(runtime_heldout_cfg)
                         self.heldout_data = heldout_test_data
+                        _log_heldout_dataset_details(heldout_test_data)
                     except Exception as exc:
                         logger.warning(
                             "Preloading held-out test data failed; evaluation will fall back to lazy loading: %s",
@@ -327,8 +371,18 @@ class GruTrainer(ModelTrainer):
                 }
                 if train_likelihood_ckpt is not None:
                     checkpoint_record["train_likelihood"] = train_likelihood_ckpt
+                    logger.info(
+                        "Checkpoint step %s training likelihood: %.4f",
+                        steps_completed,
+                        train_likelihood_ckpt,
+                    )
                 if eval_likelihood_ckpt is not None:
                     checkpoint_record["eval_likelihood"] = eval_likelihood_ckpt
+                    logger.info(
+                        "Checkpoint step %s eval likelihood: %.4f",
+                        steps_completed,
+                        eval_likelihood_ckpt,
+                    )
 
                 should_plot_split_examples_ckpt = (
                     args.checkpoint_plot_split_examples_every_n > 0
@@ -579,6 +633,20 @@ class GruTrainer(ModelTrainer):
         with params_path.open("w") as f:
             f.write(json.dumps(params, cls=rnn_utils.NpJnpJsonEncoder))
 
+        xs_train, ys_train = dataset_train.get_all()
+        yhat_train, _ = rnn_utils.eval_network(make_network, params, xs_train)
+        n_action_logits_train = _require_n_action_logits(
+            dataset_train,
+            np.asarray(yhat_train),
+            context="final train",
+        )
+        likelihood_train = rnn_utils.normalized_likelihood(
+            ys_train,
+            np.asarray(yhat_train)[:, :, :n_action_logits_train],
+        )
+        output["likelihood_train"] = float(likelihood_train)
+        logger.info("Final training likelihood: %.4f", float(likelihood_train))
+
         xs_eval, ys_eval = dataset_eval.get_all()
         yhat_eval, _ = rnn_utils.eval_network(make_network, params, xs_eval)
         n_action_logits = _require_n_action_logits(
@@ -592,22 +660,33 @@ class GruTrainer(ModelTrainer):
             np.asarray(yhat_eval)[:, :, :n_action_logits],
         )
         output["likelihood"] = float(likelihood)
+        logger.info("Final eval likelihood: %.4f", float(likelihood))
 
         final_output_dir = self.output_dir
         if args.checkpoint_every_n_steps > 0:
             final_output_dir = self.output_dir / "checkpoints" / f"step_{args.n_steps}"
             final_output_dir.mkdir(parents=True, exist_ok=True)
 
-        split_summaries = self._generate_split_examples(
-            output_dir=final_output_dir,
-            output_df=output_df,
-            network_states_full=np.asarray(network_states_full),
-            yhat_full=np.asarray(yhat_full),
-            params=params,
-            metadata=metadata,
-            n_action_logits=n_action_logits,
-            wandb_run=wandb_run if args.checkpoint_every_n_steps == 0 else None,
-        )
+        split_summaries: dict[str, Any] | None = None
+        if checkpoint_records:
+            last_checkpoint = checkpoint_records[-1]
+            if (
+                int(last_checkpoint.get("step", -1)) == int(args.n_steps)
+                and "split_examples" in last_checkpoint
+            ):
+                split_summaries = last_checkpoint["split_examples"]
+
+        if split_summaries is None:
+            split_summaries = self._generate_split_examples(
+                output_dir=final_output_dir,
+                output_df=output_df,
+                network_states_full=np.asarray(network_states_full),
+                yhat_full=np.asarray(yhat_full),
+                params=params,
+                metadata=metadata,
+                n_action_logits=n_action_logits,
+                wandb_run=wandb_run if args.checkpoint_every_n_steps == 0 else None,
+            )
         output["split_examples"] = split_summaries
 
         gt_likelihood = metadata.get("avg_eval_likelihood_groundtruth")
@@ -651,6 +730,7 @@ class GruTrainer(ModelTrainer):
             if len(losses["training_loss"]) > 0:
                 wandb_run.summary["final/train_loss"] = float(losses["training_loss"][-1])
             wandb_run.summary["likelihood"] = float(likelihood)
+            wandb_run.summary["likelihood_train"] = float(likelihood_train)
 
             if gt_likelihood is not None:
                 wandb_run.summary["groundtruth_likelihood"] = float(gt_likelihood)

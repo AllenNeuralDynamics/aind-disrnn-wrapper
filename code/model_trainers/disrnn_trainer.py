@@ -66,6 +66,51 @@ def _get_architecture_value(
     return default
 
 
+def _log_heldout_dataset_details(heldout_data: dict[str, Any] | None) -> None:
+    if not heldout_data:
+        return
+
+    xs_test = heldout_data.get("xs_test")
+    ys_test = heldout_data.get("ys_test")
+    if xs_test is None or ys_test is None:
+        dataset_test = heldout_data.get("dataset_test")
+        if dataset_test is not None:
+            xs_test = getattr(dataset_test, "_xs", None)
+            ys_test = getattr(dataset_test, "_ys", None)
+
+    if xs_test is None or ys_test is None:
+        return
+
+    logger.info(
+        "Held-out test shapes: input %s, output %s",
+        np.asarray(xs_test).shape,
+        np.asarray(ys_test).shape,
+    )
+
+
+def _log_dataset_split_details(
+    *,
+    dataset: Any,
+    dataset_train: Any,
+    dataset_eval: Any,
+) -> None:
+    logger.info(
+        "Full dataset shapes: input %s, output %s",
+        dataset._xs.shape,
+        dataset._ys.shape,
+    )
+    logger.info(
+        "Training split shapes: input %s, output %s",
+        dataset_train._xs.shape,
+        dataset_train._ys.shape,
+    )
+    logger.info(
+        "Eval split shapes: input %s, output %s",
+        dataset_eval._xs.shape,
+        dataset_eval._ys.shape,
+    )
+
+
 class DisrnnTrainer(ModelTrainer):
     """Trainer that reproduces the legacy disRNN pipeline."""
 
@@ -273,14 +318,12 @@ class DisrnnTrainer(ModelTrainer):
         is_multisubject = _is_multisubject_mode(self.architecture, metadata)
         output["multisubject"] = bool(is_multisubject)
 
-        logger.info(
-            "Dataset details: input %s, output %s", dataset._xs.shape, dataset._ys.shape
+        _log_dataset_split_details(
+            dataset=dataset,
+            dataset_train=dataset_train,
+            dataset_eval=dataset_eval,
         )
-        logger.info(
-            "Train/Eval shapes: train=%s eval=%s",
-            dataset_train._ys.shape,
-            dataset_eval._ys.shape,
-        )
+        _log_heldout_dataset_details(self.heldout_data)
 
         key = jax.random.PRNGKey(self.seed)
         warmup_key, training_key = jax.random.split(key)
@@ -455,6 +498,7 @@ class DisrnnTrainer(ModelTrainer):
                     try:
                         heldout_test_data = load_disrnn_heldout_subject_data(runtime_heldout_cfg)
                         self.heldout_data = heldout_test_data
+                        _log_heldout_dataset_details(heldout_test_data)
                     except Exception as exc:
                         logger.warning(
                             "Preloading held-out test data failed; evaluation will fall back to lazy loading: %s",
@@ -546,8 +590,18 @@ class DisrnnTrainer(ModelTrainer):
                 }
                 if train_likelihood_ckpt is not None:
                     checkpoint_record["train_likelihood"] = train_likelihood_ckpt
+                    logger.info(
+                        "Checkpoint step %s training likelihood: %.4f",
+                        steps_completed,
+                        train_likelihood_ckpt,
+                    )
                 if eval_likelihood_ckpt is not None:
                     checkpoint_record["eval_likelihood"] = eval_likelihood_ckpt
+                    logger.info(
+                        "Checkpoint step %s eval likelihood: %.4f",
+                        steps_completed,
+                        eval_likelihood_ckpt,
+                    )
 
                 checkpoint_plot_paths: dict[str, Any] = {
                     "bottlenecks": None,
@@ -953,7 +1007,26 @@ class DisrnnTrainer(ModelTrainer):
                 metadata=metadata,
             )
 
-        # Get likelihood evaluated on just the evaluation dataset
+        # Get likelihood evaluated on the training and evaluation datasets.
+        xs_train, ys_train = dataset_train.get_all()
+        yhat_train, _ = rnn_utils.eval_network(
+            make_noiseless_network, params, xs_train
+        )
+        n_action_logits_train = int(getattr(dataset_train, "n_classes", 0))
+        if n_action_logits_train <= 0:
+            n_action_logits_train = int(yhat_train.shape[2] - 1)
+        if n_action_logits_train <= 0:
+            raise ValueError(
+                "Invalid number of action logits inferred for final train likelihood: "
+                f"{n_action_logits_train}"
+            )
+        likelihood_train = rnn_utils.normalized_likelihood(
+            ys_train,
+            yhat_train[:, :, :n_action_logits_train],
+        )
+        output["likelihood_train"] = float(likelihood_train)
+        logger.info("Final training likelihood: %.4f", float(likelihood_train))
+
         xs_eval, ys_eval = dataset_eval.get_all()
         yhat_eval, network_states_eval = rnn_utils.eval_network(
             make_noiseless_network, params, xs_eval
@@ -971,26 +1044,37 @@ class DisrnnTrainer(ModelTrainer):
             yhat_eval[:, :, :n_action_logits],
         )
         output["likelihood"] = float(likelihood)
+        logger.info("Final eval likelihood: %.4f", float(likelihood))
 
         final_output_dir = self.output_dir
         if args.checkpoint_every_n_steps > 0:
             final_output_dir = self.output_dir / "checkpoints" / f"step_{args.n_steps}"
             final_output_dir.mkdir(parents=True, exist_ok=True)
 
-        split_summaries = self._generate_split_examples(
-            output_dir=final_output_dir,
-            output_df=output_df,
-            network_states_full=np.asarray(network_states_full),
-            yhat_full=np.asarray(yhat_full),
-            params=params,
-            metadata=metadata,
-            n_action_logits=n_action_logits,
-            wandb_run=(
-                wandb_run
-                if (args.checkpoint_every_n_steps == 0)
-                else None
-            ),
-        )
+        split_summaries: dict[str, Any] | None = None
+        if checkpoint_records:
+            last_checkpoint = checkpoint_records[-1]
+            if (
+                int(last_checkpoint.get("step", -1)) == int(args.n_steps)
+                and "split_examples" in last_checkpoint
+            ):
+                split_summaries = last_checkpoint["split_examples"]
+
+        if split_summaries is None:
+            split_summaries = self._generate_split_examples(
+                output_dir=final_output_dir,
+                output_df=output_df,
+                network_states_full=np.asarray(network_states_full),
+                yhat_full=np.asarray(yhat_full),
+                params=params,
+                metadata=metadata,
+                n_action_logits=n_action_logits,
+                wandb_run=(
+                    wandb_run
+                    if (args.checkpoint_every_n_steps == 0)
+                    else None
+                ),
+            )
         output["split_examples"] = split_summaries
         
         # -- Compare to groundtruth likelihood if available --
@@ -1030,6 +1114,7 @@ class DisrnnTrainer(ModelTrainer):
             wandb_run.summary["final/val_loss"] = float(losses["validation_loss"][-1])
             wandb_run.summary["final/train_loss"] = float(losses["training_loss"][-1])
             wandb_run.summary["likelihood"] = float(likelihood)
+            wandb_run.summary["likelihood_train"] = float(likelihood_train)
             
             if gt_likelihood is not None:
                 wandb_run.summary["groundtruth_likelihood"] = float(gt_likelihood)

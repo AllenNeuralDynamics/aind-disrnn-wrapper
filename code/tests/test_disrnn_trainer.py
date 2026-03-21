@@ -126,12 +126,20 @@ class TestDisrnnTrainer(unittest.TestCase):
         output = trainer.fit(self.bundle)
 
         self.assertIn("checkpoints", output)
+        self.assertIn("likelihood", output)
+        self.assertIn("likelihood_train", output)
         self.assertEqual(len(output["checkpoints"]), 2)
         for checkpoint in output["checkpoints"]:
             self.assertIn("train_likelihood", checkpoint)
             self.assertIsInstance(checkpoint["train_likelihood"], float)
             self.assertGreaterEqual(checkpoint["train_likelihood"], 0.0)
             self.assertLessEqual(checkpoint["train_likelihood"], 1.0)
+        self.assertIsInstance(output["likelihood"], float)
+        self.assertIsInstance(output["likelihood_train"], float)
+        self.assertGreaterEqual(output["likelihood"], 0.0)
+        self.assertLessEqual(output["likelihood"], 1.0)
+        self.assertGreaterEqual(output["likelihood_train"], 0.0)
+        self.assertLessEqual(output["likelihood_train"], 1.0)
         self.assertTrue((self.output_dir / "checkpoints" / "index.json").exists())
 
     def test_multisubject_training_exports_subject_artifacts(self):
