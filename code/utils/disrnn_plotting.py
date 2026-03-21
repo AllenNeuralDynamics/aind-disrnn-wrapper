@@ -24,6 +24,7 @@ def plot_latents_over_trials(
     *,
     open_latents: Sequence[int] | None = None,
     action_probabilities: np.ndarray,
+    trial_numbers: np.ndarray | None = None,
     fig_dpi: int = 100,
 ) -> plt.Figure:
     """Plot choice/reward history and latent trajectories across trials.
@@ -41,6 +42,9 @@ def plot_latents_over_trials(
     action_probabilities:
         2D array ``[n_trials, n_actions]`` containing model-predicted action
         probabilities for one session.
+    trial_numbers:
+        Optional 1D array with the original trial numbers to use on the x-axis.
+        If omitted, zero-based row indices are used.
     fig_dpi:
         Figure resolution.
     """
@@ -69,12 +73,30 @@ def plot_latents_over_trials(
     if open_latents is None:
         open_latents = tuple(range(latents.shape[1]))
 
-    valid_mask = (choices != -1) & (rewards != -1)
-    valid_indices = np.where(valid_mask)[0]
+    if trial_numbers is None:
+        x_values = np.arange(choices.shape[0], dtype=int)
+    else:
+        x_values = _ensure_1d(np.asarray(trial_numbers))
+        if x_values.shape[0] != choices.shape[0]:
+            raise ValueError(
+                "trial_numbers must have the same n_trials as choices/rewards/latents/"
+                f"action_probabilities. Got trials={x_values.shape[0]} expected={choices.shape[0]}"
+            )
+
+    valid_mask = (
+        (choices != -1)
+        & (rewards != -1)
+        & np.all(np.isfinite(latents), axis=1)
+        & np.all(np.isfinite(action_probabilities), axis=1)
+    )
+    valid_indices = x_values[valid_mask]
     choices_filtered = choices[valid_mask]
     rewards_filtered = rewards[valid_mask]
     latents_filtered = latents[valid_mask]
     action_probabilities_filtered = action_probabilities[valid_mask]
+
+    if valid_indices.size == 0:
+        raise ValueError("No valid trials remain after aligning choices, rewards, latents, and probabilities.")
 
     fig, axs = plt.subplots(
         nrows=3,

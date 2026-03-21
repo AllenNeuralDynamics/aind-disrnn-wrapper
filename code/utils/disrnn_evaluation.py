@@ -426,6 +426,9 @@ def plot_disrnn_examples_for_split(
                 latents = session_df[latent_cols].to_numpy()
                 choices = session_df["animal_response"].to_numpy()
                 rewards = session_df["earned_reward"].astype(int).to_numpy()
+                trial_numbers = (
+                    session_df["trial"].to_numpy() if "trial" in session_df.columns else None
+                )
                 session_index = session_index_by_id[session_id]
                 action_probabilities = _probs_from_logits_2d(
                     logits[:, session_index, :n_action_logits]
@@ -446,6 +449,9 @@ def plot_disrnn_examples_for_split(
                     latents=latents[:n_trials],
                     open_latents=open_latents,
                     action_probabilities=action_probabilities[:n_trials],
+                    trial_numbers=(
+                        trial_numbers[:n_trials] if trial_numbers is not None else None
+                    ),
                 )
                 fig_trials.suptitle(f"Session {_normalize_identifier(session_id)}", fontsize=14)
                 fig_trials.subplots_adjust(top=0.92)
@@ -693,6 +699,9 @@ def evaluate_disrnn_on_heldout_subjects(
                 latents = session_df[latent_cols].to_numpy()
                 choices = session_df["animal_response"].to_numpy()
                 rewards = session_df["earned_reward"].astype(int).to_numpy()
+                trial_numbers = (
+                    session_df["trial"].to_numpy() if "trial" in session_df.columns else None
+                )
                 if session_id not in session_index_by_id_for_logits:
                     continue
 
@@ -715,6 +724,9 @@ def evaluate_disrnn_on_heldout_subjects(
                     latents=latents[:n_trials],
                     open_latents=open_latents,
                     action_probabilities=action_probabilities[:n_trials],
+                    trial_numbers=(
+                        trial_numbers[:n_trials] if trial_numbers is not None else None
+                    ),
                 )
                 fig_trials.suptitle(
                     f"Session {_normalize_identifier(session_id)}",
