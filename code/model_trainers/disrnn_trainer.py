@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import itertools
 import json
 import logging
 import time
@@ -14,6 +15,7 @@ import numpy as np
 import optax
 import pandas as pd
 import wandb
+from matplotlib.lines import Line2D
 from omegaconf import DictConfig, OmegaConf
 
 import aind_disrnn_utils.data_loader as dl
@@ -32,6 +34,7 @@ from utils.disrnn_evaluation import (
 from utils.multisubject import (
     convert_local_params_to_upstream_multisubject,
     extract_subject_embeddings_from_params,
+    normalize_subject_id,
     save_subject_index_map,
     subject_embeddings_to_dataframe,
 )
@@ -262,6 +265,7 @@ class DisrnnTrainer(ModelTrainer):
         *,
         params: Any,
         metadata: Mapping[str, Any],
+        raw_df: pd.DataFrame,
     ) -> dict[str, str]:
         subject_id_to_index = metadata.get("subject_id_to_index")
         index_to_subject_id = metadata.get("index_to_subject_id")
@@ -281,12 +285,165 @@ class DisrnnTrainer(ModelTrainer):
             index_to_subject_id,
             subject_embeddings,
         )
+        subject_embeddings_df = self._attach_subject_metadata_to_embeddings(
+            subject_embeddings_df,
+            raw_df=raw_df,
+            metadata=metadata,
+        )
         subject_embeddings_path = self.output_dir / "subject_embeddings.pkl"
         subject_embeddings_df.to_pickle(subject_embeddings_path)
         return {
             "subject_index_map": str(subject_index_map_path),
             "subject_embeddings": str(subject_embeddings_path),
         }
+
+    def _resolve_subject_curricula(
+        self,
+        *,
+        raw_df: pd.DataFrame,
+        metadata: Mapping[str, Any],
+    ) -> dict[Any, str]:
+        subject_curricula = metadata.get("subject_curricula")
+        if isinstance(subject_curricula, dict) and subject_curricula:
+            return {
+                normalize_subject_id(subject_id): str(curriculum)
+                for subject_id, curriculum in subject_curricula.items()
+            }
+
+        if "subject_id" not in raw_df.columns or "curriculum_name" not in raw_df.columns:
+            return {}
+
+        resolved: dict[Any, str] = {}
+        for subject_id, subject_rows in raw_df.groupby("subject_id", sort=False):
+            curricula = [
+                str(value)
+                for value in subject_rows["curriculum_name"].dropna().unique().tolist()
+            ]
+            normalized_subject_id = normalize_subject_id(subject_id)
+            if not curricula:
+                resolved[normalized_subject_id] = "Unknown"
+            elif len(curricula) == 1:
+                resolved[normalized_subject_id] = curricula[0]
+            else:
+                resolved[normalized_subject_id] = "Mixed"
+        return resolved
+
+    def _attach_subject_metadata_to_embeddings(
+        self,
+        subject_embeddings_df: pd.DataFrame,
+        *,
+        raw_df: pd.DataFrame,
+        metadata: Mapping[str, Any],
+    ) -> pd.DataFrame:
+        enriched_df = subject_embeddings_df.copy()
+        subject_curricula = self._resolve_subject_curricula(raw_df=raw_df, metadata=metadata)
+        if subject_curricula:
+            enriched_df["curriculum_name"] = enriched_df["subject_id"].map(
+                lambda subject_id: subject_curricula.get(
+                    normalize_subject_id(subject_id),
+                    "Unknown",
+                )
+            )
+        return enriched_df
+
+    def _plot_subject_embedding_state_space(
+        self,
+        *,
+        params: Any,
+        raw_df: pd.DataFrame,
+        metadata: Mapping[str, Any],
+    ) -> Any | None:
+        index_to_subject_id = metadata.get("index_to_subject_id")
+        if not isinstance(index_to_subject_id, dict):
+            return None
+
+        subject_embeddings = extract_subject_embeddings_from_params(params)
+        if subject_embeddings.shape[1] < 2:
+            logger.info(
+                "Skipping subject embedding state-space plot because subject_embedding_size < 2."
+            )
+            return None
+
+        plot_df = subject_embeddings_to_dataframe(index_to_subject_id, subject_embeddings)
+        plot_df = self._attach_subject_metadata_to_embeddings(
+            plot_df,
+            raw_df=raw_df,
+            metadata=metadata,
+        )
+        if "curriculum_name" not in plot_df.columns:
+            plot_df["curriculum_name"] = "Unknown"
+        else:
+            plot_df["curriculum_name"] = plot_df["curriculum_name"].fillna("Unknown")
+
+        embedding_columns = [
+            column
+            for column in plot_df.columns
+            if column.startswith("embedding_")
+        ]
+        dim_pairs = list(itertools.combinations(embedding_columns, 2))
+        if not dim_pairs:
+            return None
+
+        ncols = min(3, len(dim_pairs))
+        nrows = int(np.ceil(len(dim_pairs) / ncols))
+        fig, axes = plt.subplots(nrows, ncols, figsize=(5.5 * ncols, 5.0 * nrows), squeeze=False)
+
+        curriculum_values = list(dict.fromkeys(plot_df["curriculum_name"].astype(str).tolist()))
+        cmap = plt.get_cmap("tab10")
+        curriculum_to_color = {
+            curriculum: cmap(index % max(1, cmap.N))
+            for index, curriculum in enumerate(curriculum_values)
+        }
+
+        for ax, (x_column, y_column) in zip(axes.flat, dim_pairs):
+            for curriculum in curriculum_values:
+                curriculum_rows = plot_df[plot_df["curriculum_name"].astype(str) == curriculum]
+                ax.scatter(
+                    curriculum_rows[x_column],
+                    curriculum_rows[y_column],
+                    color=curriculum_to_color[curriculum],
+                    label=curriculum,
+                    s=55,
+                    alpha=0.9,
+                )
+            for row in plot_df.itertuples(index=False):
+                ax.text(
+                    getattr(row, x_column),
+                    getattr(row, y_column),
+                    str(getattr(row, "subject_index")),
+                    fontsize=8,
+                    alpha=0.8,
+                )
+            ax.axhline(0, color="0.85", linewidth=1)
+            ax.axvline(0, color="0.85", linewidth=1)
+            ax.set_xlabel(x_column.replace("_", " ").title())
+            ax.set_ylabel(y_column.replace("_", " ").title())
+            ax.set_title(f"{x_column} vs {y_column}")
+
+        for ax in axes.flat[len(dim_pairs):]:
+            ax.axis("off")
+
+        legend_handles = [
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                linestyle="",
+                markerfacecolor=curriculum_to_color[curriculum],
+                markeredgecolor=curriculum_to_color[curriculum],
+                label=curriculum,
+            )
+            for curriculum in curriculum_values
+        ]
+        fig.legend(
+            handles=legend_handles,
+            loc="upper center",
+            ncol=min(len(legend_handles), 4),
+            title="Curriculum",
+        )
+        fig.suptitle("Subject Embedding State Space", fontsize=14)
+        fig.tight_layout(rect=(0, 0, 1, 0.95))
+        return fig
 
     def fit(
         self,
@@ -606,6 +763,7 @@ class DisrnnTrainer(ModelTrainer):
                 checkpoint_plot_paths: dict[str, Any] = {
                     "bottlenecks": None,
                     "choice_rule": None,
+                    "subject_embedding_state_space": None,
                     "update_rules": [],
                 }
 
@@ -618,6 +776,22 @@ class DisrnnTrainer(ModelTrainer):
                     bottlenecks_fig_ckpt.savefig(bottlenecks_path_ckpt)
                     plt.close(bottlenecks_fig_ckpt)
                     checkpoint_plot_paths["bottlenecks"] = str(bottlenecks_path_ckpt)
+
+                    if is_multisubject:
+                        subject_embedding_fig_ckpt = self._plot_subject_embedding_state_space(
+                            params=params,
+                            raw_df=bundle.raw,
+                            metadata=metadata,
+                        )
+                        if subject_embedding_fig_ckpt is not None:
+                            subject_embedding_path_ckpt = (
+                                checkpoint_dir / "subject_embedding_state_space.png"
+                            )
+                            subject_embedding_fig_ckpt.savefig(subject_embedding_path_ckpt)
+                            plt.close(subject_embedding_fig_ckpt)
+                            checkpoint_plot_paths["subject_embedding_state_space"] = str(
+                                subject_embedding_path_ckpt
+                            )
 
                     plot_subject_embedding_ckpt, plot_subject_index_ckpt = (
                         self._subject_plot_context(
@@ -758,11 +932,18 @@ class DisrnnTrainer(ModelTrainer):
                     checkpoint_plot_payload = {}
                     checkpoint_bottlenecks = checkpoint_plot_paths.get("bottlenecks")
                     checkpoint_choice_rule = checkpoint_plot_paths.get("choice_rule")
+                    checkpoint_subject_embeddings = checkpoint_plot_paths.get(
+                        "subject_embedding_state_space"
+                    )
                     checkpoint_update_rules = checkpoint_plot_paths.get("update_rules", [])
                     if checkpoint_bottlenecks:
                         checkpoint_plot_payload[
                             "checkpoint/fig/bottlenecks"
                         ] = wandb.Image(str(checkpoint_bottlenecks))
+                    if checkpoint_subject_embeddings:
+                        checkpoint_plot_payload[
+                            "checkpoint/fig/subject_embedding_state_space"
+                        ] = wandb.Image(str(checkpoint_subject_embeddings))
                     if checkpoint_choice_rule:
                         checkpoint_plot_payload[
                             "checkpoint/fig/choice_rule"
@@ -780,6 +961,7 @@ class DisrnnTrainer(ModelTrainer):
                     if not args.checkpoint_keep_media_files:
                         for maybe_path in [
                             checkpoint_bottlenecks,
+                            checkpoint_subject_embeddings,
                             checkpoint_choice_rule,
                             *checkpoint_update_rules,
                         ]:
@@ -794,6 +976,7 @@ class DisrnnTrainer(ModelTrainer):
                                     exc,
                                 )
                         checkpoint_plot_paths["bottlenecks"] = None
+                        checkpoint_plot_paths["subject_embedding_state_space"] = None
                         checkpoint_plot_paths["choice_rule"] = None
                         checkpoint_plot_paths["update_rules"] = []
 
@@ -948,6 +1131,27 @@ class DisrnnTrainer(ModelTrainer):
         if wandb_run is not None:
             wandb_run.log({"fig/bottlenecks": wandb.Image(str(bottlenecks_path))})
 
+        if is_multisubject:
+            subject_embedding_fig = self._plot_subject_embedding_state_space(
+                params=params,
+                raw_df=bundle.raw,
+                metadata=metadata,
+            )
+            if subject_embedding_fig is not None:
+                subject_embedding_path = self._save_figure(
+                    subject_embedding_fig,
+                    "subject_embedding_state_space.png",
+                )
+                output["subject_embedding_state_space_path"] = str(subject_embedding_path)
+                if wandb_run is not None:
+                    wandb_run.log(
+                        {
+                            "fig/subject_embedding_state_space": wandb.Image(
+                                str(subject_embedding_path)
+                            )
+                        }
+                    )
+
         plot_subject_embedding, plot_subject_index = self._subject_plot_context(
             params=params,
             multisubject=is_multisubject,
@@ -1007,6 +1211,7 @@ class DisrnnTrainer(ModelTrainer):
             output["subject_artifacts"] = self._save_multisubject_artifacts(
                 params=params,
                 metadata=metadata,
+                raw_df=df,
             )
 
         # Get likelihood evaluated on the training and evaluation datasets.

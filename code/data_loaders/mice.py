@@ -110,10 +110,17 @@ def _build_multisubject_bundle(
             "Multisubject loading requires a 'subject_id' column in the raw dataframe."
         )
 
+    logger.info(
+        "Building multisubject dataset from %d trials, %d raw subjects, columns=%s",
+        len(df),
+        int(df["subject_id"].nunique()) if "subject_id" in df.columns else -1,
+        list(df.columns),
+    )
     prepared_df = _make_multisubject_session_ids_unique(df)
     subject_order = _resolve_multisubject_subject_order(prepared_df, resolved_subject_ids)
     if not subject_order:
         raise ValueError("No subject data found for multisubject loading.")
+    logger.info("Resolved multisubject training order: %s", subject_order)
 
     prepared_subjects: list[dict[str, object]] = []
     for subject_id in subject_order:
@@ -140,6 +147,15 @@ def _build_multisubject_bundle(
             session_ids,
             eval_every_n=eval_every_n,
         )
+        logger.info(
+            "Prepared subject_id=%s with %d trials across %d sessions "
+            "(train_sessions=%d, eval_sessions=%d).",
+            subject_id,
+            len(subject_df),
+            len(session_ids),
+            len(train_session_ids),
+            len(eval_session_ids),
+        )
         prepared_subjects.append(
             {
                 "subject_id": subject_id,
@@ -156,6 +172,7 @@ def _build_multisubject_bundle(
     ordered_subject_ids, subject_id_to_index, index_to_subject_id = build_subject_index_maps(
         [item["subject_id"] for item in prepared_subjects]
     )
+    logger.info("Subject-id to dense index map: %s", subject_id_to_index)
 
     subject_indices: list[int] = []
     full_datasets = []
@@ -190,6 +207,15 @@ def _build_multisubject_bundle(
         dataset_train, dataset_eval = rnn_utils.split_dataset(
             dataset,
             eval_every_n=eval_every_n,
+        )
+        logger.info(
+            "Built per-subject dataset for subject_id=%s (subject_index=%d): "
+            "full=%s train=%s eval=%s",
+            subject_id,
+            subject_index,
+            tuple(dataset._xs.shape),
+            tuple(dataset_train._xs.shape),
+            tuple(dataset_eval._xs.shape),
         )
         full_datasets.append(dataset)
         train_datasets.append(dataset_train)
@@ -232,6 +258,19 @@ def _build_multisubject_bundle(
     raw_df["ses_idx"] = raw_df["ses_idx"].astype(str)
 
     metadata_dict = dict(metadata)
+    subject_curricula = {}
+    if "curriculum_name" in raw_df.columns:
+        for subject_id, subject_rows in raw_df.groupby("subject_id", sort=False):
+            curricula = [
+                normalize_subject_id(value)
+                for value in subject_rows["curriculum_name"].dropna().unique().tolist()
+            ]
+            if not curricula:
+                subject_curricula[normalize_subject_id(subject_id)] = "Unknown"
+            elif len(curricula) == 1:
+                subject_curricula[normalize_subject_id(subject_id)] = curricula[0]
+            else:
+                subject_curricula[normalize_subject_id(subject_id)] = "Mixed"
     metadata_dict.update(
         {
             "subject_ids": ordered_subject_ids,
@@ -243,9 +282,23 @@ def _build_multisubject_bundle(
             "num_sessions": int(len(full_session_ids)),
             "train_session_ids": train_session_ids,
             "eval_session_ids": eval_session_ids,
+            "subject_curricula": subject_curricula,
             "batch_size": batch_size,
             "batch_mode": batch_mode,
         }
+    )
+    logger.info(
+        "Merged multisubject dataset with subject_index as feature 0: "
+        "full=%s train=%s eval=%s x_names=%s",
+        tuple(merged_dataset._xs.shape),
+        tuple(merged_train_dataset._xs.shape),
+        tuple(merged_eval_dataset._xs.shape),
+        list(merged_dataset.x_names),
+    )
+    logger.info(
+        "Raw multisubject dataframe columns=%s, subject_curricula=%s",
+        list(raw_df.columns),
+        subject_curricula,
     )
 
     return DatasetBundle(
@@ -586,6 +639,20 @@ class MiceSnapshotDatasetLoader(DatasetLoader):
         if self.seed is not None:
             np.random.seed(self.seed)
 
+        snapshot_cols_to_retain = list(self.cols_to_retain) if self.cols_to_retain is not None else None
+        if self.multisubject:
+            if snapshot_cols_to_retain is None:
+                snapshot_cols_to_retain = [
+                    "trial",
+                    "subject_id",
+                    "ses_idx",
+                    "animal_response",
+                    "earned_reward",
+                    "curriculum_name",
+                ]
+            elif "curriculum_name" not in snapshot_cols_to_retain:
+                snapshot_cols_to_retain.append("curriculum_name")
+
         logger.info("Loading train dataset (mature_only=%s) …", self.mature_only)
         df, subject_ids = load_mice_snapshot(
             subject_ids=self.subject_ids,
@@ -593,7 +660,7 @@ class MiceSnapshotDatasetLoader(DatasetLoader):
             subject_end=self.subject_end,
             mature_only=self.mature_only,
             curricula=self.curricula,
-            cols_to_retain=self.cols_to_retain,
+            cols_to_retain=snapshot_cols_to_retain,
         )
 
         if self.multisubject:

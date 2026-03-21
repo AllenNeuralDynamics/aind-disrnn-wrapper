@@ -80,11 +80,20 @@ def main() -> None:
 
     dataset_bundle = dataset_loader.load()
     logger.info("Loaded dataset bundle with metadata: %s", dataset_bundle.metadata)
+    is_multisubject_dataset = bool(dataset_bundle.metadata.get("multisubject", False))
 
     heldout_cfg = HeldoutEvalConfig.from_data_cfg(
         hydra_config.data,
         default_example_max_subjects=int(getattr(hydra_config, "example_max_subjects", 6)),
     )
+
+    if wandb_run is not None and is_multisubject_dataset:
+        current_name = wandb_run.name or ""
+        if "multisubject" not in current_name.lower():
+            new_name = f"{current_name}_multisubject" if current_name else "multisubject"
+            wandb_run.name = new_name
+            logger.info("Updated wandb run name to reflect multisubject mode: %s", new_name)
+        wandb_run.config.update({"multisubject": True})
 
     # Append resolved subject IDs to the wandb run name so rank-based slices
     # (where subject_ids is null in config) are still identifiable in the UI.

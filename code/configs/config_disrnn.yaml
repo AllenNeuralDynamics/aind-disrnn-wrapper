@@ -99,7 +99,7 @@ data:
   eval_every_n: 2
   batch_size: null
   batch_mode: random
-  run_name_component: mice_snapshot
+  run_name_component: mice_snapshot_multisubject
   seed: ${seed}
 
 
@@ -196,7 +196,7 @@ model:
     loss_param: 1.0
     max_grad_norm: 1.0
   seed: ${seed}
-  run_name_component: disrnn_beta${.penalties.beta}_lr${.training.lr}
+  run_name_component: multisubject_disrnn_beta${.penalties.beta}_lr${.training.lr}
 
 
 # # baseline_rl

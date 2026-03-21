@@ -385,6 +385,14 @@ def load_mice_snapshot(
         valid_sessions = df_session[["subject_id", "ses_idx"]]
 
     df_filtered = df_all.merge(valid_sessions, on=["subject_id", "ses_idx"], how="inner")
+    session_annotations = df_session[
+        ["subject_id", "ses_idx", "current_stage_actual", "curriculum_name"]
+    ].drop_duplicates()
+    df_filtered = df_filtered.merge(
+        session_annotations,
+        on=["subject_id", "ses_idx"],
+        how="left",
+    )
 
     selected_ids = _select_subjects(
         df_session,
