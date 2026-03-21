@@ -17,6 +17,39 @@ import wandb
 logger = logging.getLogger(__name__)
 
 
+def _append_multisubject_suffix(component: Any, *, enabled: bool) -> Any:
+    """Append a multisubject suffix to a run-name component when needed."""
+    if not enabled or component is None:
+        return component
+    component_str = str(component)
+    if "multisubject" in component_str.lower():
+        return component_str
+    return f"{component_str}_multisubject"
+
+
+def apply_dynamic_run_name_components(hydra_config: DictConfig) -> None:
+    """Mutate run-name components based on config-driven runtime mode.
+
+    This keeps the YAML simple: base run-name components stay generic, and
+    multisubject mode is reflected automatically in the resolved config and the
+    downstream W&B run name.
+    """
+    data_cfg = getattr(hydra_config, "data", None)
+    if data_cfg is not None and "run_name_component" in data_cfg:
+        data_cfg.run_name_component = _append_multisubject_suffix(
+            data_cfg.run_name_component,
+            enabled=bool(getattr(data_cfg, "multisubject", False)),
+        )
+
+    model_cfg = getattr(hydra_config, "model", None)
+    architecture_cfg = getattr(model_cfg, "architecture", None) if model_cfg is not None else None
+    if model_cfg is not None and "run_name_component" in model_cfg:
+        model_cfg.run_name_component = _append_multisubject_suffix(
+            model_cfg.run_name_component,
+            enabled=bool(getattr(architecture_cfg, "multisubject", False)),
+        )
+
+
 def find_hydra_config() -> Path | None:
     """Locate the first config.yaml under /data/jobs."""
 
