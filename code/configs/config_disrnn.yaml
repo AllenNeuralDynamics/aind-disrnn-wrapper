@@ -11,45 +11,6 @@
 #   run_name_component: synthetic_task_trained_rnn_${.subject_ids}
 #   eval_every_n: 2
 #   seed: ${seed}
-# model:
-#   type: disrnn
-#   _target_: model_trainers.disrnn_trainer.DisrnnTrainer
-#   architecture:
-#     latent_size: 5
-#     update_net_n_units_per_layer: 16
-#     update_net_n_layers: 8
-#     choice_net_n_units_per_layer: 4
-#     choice_net_n_layers: 1
-#     activation: leaky_relu
-#   penalties:
-#     beta: 0.01
-#     latent_penalty: ${.beta}
-#     choice_net_latent_penalty: ${.beta}
-#     update_net_obs_penalty: ${.beta}
-#     update_net_latent_penalty: ${.beta}
-#   training:
-#     n_steps: 20
-#     n_warmup_steps: 10
-#     checkpoint_every_n_steps: 5
-#     checkpoint_eval_on_eval_split: true
-#     checkpoint_log_eval_to_wandb: true
-#     checkpoint_run_heldout_eval: true
-#     checkpoint_include_final_in_heldout: false
-#     checkpoint_heldout_every_n: 1
-#     lr: 0.001
-#     loss: penalized_categorical
-#     loss_param: 1.0
-#     max_grad_norm: 1.0
-#   seed: ${seed}
-#   run_name_component: disrnn_beta${.penalties.beta}_lr${.training.lr}
-# seed: 42
-# wandb:
-#   entity: AIND-disRNN
-#   dir: /results
-#   project: test
-#   name: ${data.run_name_component}_${model.run_name_component}
-# job_id: 0
-
 
 
 # data:
@@ -65,65 +26,62 @@
 #   run_name_component: mice_${.subject_ids}
 #   eval_every_n: 2
 #   seed: ${seed}
-# model:
-#   type: disrnn
-#   _target_: model_trainers.disrnn_trainer.DisrnnTrainer
-#   architecture:
-#     latent_size: 5
-#     update_net_n_units_per_layer: 16
-#     update_net_n_layers: 5
-#     choice_net_n_units_per_layer: 4
-#     choice_net_n_layers: 1
-#     activation: leaky_relu
-#   penalties:
-#     beta: 0.01
-#     latent_penalty: ${.beta}
-#     choice_net_latent_penalty: ${.beta}
-#     update_net_obs_penalty: ${.beta}
-#     update_net_latent_penalty: ${.beta}
-#   training:
-#     n_steps: 20
-#     n_warmup_steps: 10
-#     checkpoint_every_n_steps: 5
-#     checkpoint_eval_on_eval_split: true
-#     checkpoint_log_eval_to_wandb: true
-#     checkpoint_run_heldout_eval: true
-#     checkpoint_include_final_in_heldout: false
-#     checkpoint_heldout_every_n: 1
-#     lr: 0.01
-#     loss: penalized_categorical
-#     loss_param: 1.0
-#     max_grad_norm: 1.0
+
+
+# # mice_snapshot
+# data:
+#   type: mice_snapshot
+#   _target_: data_loaders.mice.MiceSnapshotDatasetLoader
+#   subject_ids: null
+#   subject_start: 0
+#   subject_end: 2
+#   test_subject_ids: null        # e.g. [444, 555, 666]
+#   test_subject_start: 2      # inclusive, 0-based rank index
+#   test_subject_end: 3        # exclusive rank index
+#   # ── Held-out test subject selection ─────────────────────────────────────
+#   # Leave all null to disable post-training held-out test-subject evaluation.
+#   # Selection follows the same rules as train subjects:
+#   #   1) direct list via test_subject_ids, or
+#   #   2) rank-based slice [test_subject_start, test_subject_end) per curriculum.
+#   heldout_example_sessions_per_subject: 1  # >=0; 0 skips held-out example plotting
+#   train_example_sessions_per_subject: 1    # >=0; 0 skips training example plotting
+#   eval_example_sessions_per_subject: 1     # >=0; 0 skips eval example plotting
+#   example_max_subjects: 3                  # >=0; cap subjects used for train/eval/held-out examples
+
+#   mature_only: true
+#   curricula:
+#     - Uncoupled Without Baiting
+#     - Uncoupled Baiting
+#     - Coupled Baiting
+#   multisubject: false
+#   ignore_policy: exclude
+#   features: null
+#   eval_every_n: 2
+#   batch_size: null
+#   batch_mode: random
+#   run_name_component: mice_snapshot
 #   seed: ${seed}
-#   run_name_component: disrnn_beta${.penalties.beta}_lr${.training.lr}
-# seed: 42
-# wandb:
-#   entity: AIND-disRNN
-#   dir: /results
-#   project: test
-#   name: ${data.run_name_component}_${model.run_name_component}
-# job_id: 0
 
 
-
+# mice_snapshot, multi-subject
 data:
   type: mice_snapshot
   _target_: data_loaders.mice.MiceSnapshotDatasetLoader
   subject_ids: null
   subject_start: 0
   subject_end: 2
+  test_subject_ids: null        # e.g. [444, 555, 666]
+  test_subject_start: 2      # inclusive, 0-based rank index
+  test_subject_end: 3        # exclusive rank index
   # ── Held-out test subject selection ─────────────────────────────────────
   # Leave all null to disable post-training held-out test-subject evaluation.
   # Selection follows the same rules as train subjects:
   #   1) direct list via test_subject_ids, or
   #   2) rank-based slice [test_subject_start, test_subject_end) per curriculum.
-  test_subject_ids: null        # e.g. [444, 555, 666]
-  test_subject_start: 2      # inclusive, 0-based rank index
-  test_subject_end: 3        # exclusive rank index
   heldout_example_sessions_per_subject: 1  # >=0; 0 skips held-out example plotting
   train_example_sessions_per_subject: 1    # >=0; 0 skips training example plotting
   eval_example_sessions_per_subject: 1     # >=0; 0 skips eval example plotting
-  example_max_subjects: 6                  # >=0; cap subjects used for train/eval/held-out examples
+  example_max_subjects: 3                  # >=0; cap subjects used for train/eval/held-out examples
 
   mature_only: true
   curricula:
@@ -139,6 +97,54 @@ data:
   run_name_component: mice_snapshot
   seed: ${seed}
 
+
+####################################################################
+# # disrnn
+# model:
+#   type: disrnn
+#   _target_: model_trainers.disrnn_trainer.DisrnnTrainer
+#   architecture:
+#     multisubject: false
+#     latent_size: 5
+#     update_net_n_units_per_layer: 16
+#     update_net_n_layers: 5
+#     choice_net_n_units_per_layer: 4
+#     choice_net_n_layers: 1
+#     activation: leaky_relu
+#   penalties:
+#     beta: 0.001
+#     latent_penalty: ${.beta}
+#     choice_net_latent_penalty: ${.beta}
+#     update_net_obs_penalty: ${.beta}
+#     update_net_latent_penalty: ${.beta}
+#   training:
+#     n_steps: 20
+#     n_warmup_steps: 10
+#     checkpoint_every_n_steps: 10             # 0 disables intermediate checkpoints
+#     checkpoint_eval_on_eval_split: true        # compute eval-split likelihood at each checkpoint
+#     checkpoint_eval_on_train_split: true       # compute train-split likelihood at each checkpoint
+#     checkpoint_log_eval_to_wandb: true         # log checkpoint eval likelihood to W&B
+#     checkpoint_log_train_to_wandb: true        # log checkpoint train likelihood to W&B
+#     checkpoint_plot_split_examples_every_n: 10  # 0 disables checkpoint training/eval split example plots
+#     checkpoint_save_output_df_every_n: 0       # 0 disables per-checkpoint output_df.csv snapshots
+#     checkpoint_log_split_examples_to_wandb: true # log checkpoint split-example images to W&B
+#     checkpoint_run_heldout_eval: true          # run held-out test eval for selected checkpoints
+#     checkpoint_include_final_in_heldout: true # include final step checkpoint in held-out loop
+#     checkpoint_keep_media_files: false  # false: keep checkpoint visuals in W&B only
+#     plot_choice_rule: false
+#     plot_update_rules: false
+#     checkpoint_plot_choice_rule: false
+#     checkpoint_plot_update_rules: false
+#     save_output_df: false
+#     lr: 0.001
+#     loss: penalized_categorical
+#     loss_param: 1.0
+#     max_grad_norm: 1.0
+#   seed: ${seed}
+#   run_name_component: disrnn_beta${.penalties.beta}_lr${.training.lr}
+
+
+# disrnn, multi-subject
 model:
   type: disrnn
   _target_: model_trainers.disrnn_trainer.DisrnnTrainer
@@ -187,6 +193,7 @@ model:
   seed: ${seed}
   run_name_component: disrnn_beta${.penalties.beta}_lr${.training.lr}
 
+
 # model:
 #   type: baseline_rl
 #   _target_: model_trainers.baseline_rl_trainer.BaselineRLTrainer
@@ -204,6 +211,8 @@ model:
 #   seed: ${seed}
 #   run_name_component: rl_${.agent_class}_L${.agent_kwargs.number_of_learning_rate}F${.agent_kwargs.number_of_forget_rate}
 
+
+####################################################################
 seed: 36
 
 wandb:
