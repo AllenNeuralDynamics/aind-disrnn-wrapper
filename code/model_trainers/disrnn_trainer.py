@@ -591,14 +591,14 @@ class DisrnnTrainer(ModelTrainer):
                 if train_likelihood_ckpt is not None:
                     checkpoint_record["train_likelihood"] = train_likelihood_ckpt
                     logger.info(
-                        "Checkpoint step %s training likelihood: %.4f",
+                        "Checkpoint step %s, training likelihood: %.4f",
                         steps_completed,
                         train_likelihood_ckpt,
                     )
                 if eval_likelihood_ckpt is not None:
                     checkpoint_record["eval_likelihood"] = eval_likelihood_ckpt
                     logger.info(
-                        "Checkpoint step %s eval likelihood: %.4f",
+                        "Checkpoint step %s, eval likelihood: %.4f",
                         steps_completed,
                         eval_likelihood_ckpt,
                     )
@@ -722,6 +722,7 @@ class DisrnnTrainer(ModelTrainer):
                                 if args.checkpoint_log_split_examples_to_wandb
                                 else None
                             ),
+                            log_scope=f"Checkpoint step {steps_completed}",
                             wandb_step=args.n_warmup_steps + int(steps_completed),
                             wandb_key_prefix="checkpoint",
                         )
@@ -846,6 +847,7 @@ class DisrnnTrainer(ModelTrainer):
                             output_subdir=f"heldout_test/checkpoints/step_{steps_completed}",
                             log_to_wandb=False,
                             heldout_data=heldout_test_data,
+                            log_scope=f"Checkpoint step {steps_completed}",
                         )
                         if ckpt_summary is not None:
                             checkpoint_heldout_summaries.append(
@@ -1074,6 +1076,7 @@ class DisrnnTrainer(ModelTrainer):
                     if (args.checkpoint_every_n_steps == 0)
                     else None
                 ),
+                log_scope="Final",
             )
         output["split_examples"] = split_summaries
         
@@ -1160,6 +1163,7 @@ class DisrnnTrainer(ModelTrainer):
         metadata: dict[str, Any],
         n_action_logits: int,
         wandb_run: Any | None = None,
+        log_scope: str | None = None,
         wandb_step: int | None = None,
         wandb_key_prefix: str | None = None,
     ) -> dict[str, Any]:
@@ -1280,6 +1284,7 @@ class DisrnnTrainer(ModelTrainer):
                     max_subjects_to_plot=max_subjects_to_plot,
                     n_action_logits=n_action_logits,
                     wandb_run=None,
+                    log_scope=log_scope,
                 )
                 split_summaries[split_name] = split_summary
             except Exception as exc:

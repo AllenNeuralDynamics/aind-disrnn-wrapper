@@ -179,6 +179,7 @@ def main() -> None:
                         output_subdir=f"heldout_test/checkpoints/step_{total_steps}",
                         log_to_wandb=False,
                         heldout_data=heldout_test_data,
+                        log_scope="Final",
                     )
                     if heldout_summary is not None and wandb_run is not None:
                         warmup_steps = int(getattr(training_cfg, "n_warmup_steps", 0))
@@ -265,6 +266,7 @@ def main() -> None:
                         output_subdir=f"heldout_test/checkpoints/step_{total_steps}",
                         log_to_wandb=False,
                         heldout_data=heldout_test_data,
+                        log_scope="Final",
                     )
                     if heldout_summary is not None and wandb_run is not None:
                         wandb_step = total_steps
@@ -331,6 +333,14 @@ def main() -> None:
             }
 
         if heldout_summary is not None:
+            heldout_test_likelihood = None
+            if isinstance(heldout_summary, dict):
+                heldout_test_likelihood = heldout_summary.get("heldout_test_likelihood")
+            if heldout_test_likelihood is not None:
+                logger.info(
+                    "Final held-out test likelihood: %.4f",
+                    float(heldout_test_likelihood),
+                )
             output["heldout_test"] = heldout_summary
     elif is_multisubject_disrnn and heldout_cfg.enabled:
         logger.info(

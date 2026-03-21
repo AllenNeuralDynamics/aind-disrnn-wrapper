@@ -275,6 +275,14 @@ def _get_open_latents_from_params(
     return [i for i in range(n) if float(bottlenecks[i]) > threshold]
 
 
+def _compose_log_prefix(log_scope: str | None, label: str) -> str:
+    if not log_scope:
+        return label
+    if log_scope.lower().startswith("checkpoint step"):
+        return f"{log_scope}, {label}"
+    return f"{log_scope} {label}"
+
+
 def plot_disrnn_examples_for_split(
     *,
     split_name: str,
@@ -288,6 +296,7 @@ def plot_disrnn_examples_for_split(
     n_action_logits: int | None = None,
     open_latent_threshold: float = OPEN_LATENT_THRESHOLD,
     wandb_run: Any | None = None,
+    log_scope: str | None = None,
 ) -> dict[str, Any]:
     """Generate example plots for a split and return a summary dictionary."""
     if sessions_per_subject < 0:
@@ -305,6 +314,7 @@ def plot_disrnn_examples_for_split(
 
     split_dir = output_dir / split_name
     split_dir.mkdir(parents=True, exist_ok=True)
+    log_prefix = _compose_log_prefix(log_scope, split_name)
 
     if sessions_per_subject == 0:
         summary = {
@@ -331,8 +341,8 @@ def plot_disrnn_examples_for_split(
             threshold=open_latent_threshold,
         )
         logger.info(
-            "%s: open latents by bottleneck > %.4f: %s",
-            split_name,
+            "%s open latents by bottleneck > %.4f: %s",
+            log_prefix,
             open_latent_threshold,
             open_latents,
         )
@@ -343,7 +353,7 @@ def plot_disrnn_examples_for_split(
         if len(subject_groups) > max_subjects_to_plot:
             logger.info(
                 "%s: Limiting example plotting to first %d subjects (of %d total)",
-                split_name,
+                log_prefix,
                 max_subjects_to_plot,
                 len(subject_groups),
             )
@@ -525,6 +535,7 @@ def evaluate_disrnn_on_heldout_subjects(
     output_subdir: str = "heldout_test",
     log_to_wandb: bool = True,
     heldout_data: dict[str, Any] | None = None,
+    log_scope: str | None = None,
 ) -> dict[str, Any] | None:
     """Evaluate trained disRNN model on held-out test subjects.
 
@@ -584,7 +595,8 @@ def evaluate_disrnn_on_heldout_subjects(
         yhat_test[:, :, :n_action_logits],
     )
     test_likelihood = float(test_likelihood)
-    logger.info("Held-out test likelihood: %.4f", test_likelihood)
+    heldout_log_prefix = _compose_log_prefix(log_scope, "held-out test")
+    logger.info("%s likelihood: %.4f", heldout_log_prefix, test_likelihood)
 
     plot_dir = output_dir / output_subdir
     plot_dir.mkdir(parents=True, exist_ok=True)
@@ -603,7 +615,8 @@ def evaluate_disrnn_on_heldout_subjects(
         threshold=open_latent_threshold,
     )
     logger.info(
-        "Held-out open latents by bottleneck > %.4f: %s",
+        "%s open latents by bottleneck > %.4f: %s",
+        heldout_log_prefix,
         open_latent_threshold,
         open_latents,
     )
@@ -655,7 +668,8 @@ def evaluate_disrnn_on_heldout_subjects(
         subject_groups = list(subject_session_rows.groupby("subject_id", sort=False))
         if len(subject_groups) > max_subjects_to_plot:
             logger.info(
-                "Held-out: Limiting example plotting to first %d subjects (of %d total)",
+                "%s: Limiting example plotting to first %d subjects (of %d total)",
+                heldout_log_prefix,
                 max_subjects_to_plot,
                 len(subject_groups),
             )
