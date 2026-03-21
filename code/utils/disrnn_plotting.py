@@ -84,7 +84,9 @@ def plot_latents_over_trials(
             )
 
     valid_mask = (
-        (choices != -1)
+        np.isfinite(choices)
+        & np.isfinite(rewards)
+        & (choices != -1)
         & (rewards != -1)
         & np.all(np.isfinite(latents), axis=1)
         & np.all(np.isfinite(action_probabilities), axis=1)
@@ -103,7 +105,7 @@ def plot_latents_over_trials(
         ncols=1,
         figsize=(12, 10),
         dpi=fig_dpi,
-        sharex=True,
+        sharex=False,
     )
 
     ax = axs[0]

@@ -283,6 +283,50 @@ def _compose_log_prefix(log_scope: str | None, label: str) -> str:
     return f"{log_scope} {label}"
 
 
+def _aligned_action_probabilities_from_output_df(
+    session_df: Any,
+    *,
+    n_action_logits: int,
+) -> np.ndarray:
+    """Return row-aligned action probabilities for one session dataframe.
+
+    The trial example plots should be indexed by the same ``(ses_idx, trial)``
+    rows for choices, rewards, latents, and probabilities. ``add_model_results``
+    already aligns logits onto the original dataframe rows and leaves ignored
+    trials as NaN, so we reconstruct probabilities from those merged columns
+    instead of using the compact model tensor directly.
+    """
+    if n_action_logits <= 0:
+        raise ValueError(f"Expected n_action_logits > 0, got {n_action_logits}")
+
+    prob_cols = [f"choice_prob_{idx}" for idx in range(n_action_logits)]
+    if all(col in session_df.columns for col in prob_cols):
+        probs = session_df[prob_cols].to_numpy(dtype=float)
+        if probs.ndim != 2 or probs.shape[1] != n_action_logits:
+            raise ValueError(
+                "Aligned probability columns have unexpected shape: "
+                f"{probs.shape}, expected (_, {n_action_logits})"
+            )
+        return probs
+
+    disrnn_logit_cols = ["logit(left)", "logit(right)", "logit(ignore)"][:n_action_logits]
+    if all(col in session_df.columns for col in disrnn_logit_cols):
+        logits = session_df[disrnn_logit_cols].to_numpy(dtype=float)
+        return _probs_from_logits_2d(logits)
+
+    gru_logit_cols = [f"choice_logit_{idx}" for idx in range(n_action_logits)]
+    if all(col in session_df.columns for col in gru_logit_cols):
+        logits = session_df[gru_logit_cols].to_numpy(dtype=float)
+        return _probs_from_logits_2d(logits)
+
+    available_cols = ", ".join(str(col) for col in session_df.columns)
+    raise ValueError(
+        "Could not find aligned action probability/logit columns for plotting. "
+        f"Expected one of {prob_cols}, {disrnn_logit_cols}, or {gru_logit_cols}. "
+        f"Available columns: {available_cols}"
+    )
+
+
 def plot_disrnn_examples_for_split(
     *,
     split_name: str,
@@ -429,29 +473,20 @@ def plot_disrnn_examples_for_split(
                 trial_numbers = (
                     session_df["trial"].to_numpy() if "trial" in session_df.columns else None
                 )
-                session_index = session_index_by_id[session_id]
-                action_probabilities = _probs_from_logits_2d(
-                    logits[:, session_index, :n_action_logits]
+                action_probabilities = _aligned_action_probabilities_from_output_df(
+                    session_df,
+                    n_action_logits=n_action_logits,
                 )
-
-                n_trials = min(
-                    latents.shape[0],
-                    choices.shape[0],
-                    rewards.shape[0],
-                    action_probabilities.shape[0],
-                )
-                if n_trials <= 0:
+                if latents.shape[0] == 0:
                     continue
 
                 fig_trials = plot_latents_over_trials(
-                    choices=choices[:n_trials],
-                    rewards=rewards[:n_trials],
-                    latents=latents[:n_trials],
+                    choices=choices,
+                    rewards=rewards,
+                    latents=latents,
                     open_latents=open_latents,
-                    action_probabilities=action_probabilities[:n_trials],
-                    trial_numbers=(
-                        trial_numbers[:n_trials] if trial_numbers is not None else None
-                    ),
+                    action_probabilities=action_probabilities,
+                    trial_numbers=trial_numbers,
                 )
                 fig_trials.suptitle(f"Session {_normalize_identifier(session_id)}", fontsize=14)
                 fig_trials.subplots_adjust(top=0.92)
@@ -686,11 +721,6 @@ def evaluate_disrnn_on_heldout_subjects(
         latent_cols = sorted([c for c in output_df.columns if c.startswith("latent_")])
         if not latent_cols:
             raise ValueError("No latent columns found in held-out model outputs.")
-        session_order_for_logits = list(dict.fromkeys(output_df["ses_idx"].tolist()))
-        session_index_by_id_for_logits = {
-            session_id: index for index, session_id in enumerate(session_order_for_logits)
-        }
-        yhat_test_np = np.asarray(yhat_test)
 
         for subject_id, subject_rows in selected_subject_groups:
             subject_sessions = subject_rows["ses_idx"].tolist()
@@ -702,31 +732,20 @@ def evaluate_disrnn_on_heldout_subjects(
                 trial_numbers = (
                     session_df["trial"].to_numpy() if "trial" in session_df.columns else None
                 )
-                if session_id not in session_index_by_id_for_logits:
-                    continue
-
-                session_index = session_index_by_id_for_logits[session_id]
-                action_probabilities = _probs_from_logits_2d(
-                    yhat_test_np[:, session_index, :n_action_logits]
+                action_probabilities = _aligned_action_probabilities_from_output_df(
+                    session_df,
+                    n_action_logits=n_action_logits,
                 )
-                n_trials = min(
-                    latents.shape[0],
-                    choices.shape[0],
-                    rewards.shape[0],
-                    action_probabilities.shape[0],
-                )
-                if n_trials <= 0:
+                if latents.shape[0] == 0:
                     continue
 
                 fig_trials = plot_latents_over_trials(
-                    choices=choices[:n_trials],
-                    rewards=rewards[:n_trials],
-                    latents=latents[:n_trials],
+                    choices=choices,
+                    rewards=rewards,
+                    latents=latents,
                     open_latents=open_latents,
-                    action_probabilities=action_probabilities[:n_trials],
-                    trial_numbers=(
-                        trial_numbers[:n_trials] if trial_numbers is not None else None
-                    ),
+                    action_probabilities=action_probabilities,
+                    trial_numbers=trial_numbers,
                 )
                 fig_trials.suptitle(
                     f"Session {_normalize_identifier(session_id)}",

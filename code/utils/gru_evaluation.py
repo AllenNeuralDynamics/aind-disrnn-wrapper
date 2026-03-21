@@ -14,10 +14,10 @@ from disentangled_rnns.library import rnn_utils
 from models.gru_network import make_gru_network
 from utils.disrnn_evaluation import (
     HeldoutEvalConfig,
+    _aligned_action_probabilities_from_output_df,
     _load_saved_params,
     _normalize_identifier,
     _prob_from_logits,
-    _probs_from_logits_2d,
     _resolve_heldout_eval_config,
     _resolve_output_dir,
     _safe_filename_component,
@@ -286,26 +286,23 @@ def plot_gru_examples_for_split(
                 latents = session_df[latent_cols].to_numpy()
                 choices = session_df["animal_response"].to_numpy()
                 rewards = session_df["earned_reward"].astype(int).to_numpy()
-                session_index = session_index_by_id[session_id]
-                action_probabilities = _probs_from_logits_2d(
-                    logits[:, session_index, :n_action_logits]
+                trial_numbers = (
+                    session_df["trial"].to_numpy() if "trial" in session_df.columns else None
                 )
-
-                n_trials = min(
-                    latents.shape[0],
-                    choices.shape[0],
-                    rewards.shape[0],
-                    action_probabilities.shape[0],
+                action_probabilities = _aligned_action_probabilities_from_output_df(
+                    session_df,
+                    n_action_logits=n_action_logits,
                 )
-                if n_trials <= 0:
+                if latents.shape[0] == 0:
                     continue
 
                 fig_trials = plot_latents_over_trials(
-                    choices=choices[:n_trials],
-                    rewards=rewards[:n_trials],
-                    latents=latents[:n_trials],
+                    choices=choices,
+                    rewards=rewards,
+                    latents=latents,
                     open_latents=plotted_hidden_units,
-                    action_probabilities=action_probabilities[:n_trials],
+                    action_probabilities=action_probabilities,
+                    trial_numbers=trial_numbers,
                 )
                 fig_trials.suptitle(f"Session {_normalize_identifier(session_id)}", fontsize=14)
                 fig_trials.subplots_adjust(top=0.92)
@@ -529,11 +526,6 @@ def evaluate_gru_on_heldout_subjects(
         latent_cols = sorted([c for c in output_df.columns if c.startswith("latent_")])
         if not latent_cols:
             raise ValueError("No latent columns found in held-out model outputs.")
-        session_order_for_logits = list(dict.fromkeys(output_df["ses_idx"].tolist()))
-        session_index_by_id_for_logits = {
-            session_id: index for index, session_id in enumerate(session_order_for_logits)
-        }
-        yhat_test_np = np.asarray(yhat_test)
 
         for subject_id, subject_rows in selected_subject_groups:
             subject_sessions = subject_rows["ses_idx"].tolist()
@@ -542,28 +534,23 @@ def evaluate_gru_on_heldout_subjects(
                 latents = session_df[latent_cols].to_numpy()
                 choices = session_df["animal_response"].to_numpy()
                 rewards = session_df["earned_reward"].astype(int).to_numpy()
-                if session_id not in session_index_by_id_for_logits:
-                    continue
-
-                session_index = session_index_by_id_for_logits[session_id]
-                action_probabilities = _probs_from_logits_2d(
-                    yhat_test_np[:, session_index, :n_action_logits]
+                trial_numbers = (
+                    session_df["trial"].to_numpy() if "trial" in session_df.columns else None
                 )
-                n_trials = min(
-                    latents.shape[0],
-                    choices.shape[0],
-                    rewards.shape[0],
-                    action_probabilities.shape[0],
+                action_probabilities = _aligned_action_probabilities_from_output_df(
+                    session_df,
+                    n_action_logits=n_action_logits,
                 )
-                if n_trials <= 0:
+                if latents.shape[0] == 0:
                     continue
 
                 fig_trials = plot_latents_over_trials(
-                    choices=choices[:n_trials],
-                    rewards=rewards[:n_trials],
-                    latents=latents[:n_trials],
+                    choices=choices,
+                    rewards=rewards,
+                    latents=latents,
                     open_latents=plotted_hidden_units,
-                    action_probabilities=action_probabilities[:n_trials],
+                    action_probabilities=action_probabilities,
+                    trial_numbers=trial_numbers,
                 )
                 fig_trials.suptitle(
                     f"Session {_normalize_identifier(session_id)}",

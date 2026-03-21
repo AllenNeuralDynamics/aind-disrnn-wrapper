@@ -17,6 +17,7 @@ try:
     from base.types import DatasetBundle
     from data_loaders.synthetic import SyntheticCognitiveAgents
     from model_trainers.disrnn_trainer import DisrnnTrainer
+    from utils.disrnn_evaluation import _aligned_action_probabilities_from_output_df
     from utils.multisubject import (
         build_subject_index_maps,
         compute_train_eval_session_ids,
@@ -264,13 +265,37 @@ class TestDisrnnTrainer(unittest.TestCase):
         self.assertIn("subject_artifacts", output)
         self.assertTrue((self.output_dir / "subject_index_map.json").exists())
         self.assertTrue((self.output_dir / "subject_embeddings.pkl").exists())
-
         subject_embeddings_df = pd.read_pickle(self.output_dir / "subject_embeddings.pkl")
         self.assertEqual(subject_embeddings_df["subject_id"].tolist(), [711041, 793446])
 
         params = json.loads((self.output_dir / "params.json").read_text())
         self.assertIn("multisubject_dis_rnn", params)
         self.assertIn("subject_embeddings", params["multisubject_dis_rnn"])
+
+    def test_aligned_action_probabilities_preserve_dataframe_rows(self):
+        session_df = pd.DataFrame(
+            {
+                "trial": [1, 2, 3, 4],
+                "logit(left)": [0.0, np.nan, 2.0, -1.0],
+                "logit(right)": [1.0, np.nan, 0.0, -1.0],
+            }
+        )
+
+        probs = _aligned_action_probabilities_from_output_df(
+            session_df,
+            n_action_logits=2,
+        )
+
+        self.assertEqual(probs.shape, (4, 2))
+        self.assertTrue(np.isnan(probs[1]).all())
+
+        expected_row0 = np.exp([0.0, 1.0])
+        expected_row0 = expected_row0 / expected_row0.sum()
+        np.testing.assert_allclose(probs[0], expected_row0)
+
+        expected_row2 = np.exp([2.0, 0.0])
+        expected_row2 = expected_row2 / expected_row2.sum()
+        np.testing.assert_allclose(probs[2], expected_row2)
 
 
 if __name__ == "__main__":
