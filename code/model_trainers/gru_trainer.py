@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import itertools
 import json
 import logging
 import time
@@ -14,6 +15,7 @@ import numpy as np
 import optax
 import pandas as pd
 import wandb
+from matplotlib.lines import Line2D
 from omegaconf import DictConfig, OmegaConf
 
 from disentangled_rnns.library import rnn_utils
@@ -28,6 +30,12 @@ from utils.gru_evaluation import (
     load_gru_heldout_subject_data,
     plot_gru_examples_for_split,
 )
+from utils.multisubject import (
+    extract_subject_embeddings_from_params,
+    normalize_subject_id,
+    save_subject_index_map,
+    subject_embeddings_to_dataframe,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +44,72 @@ def _to_dict(config: Mapping[str, Any] | DictConfig) -> Dict[str, Any]:
     if isinstance(config, DictConfig):
         return OmegaConf.to_container(config, resolve=True)  # type: ignore[return-value]
     return dict(config)
+
+
+def _is_multisubject_mode(
+    architecture: Mapping[str, Any],
+    metadata: Mapping[str, Any],
+) -> bool:
+    return bool(architecture.get("multisubject", False) or metadata.get("multisubject", False))
+
+
+def _resolve_multisubject_subject_count(metadata: Mapping[str, Any]) -> int:
+    num_subjects = metadata.get("num_subjects")
+    if num_subjects is not None:
+        resolved = int(num_subjects)
+        if resolved > 0:
+            return resolved
+
+    subject_ids = metadata.get("subject_ids")
+    if isinstance(subject_ids, list) and subject_ids:
+        return int(len(subject_ids))
+
+    raise ValueError(
+        "Multisubject GRU requires metadata.num_subjects or metadata.subject_ids."
+    )
+
+
+def _validate_multisubject_dataset_inputs(
+    dataset: Any,
+    *,
+    max_n_subjects: int,
+    context: str,
+) -> None:
+    xs, _ = dataset.get_all()
+    xs = np.asarray(xs)
+    if xs.ndim != 3:
+        raise ValueError(
+            f"Multisubject GRU {context} expects dataset inputs to be 3D, got shape={xs.shape}."
+        )
+    if xs.shape[2] < 2:
+        raise ValueError(
+            f"Multisubject GRU {context} requires a prepended subject-index feature."
+        )
+
+    subject_ids = np.asarray(xs[..., 0], dtype=float)
+    if not np.all(np.isfinite(subject_ids)):
+        raise ValueError(
+            f"Multisubject GRU {context} encountered non-finite subject ids."
+        )
+
+    rounded_subject_ids = np.rint(subject_ids)
+    integer_like_mask = np.isclose(subject_ids, rounded_subject_ids)
+    if not np.all(integer_like_mask):
+        bad_values = np.unique(subject_ids[~integer_like_mask]).tolist()
+        raise ValueError(
+            "Multisubject GRU "
+            f"{context} expected integer-valued subject ids, got {bad_values}."
+        )
+
+    subject_ids_int = rounded_subject_ids.astype(int)
+    invalid_mask = (subject_ids_int < -1) | (subject_ids_int >= int(max_n_subjects))
+    if np.any(invalid_mask):
+        bad_values = np.unique(subject_ids_int[invalid_mask]).tolist()
+        raise ValueError(
+            "Multisubject GRU "
+            f"{context} encountered out-of-range subject ids {bad_values}. "
+            f"Expected padding sentinel -1 or values in [0, {int(max_n_subjects) - 1}]."
+        )
 
 
 def _require_n_action_logits(dataset: Any, yhat: np.ndarray, *, context: str) -> int:
@@ -116,6 +190,191 @@ class GruTrainer(ModelTrainer):
         self.heldout_data = heldout_data
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+
+    def _resolve_subject_curricula(
+        self,
+        *,
+        raw_df: pd.DataFrame,
+        metadata: Mapping[str, Any],
+    ) -> dict[Any, str]:
+        subject_curricula = metadata.get("subject_curricula")
+        if isinstance(subject_curricula, dict) and subject_curricula:
+            return {
+                normalize_subject_id(subject_id): str(curriculum)
+                for subject_id, curriculum in subject_curricula.items()
+            }
+
+        if "subject_id" not in raw_df.columns or "curriculum_name" not in raw_df.columns:
+            return {}
+
+        resolved: dict[Any, str] = {}
+        for subject_id, subject_rows in raw_df.groupby("subject_id", sort=False):
+            curricula = [
+                str(value)
+                for value in subject_rows["curriculum_name"].dropna().unique().tolist()
+            ]
+            normalized_subject_id = normalize_subject_id(subject_id)
+            if not curricula:
+                resolved[normalized_subject_id] = "Unknown"
+            elif len(curricula) == 1:
+                resolved[normalized_subject_id] = curricula[0]
+            else:
+                resolved[normalized_subject_id] = "Mixed"
+        return resolved
+
+    def _attach_subject_metadata_to_embeddings(
+        self,
+        subject_embeddings_df: pd.DataFrame,
+        *,
+        raw_df: pd.DataFrame,
+        metadata: Mapping[str, Any],
+    ) -> pd.DataFrame:
+        enriched_df = subject_embeddings_df.copy()
+        subject_curricula = self._resolve_subject_curricula(raw_df=raw_df, metadata=metadata)
+        if subject_curricula:
+            enriched_df["curriculum_name"] = enriched_df["subject_id"].map(
+                lambda subject_id: subject_curricula.get(
+                    normalize_subject_id(subject_id),
+                    "Unknown",
+                )
+            )
+        return enriched_df
+
+    def _save_multisubject_artifacts(
+        self,
+        *,
+        params: Any,
+        metadata: Mapping[str, Any],
+        raw_df: pd.DataFrame,
+    ) -> dict[str, str]:
+        subject_id_to_index = metadata.get("subject_id_to_index")
+        index_to_subject_id = metadata.get("index_to_subject_id")
+        if not isinstance(subject_id_to_index, dict) or not isinstance(index_to_subject_id, dict):
+            raise ValueError(
+                "Multisubject artifact export requires subject_id_to_index and "
+                "index_to_subject_id in bundle metadata."
+            )
+
+        subject_index_map_path = save_subject_index_map(
+            self.output_dir / "subject_index_map.json",
+            subject_id_to_index=subject_id_to_index,
+            index_to_subject_id=index_to_subject_id,
+        )
+        subject_embeddings = extract_subject_embeddings_from_params(params)
+        subject_embeddings_df = subject_embeddings_to_dataframe(
+            index_to_subject_id,
+            subject_embeddings,
+        )
+        subject_embeddings_df = self._attach_subject_metadata_to_embeddings(
+            subject_embeddings_df,
+            raw_df=raw_df,
+            metadata=metadata,
+        )
+        subject_embeddings_path = self.output_dir / "subject_embeddings.pkl"
+        subject_embeddings_df.to_pickle(subject_embeddings_path)
+        return {
+            "subject_index_map": str(subject_index_map_path),
+            "subject_embeddings": str(subject_embeddings_path),
+        }
+
+    def _plot_subject_embedding_state_space(
+        self,
+        *,
+        params: Any,
+        raw_df: pd.DataFrame,
+        metadata: Mapping[str, Any],
+    ) -> Any | None:
+        index_to_subject_id = metadata.get("index_to_subject_id")
+        if not isinstance(index_to_subject_id, dict):
+            return None
+
+        subject_embeddings = extract_subject_embeddings_from_params(params)
+        if subject_embeddings.shape[1] < 2:
+            logger.info(
+                "Skipping subject embedding state-space plot because subject_embedding_size < 2."
+            )
+            return None
+
+        plot_df = subject_embeddings_to_dataframe(index_to_subject_id, subject_embeddings)
+        plot_df = self._attach_subject_metadata_to_embeddings(
+            plot_df,
+            raw_df=raw_df,
+            metadata=metadata,
+        )
+        if "curriculum_name" not in plot_df.columns:
+            plot_df["curriculum_name"] = "Unknown"
+        else:
+            plot_df["curriculum_name"] = plot_df["curriculum_name"].fillna("Unknown")
+
+        embedding_columns = [
+            column
+            for column in plot_df.columns
+            if column.startswith("embedding_")
+        ]
+        dim_pairs = list(itertools.combinations(embedding_columns, 2))
+        if not dim_pairs:
+            return None
+
+        ncols = min(3, len(dim_pairs))
+        nrows = int(np.ceil(len(dim_pairs) / ncols))
+        fig, axes = plt.subplots(nrows, ncols, figsize=(5.5 * ncols, 5.0 * nrows), squeeze=False)
+
+        curriculum_values = list(dict.fromkeys(plot_df["curriculum_name"].astype(str).tolist()))
+        cmap = plt.get_cmap("tab10")
+        curriculum_to_color = {
+            curriculum: cmap(index % max(1, cmap.N))
+            for index, curriculum in enumerate(curriculum_values)
+        }
+
+        for ax, (x_column, y_column) in zip(axes.flat, dim_pairs):
+            for curriculum in curriculum_values:
+                curriculum_rows = plot_df[plot_df["curriculum_name"].astype(str) == curriculum]
+                ax.scatter(
+                    curriculum_rows[x_column],
+                    curriculum_rows[y_column],
+                    color=curriculum_to_color[curriculum],
+                    label=curriculum,
+                    s=55,
+                    alpha=0.9,
+                )
+            for row in plot_df.itertuples(index=False):
+                ax.text(
+                    getattr(row, x_column),
+                    getattr(row, y_column),
+                    str(getattr(row, "subject_index")),
+                    fontsize=8,
+                    alpha=0.8,
+                )
+            ax.axhline(0, color="0.85", linewidth=1)
+            ax.axvline(0, color="0.85", linewidth=1)
+            ax.set_xlabel(x_column.replace("_", " ").title())
+            ax.set_ylabel(y_column.replace("_", " ").title())
+            ax.set_title(f"{x_column} vs {y_column}")
+
+        for ax in axes.flat[len(dim_pairs):]:
+            ax.axis("off")
+
+        legend_handles = [
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                linestyle="",
+                markerfacecolor=curriculum_to_color[curriculum],
+                markeredgecolor=curriculum_to_color[curriculum],
+                label=curriculum,
+            )
+            for curriculum in curriculum_values
+        ]
+        fig.legend(
+            handles=legend_handles,
+            loc="upper center",
+            ncol=min(len(legend_handles), 4),
+            title="Curriculum",
+        )
+        fig.suptitle("Subject Embedding State Space", fontsize=14)
+        fig.tight_layout(rect=(0, 0, 1, 0.95))
+        return fig
 
     def _remove_media_files(self, paths: list[Any]) -> None:
         for raw_path in paths:
@@ -210,6 +469,7 @@ class GruTrainer(ModelTrainer):
         dataset_eval: Any,
         ignore_policy: str,
         make_network: Any,
+        is_multisubject: bool,
         heldout_eval_cfg: Any | None,
         heldout_data: dict[str, Any] | None,
         wandb_run: Any | None,
@@ -280,6 +540,40 @@ class GruTrainer(ModelTrainer):
             ignore_policy=ignore_policy,
         )
 
+        plot_paths: dict[str, Any] = {"subject_embedding_state_space": None}
+        if is_multisubject:
+            try:
+                subject_embedding_fig = self._plot_subject_embedding_state_space(
+                    params=params,
+                    raw_df=bundle.raw,
+                    metadata=metadata,
+                )
+                if subject_embedding_fig is not None:
+                    subject_embedding_path = stage_dir / "subject_embedding_state_space.png"
+                    subject_embedding_fig.savefig(subject_embedding_path)
+                    plt.close(subject_embedding_fig)
+                    plot_paths["subject_embedding_state_space"] = str(subject_embedding_path)
+            except Exception as exc:
+                logger.warning(
+                    "Initialization subject-embedding plotting failed for %s: %s",
+                    stage_name,
+                    exc,
+                )
+
+        if wandb_run is not None and plot_paths["subject_embedding_state_space"]:
+            plot_payload = {
+                "checkpoint/fig/subject_embedding_state_space": wandb.Image(
+                    str(plot_paths["subject_embedding_state_space"])
+                )
+            }
+            if wandb_step is None:
+                wandb_run.log(plot_payload)
+            else:
+                wandb_run.log(plot_payload, step=wandb_step)
+            if not keep_media_files:
+                self._remove_media_files([plot_paths["subject_embedding_state_space"]])
+                plot_paths["subject_embedding_state_space"] = None
+
         n_action_logits_full = _require_n_action_logits(
             dataset,
             np.asarray(yhat_full),
@@ -306,6 +600,7 @@ class GruTrainer(ModelTrainer):
             "params_path": str(params_path),
             "train_likelihood": train_likelihood,
             "eval_likelihood": eval_likelihood,
+            "plot_paths": plot_paths,
             "split_examples": split_summaries,
         }
 
@@ -352,6 +647,7 @@ class GruTrainer(ModelTrainer):
     ):
         metadata = dict(bundle.metadata)
         ignore_policy = metadata.get("ignore_policy", "exclude")
+        is_multisubject = _is_multisubject_mode(self.architecture, metadata)
 
         wandb_run = None
         if loggers and "wandb" in loggers:
@@ -370,6 +666,7 @@ class GruTrainer(ModelTrainer):
             "num_trials": metadata.get("num_trials"),
             "num_sessions": metadata.get("num_sessions"),
         }
+        output["multisubject"] = bool(is_multisubject)
 
         _log_dataset_split_details(
             dataset=dataset,
@@ -380,6 +677,39 @@ class GruTrainer(ModelTrainer):
 
         key = jax.random.PRNGKey(self.seed)
         output["random_key"] = [int(x) for x in np.asarray(key).reshape(-1)]
+
+        max_n_subjects: int | None = None
+        subject_embedding_size: int | None = None
+        if is_multisubject:
+            subject_embedding_size = self.architecture.get("subject_embedding_size")
+            if subject_embedding_size is None or int(subject_embedding_size) <= 0:
+                raise ValueError(
+                    "Multisubject GRU requires architecture.subject_embedding_size > 0."
+                )
+            max_n_subjects = _resolve_multisubject_subject_count(metadata)
+            if not isinstance(metadata.get("subject_id_to_index"), dict) or not isinstance(
+                metadata.get("index_to_subject_id"),
+                dict,
+            ):
+                raise ValueError(
+                    "Multisubject GRU requires subject_id_to_index and "
+                    "index_to_subject_id in bundle metadata."
+                )
+            _validate_multisubject_dataset_inputs(
+                dataset,
+                max_n_subjects=max_n_subjects,
+                context="full dataset",
+            )
+            _validate_multisubject_dataset_inputs(
+                dataset_train,
+                max_n_subjects=max_n_subjects,
+                context="training split",
+            )
+            _validate_multisubject_dataset_inputs(
+                dataset_eval,
+                max_n_subjects=max_n_subjects,
+                context="eval split",
+            )
 
         expected_output_size = 2 if ignore_policy == "exclude" else 3
         args = types.SimpleNamespace(
@@ -451,12 +781,22 @@ class GruTrainer(ModelTrainer):
         make_network = make_gru_network(
             hidden_size=args.hidden_size,
             output_size=args.output_size,
+            multisubject=is_multisubject,
+            max_n_subjects=max_n_subjects,
+            subject_embedding_size=(
+                int(subject_embedding_size) if subject_embedding_size is not None else None
+            ),
         )
 
         heldout_eval_cfg = None
         heldout_test_data = self.heldout_data
         runtime_heldout_cfg = HeldoutEvalConfig.from_data_cfg(metadata)
-        if runtime_heldout_cfg.enabled:
+        if runtime_heldout_cfg.enabled and is_multisubject:
+            logger.info(
+                "Skipping held-out evaluation for multisubject GRU; "
+                "v1 supports seen-subject personalization only."
+            )
+        elif runtime_heldout_cfg.enabled:
             heldout_eval_cfg = OmegaConf.create(
                 {
                     "data": asdict(runtime_heldout_cfg),
@@ -506,6 +846,7 @@ class GruTrainer(ModelTrainer):
                     dataset_eval=dataset_eval,
                     ignore_policy=ignore_policy,
                     make_network=make_network,
+                    is_multisubject=is_multisubject,
                     heldout_eval_cfg=heldout_eval_cfg,
                     heldout_data=heldout_test_data,
                     wandb_run=wandb_run,
@@ -638,6 +979,34 @@ class GruTrainer(ModelTrainer):
                         eval_likelihood_ckpt,
                     )
 
+                checkpoint_plot_paths: dict[str, Any] = {
+                    "subject_embedding_state_space": None,
+                }
+                if is_multisubject:
+                    try:
+                        subject_embedding_fig_ckpt = self._plot_subject_embedding_state_space(
+                            params=params,
+                            raw_df=bundle.raw,
+                            metadata=metadata,
+                        )
+                        if subject_embedding_fig_ckpt is not None:
+                            subject_embedding_path_ckpt = (
+                                checkpoint_dir / "subject_embedding_state_space.png"
+                            )
+                            subject_embedding_fig_ckpt.savefig(subject_embedding_path_ckpt)
+                            plt.close(subject_embedding_fig_ckpt)
+                            checkpoint_plot_paths["subject_embedding_state_space"] = str(
+                                subject_embedding_path_ckpt
+                            )
+                    except Exception as exc:
+                        logger.warning(
+                            "Checkpoint subject-embedding plotting failed for step=%s: %s",
+                            steps_completed,
+                            exc,
+                        )
+
+                checkpoint_record["plot_paths"] = checkpoint_plot_paths
+
                 should_plot_split_examples_ckpt = (
                     args.checkpoint_plot_split_examples_every_n > 0
                     and (
@@ -722,6 +1091,25 @@ class GruTrainer(ModelTrainer):
                         },
                         step=int(steps_completed),
                     )
+
+                if (
+                    wandb_run is not None
+                    and args.checkpoint_log_eval_to_wandb
+                    and checkpoint_plot_paths["subject_embedding_state_space"]
+                ):
+                    wandb_run.log(
+                        {
+                            "checkpoint/fig/subject_embedding_state_space": wandb.Image(
+                                str(checkpoint_plot_paths["subject_embedding_state_space"])
+                            )
+                        },
+                        step=int(steps_completed),
+                    )
+                    if not args.checkpoint_keep_media_files:
+                        self._remove_media_files(
+                            [checkpoint_plot_paths["subject_embedding_state_space"]]
+                        )
+                        checkpoint_plot_paths["subject_embedding_state_space"] = None
 
                 if (
                     wandb_run is not None
@@ -867,6 +1255,27 @@ class GruTrainer(ModelTrainer):
         if wandb_run is not None:
             wandb_run.log({"fig/validation_loss_curve": wandb.Image(str(losses_path))})
 
+        if is_multisubject:
+            subject_embedding_fig = self._plot_subject_embedding_state_space(
+                params=params,
+                raw_df=bundle.raw,
+                metadata=metadata,
+            )
+            if subject_embedding_fig is not None:
+                subject_embedding_path = self._save_figure(
+                    subject_embedding_fig,
+                    "subject_embedding_state_space.png",
+                )
+                output["subject_embedding_state_space_path"] = str(subject_embedding_path)
+                if wandb_run is not None:
+                    wandb_run.log(
+                        {
+                            "fig/subject_embedding_state_space": wandb.Image(
+                                str(subject_embedding_path)
+                            )
+                        }
+                    )
+
         xs_full, _ = dataset.get_all()
         yhat_full, network_states_full = rnn_utils.eval_network(
             make_network,
@@ -888,6 +1297,12 @@ class GruTrainer(ModelTrainer):
         params_path = self.output_dir / "params.json"
         with params_path.open("w") as f:
             f.write(json.dumps(params, cls=rnn_utils.NpJnpJsonEncoder))
+        if is_multisubject:
+            output["subject_artifacts"] = self._save_multisubject_artifacts(
+                params=params,
+                metadata=metadata,
+                raw_df=df,
+            )
 
         xs_train, ys_train = dataset_train.get_all()
         yhat_train, _ = rnn_utils.eval_network(make_network, params, xs_train)

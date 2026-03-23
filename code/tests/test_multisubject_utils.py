@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 
 from utils.multisubject import (
+    GRU_SUBJECT_MODULE_KEY,
     SUBJECT_MODULE_KEY,
     SUBJECT_TABLE_KEY,
     append_subjects_to_index_maps,
@@ -132,6 +133,22 @@ class TestMultisubjectUtils(unittest.TestCase):
                 extract_subject_embeddings_from_params(params_local),
             )
         )
+
+    def test_extract_subject_embeddings_from_gru_params(self):
+        params_gru = {
+            GRU_SUBJECT_MODULE_KEY: {
+                SUBJECT_TABLE_KEY: np.array(
+                    [
+                        [0.1, -0.2, 0.3],
+                        [1.0, 0.5, -0.1],
+                    ]
+                )
+            }
+        }
+
+        extracted = extract_subject_embeddings_from_params(params_gru)
+        self.assertEqual(extracted.shape, (2, 3))
+        self.assertTrue(np.allclose(extracted, params_gru[GRU_SUBJECT_MODULE_KEY][SUBJECT_TABLE_KEY]))
 
     def test_append_subjects_to_index_maps_appends_new_rows_only(self):
         subject_id_to_index = {"711041": 0, "793446": 1}

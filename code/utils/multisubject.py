@@ -1,4 +1,4 @@
-"""Helpers for multisubject disRNN datasets, params, and exports."""
+"""Helpers for multisubject datasets, params, and exports."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 
 SUBJECT_MODULE_KEY = "multisubject_dis_rnn"
+GRU_SUBJECT_MODULE_KEY = "multisubject_gru"
 SUBJECT_TABLE_KEY = "subject_embeddings"
 UPSTREAM_SUBJECT_LINEAR_KEY = f"{SUBJECT_MODULE_KEY}/subject_embedding_weights"
 
@@ -258,6 +259,12 @@ def extract_subject_embeddings_from_params(params: dict[str, Any]) -> np.ndarray
     """Return effective subject embeddings from local or upstream params."""
     if SUBJECT_MODULE_KEY in params and SUBJECT_TABLE_KEY in params[SUBJECT_MODULE_KEY]:
         return np.asarray(params[SUBJECT_MODULE_KEY][SUBJECT_TABLE_KEY], dtype=float)
+
+    if (
+        GRU_SUBJECT_MODULE_KEY in params
+        and SUBJECT_TABLE_KEY in params[GRU_SUBJECT_MODULE_KEY]
+    ):
+        return np.asarray(params[GRU_SUBJECT_MODULE_KEY][SUBJECT_TABLE_KEY], dtype=float)
 
     if UPSTREAM_SUBJECT_LINEAR_KEY in params:
         linear_params = params[UPSTREAM_SUBJECT_LINEAR_KEY]

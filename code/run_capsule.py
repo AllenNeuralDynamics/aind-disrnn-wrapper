@@ -33,11 +33,11 @@ from utils.run_helpers import (
 logger = logging.getLogger(__name__)
 
 
-def _is_multisubject_disrnn_run(hydra_config) -> bool:
+def _is_multisubject_personalized_run(hydra_config) -> bool:
     model_type = getattr(hydra_config.model, "type", None)
     architecture_cfg = getattr(hydra_config.model, "architecture", None)
     return bool(
-        model_type == "disrnn"
+        model_type in {"disrnn", "gru"}
         and architecture_cfg is not None
         and getattr(architecture_cfg, "multisubject", False)
     )
@@ -109,12 +109,12 @@ def main() -> None:
 
     heldout_test_data = None
     model_type = getattr(hydra_config.model, "type", None)
-    is_multisubject_disrnn = _is_multisubject_disrnn_run(hydra_config)
+    is_multisubject_personalized_model = _is_multisubject_personalized_run(hydra_config)
     if (
         model_type in {"disrnn", "gru"}
         and hasattr(hydra_config.data, "mature_only")
         and heldout_cfg.enabled
-        and not is_multisubject_disrnn
+        and not is_multisubject_personalized_model
     ):
         try:
             if model_type == "disrnn":
@@ -126,10 +126,11 @@ def main() -> None:
                 "Preloading held-out test data failed; evaluation will fall back to lazy loading: %s",
                 exc,
             )
-    elif is_multisubject_disrnn and heldout_cfg.enabled:
+    elif is_multisubject_personalized_model and heldout_cfg.enabled:
         logger.info(
-            "Skipping held-out preload for multisubject disRNN; v1 supports seen-subject "
-            "personalization only."
+            "Skipping held-out preload for multisubject %s; v1 supports seen-subject "
+            "personalization only.",
+            str(model_type).upper(),
         )
 
     # --- Train model ---
@@ -153,7 +154,7 @@ def main() -> None:
     if (
         hasattr(hydra_config.data, "mature_only")
         and heldout_cfg.enabled
-        and not is_multisubject_disrnn
+        and not is_multisubject_personalized_model
     ):
         heldout_summary = None
         try:
@@ -353,10 +354,11 @@ def main() -> None:
                     float(heldout_test_likelihood),
                 )
             output["heldout_test"] = heldout_summary
-    elif is_multisubject_disrnn and heldout_cfg.enabled:
+    elif is_multisubject_personalized_model and heldout_cfg.enabled:
         logger.info(
-            "Skipping final held-out evaluation for multisubject disRNN; v1 supports "
-            "seen-subject personalization only."
+            "Skipping final held-out evaluation for multisubject %s; v1 supports "
+            "seen-subject personalization only.",
+            str(model_type).upper(),
         )
 
     if wandb_run is not None:

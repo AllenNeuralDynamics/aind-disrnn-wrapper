@@ -404,6 +404,13 @@ def evaluate_gru_on_heldout_subjects(
     """Evaluate a trained GRU model on held-out test subjects."""
     heldout_cfg = _resolve_heldout_eval_config(hydra_config)
     model_cfg = hydra_config.model
+    architecture = model_cfg.architecture
+
+    if bool(getattr(architecture, "multisubject", False)):
+        raise ValueError(
+            "Held-out subject evaluation is not supported for multisubject GRU. "
+            "v1 only supports seen-subject personalization."
+        )
 
     if not heldout_cfg.enabled:
         logger.info("Held-out evaluation disabled (no test subject selectors configured).")
@@ -426,7 +433,6 @@ def evaluate_gru_on_heldout_subjects(
 
     ignore_policy = heldout_cfg.ignore_policy
     output_size = 2 if ignore_policy == "exclude" else 3
-    architecture = model_cfg.architecture
     network_output_size = int(getattr(architecture, "output_size", output_size))
     if network_output_size != output_size:
         raise ValueError(

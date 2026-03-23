@@ -2,14 +2,31 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import tempfile
 import unittest
 from pathlib import Path
 
 try:
+    import aind_disrnn_utils.data_loader as dl
+    import numpy as np
+    import pandas as pd
+    from disentangled_rnns.library import rnn_utils
+    from omegaconf import OmegaConf
+
+    from base.types import DatasetBundle
     from data_loaders.synthetic import SyntheticCognitiveAgents
-    from model_trainers.gru_trainer import GruTrainer
+    from model_trainers.gru_trainer import (
+        GruTrainer,
+        _validate_multisubject_dataset_inputs,
+    )
+    from utils.gru_evaluation import evaluate_gru_on_heldout_subjects
+    from utils.multisubject import (
+        build_subject_index_maps,
+        compute_train_eval_session_ids,
+        merge_datasets_with_subject_index,
+    )
 
     GRU_DEPS_AVAILABLE = True
     GRU_IMPORT_ERROR = None
@@ -66,10 +83,89 @@ class TestGruTrainer(unittest.TestCase):
             eval_every_n=2,
         )
         self.bundle = self.loader.load()
+        self.multisubject_bundle = self._make_multisubject_bundle()
         self.output_dir = Path(tempfile.mkdtemp(prefix="gru_trainer_test_"))
 
     def tearDown(self):
         shutil.rmtree(self.output_dir, ignore_errors=True)
+
+    def _make_multisubject_bundle(self) -> DatasetBundle:
+        raw_df = self.bundle.raw.copy()
+        raw_df["subject_id"] = np.where(raw_df["ses_idx"].astype(int) < 3, 711041, 793446)
+        raw_df["source_ses_idx"] = raw_df["ses_idx"]
+        raw_df["ses_idx"] = raw_df.apply(
+            lambda row: f"{int(row['subject_id'])}__{int(row['source_ses_idx'])}",
+            axis=1,
+        )
+
+        ordered_subject_ids, subject_id_to_index, index_to_subject_id = build_subject_index_maps(
+            [711041, 793446]
+        )
+
+        full_datasets = []
+        train_datasets = []
+        eval_datasets = []
+        ordered_frames = []
+        subject_indices = []
+        full_session_ids = []
+        train_session_ids = []
+        eval_session_ids = []
+
+        for subject_id in ordered_subject_ids:
+            subject_df = raw_df[raw_df["subject_id"] == subject_id].copy()
+            subject_df = subject_df.sort_values(["ses_idx", "trial"]).reset_index(drop=True)
+            session_ids = list(dict.fromkeys(subject_df["ses_idx"].tolist()))
+            train_ids, eval_ids = compute_train_eval_session_ids(session_ids, eval_every_n=2)
+            subject_df["subject_index"] = subject_id_to_index[subject_id]
+
+            dataset = dl.create_disrnn_dataset(
+                subject_df,
+                ignore_policy="exclude",
+                batch_size=None,
+                batch_mode="random",
+            )
+            dataset_train, dataset_eval = rnn_utils.split_dataset(dataset, eval_every_n=2)
+
+            full_datasets.append(dataset)
+            train_datasets.append(dataset_train)
+            eval_datasets.append(dataset_eval)
+            ordered_frames.append(subject_df)
+            subject_indices.append(subject_id_to_index[subject_id])
+            full_session_ids.extend(session_ids)
+            train_session_ids.extend(train_ids)
+            eval_session_ids.extend(eval_ids)
+
+        merged_dataset = merge_datasets_with_subject_index(full_datasets, subject_indices)
+        merged_train = merge_datasets_with_subject_index(train_datasets, subject_indices)
+        merged_eval = merge_datasets_with_subject_index(eval_datasets, subject_indices)
+        merged_raw_df = pd.concat(ordered_frames, ignore_index=True)
+        merged_raw_df["ses_idx"] = pd.Categorical(
+            merged_raw_df["ses_idx"],
+            categories=full_session_ids,
+            ordered=True,
+        )
+        merged_raw_df = merged_raw_df.sort_values(["ses_idx", "trial"]).reset_index(drop=True)
+        merged_raw_df["ses_idx"] = merged_raw_df["ses_idx"].astype(str)
+
+        return DatasetBundle(
+            raw=merged_raw_df,
+            train_set=merged_train,
+            eval_set=merged_eval,
+            metadata={
+                "ignore_policy": "exclude",
+                "eval_every_n": 2,
+                "multisubject": True,
+                "subject_ids": ordered_subject_ids,
+                "subject_id_to_index": subject_id_to_index,
+                "index_to_subject_id": index_to_subject_id,
+                "num_subjects": len(ordered_subject_ids),
+                "num_trials": len(merged_raw_df),
+                "num_sessions": len(full_session_ids),
+                "train_session_ids": train_session_ids,
+                "eval_session_ids": eval_session_ids,
+            },
+            extras={"dataset": merged_dataset},
+        )
 
     def test_instantiation(self):
         trainer = GruTrainer(
@@ -160,6 +256,201 @@ class TestGruTrainer(unittest.TestCase):
             self.assertGreaterEqual(checkpoint["train_likelihood"], 0.0)
             self.assertLessEqual(checkpoint["train_likelihood"], 1.0)
         self.assertTrue((self.output_dir / "checkpoints" / "index.json").exists())
+
+    def test_multisubject_training_exports_subject_artifacts(self):
+        trainer = GruTrainer(
+            architecture={
+                "multisubject": True,
+                "hidden_size": 8,
+                "num_layers": 1,
+                "subject_embedding_size": 3,
+            },
+            training={
+                "lr": 1e-3,
+                "n_steps": 2,
+                "loss": "categorical",
+                "loss_param": 1,
+                "max_grad_norm": 1.0,
+                "checkpoint_every_n_steps": 0,
+                "checkpoint_run_heldout_eval": False,
+                "save_output_df": False,
+            },
+            output_dir=str(self.output_dir),
+            seed=42,
+        )
+
+        output = trainer.fit(self.multisubject_bundle)
+
+        self.assertTrue(output["multisubject"])
+        self.assertIn("subject_artifacts", output)
+        self.assertTrue((self.output_dir / "subject_index_map.json").exists())
+        self.assertTrue((self.output_dir / "subject_embeddings.pkl").exists())
+        self.assertTrue((self.output_dir / "subject_embedding_state_space.png").exists())
+        before_training = output["initial_evaluations"]["before_training"]
+        self.assertIn("plot_paths", before_training)
+        self.assertTrue(before_training["plot_paths"]["subject_embedding_state_space"])
+        self.assertTrue(Path(before_training["plot_paths"]["subject_embedding_state_space"]).exists())
+
+        subject_embeddings_df = pd.read_pickle(self.output_dir / "subject_embeddings.pkl")
+        self.assertEqual(subject_embeddings_df["subject_id"].tolist(), [711041, 793446])
+
+        params = json.loads((self.output_dir / "params.json").read_text())
+        self.assertIn("multisubject_gru", params)
+        self.assertIn("subject_embeddings", params["multisubject_gru"])
+
+    def test_multisubject_checkpoint_training_plots_subject_embeddings(self):
+        trainer = GruTrainer(
+            architecture={
+                "multisubject": True,
+                "hidden_size": 8,
+                "num_layers": 1,
+                "subject_embedding_size": 3,
+            },
+            training={
+                "lr": 1e-3,
+                "n_steps": 4,
+                "loss": "categorical",
+                "loss_param": 1,
+                "max_grad_norm": 1.0,
+                "checkpoint_every_n_steps": 2,
+                "checkpoint_plot_split_examples_every_n": 0,
+                "checkpoint_save_output_df_every_n": 0,
+                "checkpoint_log_eval_to_wandb": False,
+                "checkpoint_log_split_examples_to_wandb": False,
+                "checkpoint_keep_media_files": True,
+                "checkpoint_run_heldout_eval": False,
+            },
+            output_dir=str(self.output_dir),
+            seed=42,
+        )
+
+        output = trainer.fit(self.multisubject_bundle)
+
+        self.assertEqual(len(output["checkpoints"]), 2)
+        for checkpoint in output["checkpoints"]:
+            plot_paths = checkpoint.get("plot_paths", {})
+            self.assertTrue(plot_paths["subject_embedding_state_space"])
+            self.assertTrue(Path(plot_paths["subject_embedding_state_space"]).exists())
+
+    def test_multisubject_requires_subject_embedding_size(self):
+        trainer = GruTrainer(
+            architecture={"multisubject": True, "hidden_size": 8, "num_layers": 1},
+            training={
+                "lr": 1e-3,
+                "n_steps": 1,
+                "loss": "categorical",
+                "loss_param": 1,
+                "max_grad_norm": 1.0,
+            },
+            output_dir=str(self.output_dir),
+            seed=42,
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "architecture.subject_embedding_size > 0",
+        ):
+            trainer.fit(self.multisubject_bundle)
+
+    def test_multisubject_requires_subject_count_metadata(self):
+        missing_metadata_bundle = DatasetBundle(
+            raw=self.multisubject_bundle.raw.copy(),
+            train_set=self.multisubject_bundle.train_set,
+            eval_set=self.multisubject_bundle.eval_set,
+            metadata={
+                "ignore_policy": "exclude",
+                "eval_every_n": 2,
+                "multisubject": True,
+            },
+            extras=self.multisubject_bundle.extras,
+        )
+        trainer = GruTrainer(
+            architecture={
+                "multisubject": True,
+                "hidden_size": 8,
+                "num_layers": 1,
+                "subject_embedding_size": 3,
+            },
+            training={
+                "lr": 1e-3,
+                "n_steps": 1,
+                "loss": "categorical",
+                "loss_param": 1,
+                "max_grad_norm": 1.0,
+            },
+            output_dir=str(self.output_dir),
+            seed=42,
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "metadata.num_subjects or metadata.subject_ids",
+        ):
+            trainer.fit(missing_metadata_bundle)
+
+    def test_validate_multisubject_dataset_inputs_allows_padding(self):
+        class _DummyDataset:
+            def __init__(self, xs):
+                self._xs = xs
+
+            def get_all(self):
+                return self._xs, np.zeros((self._xs.shape[0], self._xs.shape[1], 1))
+
+        xs = np.array(
+            [
+                [[0.0, 1.0, 0.0]],
+                [[-1.0, -1.0, -1.0]],
+            ]
+        )
+
+        _validate_multisubject_dataset_inputs(
+            _DummyDataset(xs),
+            max_n_subjects=1,
+            context="test",
+        )
+
+    def test_validate_multisubject_dataset_inputs_rejects_out_of_range_ids(self):
+        class _DummyDataset:
+            def __init__(self, xs):
+                self._xs = xs
+
+            def get_all(self):
+                return self._xs, np.zeros((self._xs.shape[0], self._xs.shape[1], 1))
+
+        xs = np.array([[[2.0, 1.0, 0.0]]])
+
+        with self.assertRaisesRegex(ValueError, "out-of-range subject ids"):
+            _validate_multisubject_dataset_inputs(
+                _DummyDataset(xs),
+                max_n_subjects=2,
+                context="test",
+            )
+
+    def test_heldout_eval_rejects_multisubject_gru(self):
+        hydra_config = OmegaConf.create(
+            {
+                "data": {
+                    "test_subject_ids": [711041],
+                    "ignore_policy": "exclude",
+                    "heldout_example_sessions_per_subject": 0,
+                    "example_max_subjects": 1,
+                },
+                "model": {
+                    "architecture": {
+                        "multisubject": True,
+                        "hidden_size": 8,
+                        "output_size": 2,
+                    },
+                    "output_dir": str(self.output_dir),
+                },
+            }
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "not supported for multisubject GRU",
+        ):
+            evaluate_gru_on_heldout_subjects(hydra_config)
 
 
 if __name__ == "__main__":

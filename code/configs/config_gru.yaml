@@ -77,8 +77,10 @@ model:
   type: gru
   _target_: model_trainers.gru_trainer.GruTrainer
   architecture:
+    multisubject: true
     hidden_size: 16
     num_layers: 1
+    subject_embedding_size: 4
   training:
     lr: 1e-3
     n_steps: 20
