@@ -6,9 +6,10 @@ import dataclasses
 
 import haiku as hk
 import jax.numpy as jnp
-import numpy as np
 from disentangled_rnns.library import disrnn
 from disentangled_rnns.library import multisubject_disrnn as upstream_multisubject_disrnn
+
+from models.subject_embedding_initialization import make_subject_embedding_initializer
 
 
 @dataclasses.dataclass
@@ -16,6 +17,7 @@ class MultisubjectDisRnnConfig(upstream_multisubject_disrnn.MultisubjectDisRnnCo
     """Local extension of the upstream config for wrapper-only switches."""
 
     use_global_subject_bottleneck: bool = True
+    subject_embedding_init: str = "zeros"
 
 
 class MultisubjectDisRnn(upstream_multisubject_disrnn.MultisubjectDisRnn):
@@ -24,6 +26,11 @@ class MultisubjectDisRnn(upstream_multisubject_disrnn.MultisubjectDisRnn):
     def __init__(self, config: MultisubjectDisRnnConfig):
         self._use_global_subject_bottleneck = bool(
             getattr(config, "use_global_subject_bottleneck", True)
+        )
+        self._subject_embedding_init = make_subject_embedding_initializer(
+            subject_embedding_init=getattr(config, "subject_embedding_init", "zeros"),
+            max_n_subjects=int(config.max_n_subjects),
+            subject_embedding_size=int(config.subject_embedding_size),
         )
         super().__init__(config)
 
@@ -43,9 +50,7 @@ class MultisubjectDisRnn(upstream_multisubject_disrnn.MultisubjectDisRnn):
         subject_embeddings_table = hk.get_parameter(
             "subject_embeddings",
             (self._max_n_subjects, self._subject_embedding_size),
-            init=hk.initializers.RandomNormal(
-                stddev=1.0 / np.sqrt(max(1, self._max_n_subjects))
-            ),
+            init=self._subject_embedding_init,
         )
         valid_subject_ids = jnp.logical_and(
             subject_ids >= 0,

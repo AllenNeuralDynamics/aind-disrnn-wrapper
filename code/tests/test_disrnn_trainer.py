@@ -18,6 +18,7 @@ try:
     from base.types import DatasetBundle
     from data_loaders.synthetic import SyntheticCognitiveAgents
     from model_trainers.disrnn_trainer import DisrnnTrainer
+    from models import MultisubjectDisRnn, MultisubjectDisRnnConfig
     from utils.disrnn_evaluation import _aligned_action_probabilities_from_output_df
     from utils.multisubject import (
         build_subject_index_maps,
@@ -356,6 +357,133 @@ class TestDisrnnTrainer(unittest.TestCase):
         )
 
         self.assertFalse(config.use_global_subject_bottleneck)
+
+    def test_multisubject_config_defaults_subject_embedding_init_to_zeros(self):
+        trainer = DisrnnTrainer(
+            architecture={
+                "multisubject": True,
+                "latent_size": 4,
+                "update_net_n_units_per_layer": 8,
+                "update_net_n_layers": 2,
+                "choice_net_n_units_per_layer": 4,
+                "choice_net_n_layers": 1,
+                "activation": "leaky_relu",
+                "subject_embedding_size": 3,
+            },
+            penalties={
+                "latent_penalty": 1e-3,
+                "choice_net_latent_penalty": 1e-3,
+                "update_net_obs_penalty": 1e-3,
+                "update_net_latent_penalty": 1e-3,
+                "subject_penalty": 1e-3,
+                "update_net_subject_penalty": 1e-3,
+                "choice_net_subject_penalty": 1e-3,
+            },
+            training={
+                "lr": 1e-3,
+                "n_steps": 2,
+                "n_warmup_steps": 1,
+                "loss": "penalized_categorical",
+                "loss_param": 1.0,
+                "max_grad_norm": 1.0,
+                "plot_subject_index": 0,
+            },
+            output_dir=str(self.output_dir),
+            seed=42,
+        )
+
+        dummy_dataset = types.SimpleNamespace(
+            _xs=np.zeros((5, 2, 3), dtype=float),
+            x_names=["Subject ID", "prev choice", "prev reward"],
+            y_names=["choice"],
+        )
+        config, _ = trainer._build_network_configs(
+            dataset=dummy_dataset,
+            ignore_policy="exclude",
+            metadata={"multisubject": True, "num_subjects": 2},
+        )
+
+        self.assertEqual(config.subject_embedding_init, "zeros")
+
+    def test_multisubject_config_accepts_subject_embedding_init_modes(self):
+        dummy_dataset = types.SimpleNamespace(
+            _xs=np.zeros((5, 2, 3), dtype=float),
+            x_names=["Subject ID", "prev choice", "prev reward"],
+            y_names=["choice"],
+        )
+
+        for init_mode in ("zeros", "small_random", "subject_count_scaled_random"):
+            trainer = DisrnnTrainer(
+                architecture={
+                    "multisubject": True,
+                    "latent_size": 4,
+                    "update_net_n_units_per_layer": 8,
+                    "update_net_n_layers": 2,
+                    "choice_net_n_units_per_layer": 4,
+                    "choice_net_n_layers": 1,
+                    "activation": "leaky_relu",
+                    "subject_embedding_size": 3,
+                    "subject_embedding_init": init_mode,
+                },
+                penalties={
+                    "latent_penalty": 1e-3,
+                    "choice_net_latent_penalty": 1e-3,
+                    "update_net_obs_penalty": 1e-3,
+                    "update_net_latent_penalty": 1e-3,
+                    "subject_penalty": 1e-3,
+                    "update_net_subject_penalty": 1e-3,
+                    "choice_net_subject_penalty": 1e-3,
+                },
+                training={
+                    "lr": 1e-3,
+                    "n_steps": 2,
+                    "n_warmup_steps": 1,
+                    "loss": "penalized_categorical",
+                    "loss_param": 1.0,
+                    "max_grad_norm": 1.0,
+                    "plot_subject_index": 0,
+                },
+                output_dir=str(self.output_dir),
+                seed=42,
+            )
+
+            config, _ = trainer._build_network_configs(
+                dataset=dummy_dataset,
+                ignore_policy="exclude",
+                metadata={"multisubject": True, "num_subjects": 2},
+            )
+            self.assertEqual(config.subject_embedding_init, init_mode)
+
+    def test_multisubject_model_rejects_unknown_subject_embedding_init(self):
+        config = MultisubjectDisRnnConfig(
+            obs_size=2,
+            output_size=2,
+            x_names=["Subject ID", "prev choice", "prev reward"],
+            y_names=["choice"],
+            latent_size=4,
+            update_net_n_units_per_layer=8,
+            update_net_n_layers=2,
+            choice_net_n_units_per_layer=4,
+            choice_net_n_layers=1,
+            activation="leaky_relu",
+            noiseless_mode=False,
+            latent_penalty=1e-3,
+            choice_net_latent_penalty=1e-3,
+            update_net_obs_penalty=1e-3,
+            update_net_latent_penalty=1e-3,
+            max_n_subjects=2,
+            subject_embedding_size=3,
+            subject_embedding_init="not_a_real_mode",
+            subj_penalty=1e-3,
+            update_net_subj_penalty=1e-3,
+            choice_net_subj_penalty=1e-3,
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "Unsupported subject_embedding_init",
+        ):
+            MultisubjectDisRnn(config)
 
 
 if __name__ == "__main__":

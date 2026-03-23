@@ -192,6 +192,9 @@ class DisrnnTrainer(ModelTrainer):
                 update_net_latent_penalty=self.penalties["update_net_latent_penalty"],
                 max_n_subjects=num_subjects,
                 subject_embedding_size=int(subject_embedding_size),
+                subject_embedding_init=str(
+                    self.architecture.get("subject_embedding_init", "zeros")
+                ),
                 use_global_subject_bottleneck=bool(
                     self.architecture.get("use_global_subject_bottleneck", True)
                 ),

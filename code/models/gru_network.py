@@ -4,32 +4,7 @@ from typing import Callable
 
 import haiku as hk
 import jax.numpy as jnp
-import numpy as np
-
-
-def _subject_embedding_initializer(
-    *,
-    subject_embedding_init: str,
-    max_n_subjects: int,
-    subject_embedding_size: int,
-):
-    """Return the initializer for multisubject GRU subject embeddings."""
-    init_mode = str(subject_embedding_init).strip().lower()
-    if init_mode == "zeros":
-        return hk.initializers.Constant(0.0)
-    if init_mode == "small_random":
-        return hk.initializers.RandomNormal(
-            stddev=1.0 / np.sqrt(max(1, int(subject_embedding_size)))
-        )
-    if init_mode in {"subject_count_scaled_random", "legacy_random"}:
-        return hk.initializers.RandomNormal(
-            stddev=1.0 / np.sqrt(max(1, int(max_n_subjects)))
-        )
-    raise ValueError(
-        "Unsupported subject_embedding_init for multisubject GRU: "
-        f"{subject_embedding_init!r}. "
-        "Expected one of: 'zeros', 'small_random', 'subject_count_scaled_random'."
-    )
+from models.subject_embedding_initialization import make_subject_embedding_initializer
 
 
 class MultisubjectGru(hk.RNNCore):
@@ -50,7 +25,7 @@ class MultisubjectGru(hk.RNNCore):
         self._output_size = int(output_size)
         self._max_n_subjects = int(max_n_subjects)
         self._subject_embedding_size = int(subject_embedding_size)
-        self._subject_embedding_init = _subject_embedding_initializer(
+        self._subject_embedding_init = make_subject_embedding_initializer(
             subject_embedding_init=subject_embedding_init,
             max_n_subjects=self._max_n_subjects,
             subject_embedding_size=self._subject_embedding_size,

@@ -164,6 +164,7 @@ model:
     choice_net_n_layers: 0
     activation: leaky_relu
     subject_embedding_size: 4
+    subject_embedding_init: zeros   # zeros | small_random | subject_count_scaled_random
     use_global_subject_bottleneck: true
   penalties:
     beta: 0.001
