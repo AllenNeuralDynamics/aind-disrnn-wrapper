@@ -136,10 +136,10 @@ class TestDisrnnTrainer(unittest.TestCase):
         before_warmup = output["initial_evaluations"]["before_warmup"]
         after_warmup = output["initial_evaluations"]["after_warmup"]
         self.assertTrue(Path(before_warmup["params_path"]).exists())
-        self.assertTrue(Path(before_warmup["output_df_path"]).exists())
+        self.assertNotIn("output_df_path", before_warmup)
         self.assertIn("split_examples", before_warmup)
         self.assertTrue(Path(after_warmup["params_path"]).exists())
-        self.assertTrue(Path(after_warmup["output_df_path"]).exists())
+        self.assertNotIn("output_df_path", after_warmup)
         self.assertIn("split_examples", after_warmup)
         self.assertEqual(len(output["checkpoints"]), 2)
         for checkpoint in output["checkpoints"]:

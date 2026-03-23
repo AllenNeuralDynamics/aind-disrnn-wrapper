@@ -136,6 +136,8 @@ data:
 #     checkpoint_run_heldout_eval: true          # run held-out test eval for selected checkpoints
 #     checkpoint_include_final_in_heldout: true # include final step checkpoint in held-out loop
 #     checkpoint_keep_media_files: false  # false: keep checkpoint visuals in W&B only
+#     initialization_eval_before_warmup: true   # run/log checkpoint-style eval before warmup
+#     initialization_eval_after_warmup: true    # run/log checkpoint-style eval after warmup
 #     plot_choice_rule: false
 #     plot_update_rules: false
 #     checkpoint_plot_choice_rule: false
@@ -186,6 +188,8 @@ model:
     checkpoint_run_heldout_eval: true          # run held-out test eval for selected checkpoints
     checkpoint_include_final_in_heldout: true # include final step checkpoint in held-out loop
     checkpoint_keep_media_files: false  # false: keep checkpoint visuals in W&B only
+    initialization_eval_before_warmup: true   # run/log checkpoint-style eval before warmup
+    initialization_eval_after_warmup: true    # run/log checkpoint-style eval after warmup
     plot_choice_rule: false
     plot_update_rules: false
     plot_subject_index: 0   # which subject’s embedding is used for rule plots

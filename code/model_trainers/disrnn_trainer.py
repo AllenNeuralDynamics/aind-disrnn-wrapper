@@ -496,6 +496,7 @@ class DisrnnTrainer(ModelTrainer):
             return
 
         metric_payload = {
+            "checkpoint/step": int(wandb_step) if wandb_step is not None else 0,
             f"{wandb_key_prefix}/heldout_test_likelihood": float(
                 heldout_summary["test_likelihood"]
             ),
@@ -551,7 +552,7 @@ class DisrnnTrainer(ModelTrainer):
         stage_dir = self.output_dir / "initialization" / stage_name
         stage_dir.mkdir(parents=True, exist_ok=True)
         log_scope = stage_name.replace("_", " ").title()
-        wandb_key_prefix = f"initialization/{stage_name}"
+        wandb_key_prefix = "checkpoint"
 
         params_path = stage_dir / "params.json"
         with params_path.open("w") as f:
@@ -594,8 +595,9 @@ class DisrnnTrainer(ModelTrainer):
 
         if wandb_run is not None:
             metric_payload = {
-                f"{wandb_key_prefix}/train_likelihood": train_likelihood,
-                f"{wandb_key_prefix}/eval_likelihood": eval_likelihood,
+                "checkpoint/step": int(wandb_step) if wandb_step is not None else 0,
+                "checkpoint/train_likelihood": train_likelihood,
+                "checkpoint/eval_likelihood": eval_likelihood,
             }
             if wandb_step is None:
                 wandb_run.log(metric_payload)
@@ -685,19 +687,19 @@ class DisrnnTrainer(ModelTrainer):
         if wandb_run is not None:
             plot_payload = {}
             if plot_paths["bottlenecks"]:
-                plot_payload[f"{wandb_key_prefix}/fig/bottlenecks"] = wandb.Image(
+                plot_payload["checkpoint/fig/bottlenecks"] = wandb.Image(
                     str(plot_paths["bottlenecks"])
                 )
             if plot_paths["subject_embedding_state_space"]:
-                plot_payload[
-                    f"{wandb_key_prefix}/fig/subject_embedding_state_space"
-                ] = wandb.Image(str(plot_paths["subject_embedding_state_space"]))
+                plot_payload["checkpoint/fig/subject_embedding_state_space"] = wandb.Image(
+                    str(plot_paths["subject_embedding_state_space"])
+                )
             if plot_paths["choice_rule"]:
-                plot_payload[f"{wandb_key_prefix}/fig/choice_rule"] = wandb.Image(
+                plot_payload["checkpoint/fig/choice_rule"] = wandb.Image(
                     str(plot_paths["choice_rule"])
                 )
             for index, update_rule_path in enumerate(plot_paths["update_rules"]):
-                plot_payload[f"{wandb_key_prefix}/fig/update_rule_{index}"] = wandb.Image(
+                plot_payload[f"checkpoint/fig/update_rule_{index}"] = wandb.Image(
                     str(update_rule_path)
                 )
             if plot_payload:
@@ -731,8 +733,6 @@ class DisrnnTrainer(ModelTrainer):
             yhat_full,
             ignore_policy=ignore_policy,
         )
-        output_df_path = stage_dir / "output_df.csv"
-        output_df.to_csv(output_df_path, index=False)
 
         n_action_logits_full = int(getattr(dataset_eval, "n_classes", 0))
         if n_action_logits_full <= 0:
@@ -756,7 +756,6 @@ class DisrnnTrainer(ModelTrainer):
         snapshot_summary: dict[str, Any] = {
             "stage": stage_name,
             "params_path": str(params_path),
-            "output_df_path": str(output_df_path),
             "train_likelihood": train_likelihood,
             "eval_likelihood": eval_likelihood,
             "plot_paths": plot_paths,
@@ -898,6 +897,12 @@ class DisrnnTrainer(ModelTrainer):
             checkpoint_include_final_in_heldout=bool(
                 self.training.get("checkpoint_include_final_in_heldout", False)
             ),
+            initialization_eval_before_warmup=bool(
+                self.training.get("initialization_eval_before_warmup", True)
+            ),
+            initialization_eval_after_warmup=bool(
+                self.training.get("initialization_eval_after_warmup", True)
+            ),
             plot_choice_rule=bool(self.training.get("plot_choice_rule", False)),
             plot_update_rules=bool(self.training.get("plot_update_rules", False)),
             save_output_df=bool(self.training.get("save_output_df", False)),
@@ -961,8 +966,9 @@ class DisrnnTrainer(ModelTrainer):
             report_progress_by="wandb",
             wandb_run=wandb_run,
         )
-        output["initial_evaluations"] = {
-            "before_warmup": self._evaluate_initialization_snapshot(
+        initial_evaluations: dict[str, Any] = {}
+        if args.initialization_eval_before_warmup:
+            initial_evaluations["before_warmup"] = self._evaluate_initialization_snapshot(
                 stage_name="before_warmup",
                 params=params,
                 bundle=bundle,
@@ -980,7 +986,8 @@ class DisrnnTrainer(ModelTrainer):
                 wandb_step=0,
                 keep_media_files=args.checkpoint_keep_media_files,
             )
-        }
+        if initial_evaluations:
+            output["initial_evaluations"] = initial_evaluations
 
         logger.info("Running warmup training phase")
         warmup_start = time.time()
@@ -1007,24 +1014,26 @@ class DisrnnTrainer(ModelTrainer):
         )
         if wandb_run is not None:
             wandb_run.log({"fig/warmup_loss_curve": wandb.Image(str(warmup_path))})
-        output["initial_evaluations"]["after_warmup"] = self._evaluate_initialization_snapshot(
-            stage_name="after_warmup",
-            params=params,
-            bundle=bundle,
-            metadata=metadata,
-            dataset=dataset,
-            dataset_train=dataset_train,
-            dataset_eval=dataset_eval,
-            ignore_policy=ignore_policy,
-            make_eval_network=make_noiseless_network,
-            disrnn_config=disrnn_config,
-            is_multisubject=is_multisubject,
-            heldout_eval_cfg=heldout_eval_cfg,
-            heldout_data=heldout_test_data,
-            wandb_run=wandb_run,
-            wandb_step=int(args.n_warmup_steps),
-            keep_media_files=args.checkpoint_keep_media_files,
-        )
+        if args.initialization_eval_after_warmup:
+            initial_evaluations = output.setdefault("initial_evaluations", {})
+            initial_evaluations["after_warmup"] = self._evaluate_initialization_snapshot(
+                stage_name="after_warmup",
+                params=params,
+                bundle=bundle,
+                metadata=metadata,
+                dataset=dataset,
+                dataset_train=dataset_train,
+                dataset_eval=dataset_eval,
+                ignore_policy=ignore_policy,
+                make_eval_network=make_noiseless_network,
+                disrnn_config=disrnn_config,
+                is_multisubject=is_multisubject,
+                heldout_eval_cfg=heldout_eval_cfg,
+                heldout_data=heldout_test_data,
+                wandb_run=wandb_run,
+                wandb_step=int(args.n_warmup_steps),
+                keep_media_files=args.checkpoint_keep_media_files,
+            )
 
         logger.info("Running full training phase")
         start = time.time()

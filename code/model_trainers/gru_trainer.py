@@ -165,6 +165,7 @@ class GruTrainer(ModelTrainer):
             return
 
         metric_payload = {
+            "checkpoint/step": int(wandb_step) if wandb_step is not None else 0,
             f"{wandb_key_prefix}/heldout_test_likelihood": float(
                 heldout_summary["test_likelihood"]
             ),
@@ -218,7 +219,7 @@ class GruTrainer(ModelTrainer):
         stage_dir = self.output_dir / "initialization" / stage_name
         stage_dir.mkdir(parents=True, exist_ok=True)
         log_scope = stage_name.replace("_", " ").title()
-        wandb_key_prefix = f"initialization/{stage_name}"
+        wandb_key_prefix = "checkpoint"
 
         params_path = stage_dir / "params.json"
         with params_path.open("w") as f:
@@ -257,8 +258,9 @@ class GruTrainer(ModelTrainer):
 
         if wandb_run is not None:
             metric_payload = {
-                f"{wandb_key_prefix}/train_likelihood": train_likelihood,
-                f"{wandb_key_prefix}/eval_likelihood": eval_likelihood,
+                "checkpoint/step": int(wandb_step) if wandb_step is not None else 0,
+                "checkpoint/train_likelihood": train_likelihood,
+                "checkpoint/eval_likelihood": eval_likelihood,
             }
             if wandb_step is None:
                 wandb_run.log(metric_payload)
@@ -277,8 +279,6 @@ class GruTrainer(ModelTrainer):
             np.asarray(yhat_full),
             ignore_policy=ignore_policy,
         )
-        output_df_path = stage_dir / "output_df.csv"
-        output_df.to_csv(output_df_path, index=False)
 
         n_action_logits_full = _require_n_action_logits(
             dataset,
@@ -304,7 +304,6 @@ class GruTrainer(ModelTrainer):
         snapshot_summary: dict[str, Any] = {
             "stage": stage_name,
             "params_path": str(params_path),
-            "output_df_path": str(output_df_path),
             "train_likelihood": train_likelihood,
             "eval_likelihood": eval_likelihood,
             "split_examples": split_summaries,
@@ -423,6 +422,9 @@ class GruTrainer(ModelTrainer):
             checkpoint_include_final_in_heldout=bool(
                 self.training.get("checkpoint_include_final_in_heldout", False)
             ),
+            initialization_eval_before_training=bool(
+                self.training.get("initialization_eval_before_training", True)
+            ),
             save_output_df=bool(self.training.get("save_output_df", False)),
         )
 
@@ -492,24 +494,25 @@ class GruTrainer(ModelTrainer):
             report_progress_by="wandb",
             wandb_run=wandb_run,
         )
-        output["initial_evaluations"] = {
-            "before_training": self._evaluate_initialization_snapshot(
-                stage_name="before_training",
-                params=params,
-                bundle=bundle,
-                metadata=metadata,
-                dataset=dataset,
-                dataset_train=dataset_train,
-                dataset_eval=dataset_eval,
-                ignore_policy=ignore_policy,
-                make_network=make_network,
-                heldout_eval_cfg=heldout_eval_cfg,
-                heldout_data=heldout_test_data,
-                wandb_run=wandb_run,
-                wandb_step=0,
-                keep_media_files=args.checkpoint_keep_media_files,
-            )
-        }
+        if args.initialization_eval_before_training:
+            output["initial_evaluations"] = {
+                "before_training": self._evaluate_initialization_snapshot(
+                    stage_name="before_training",
+                    params=params,
+                    bundle=bundle,
+                    metadata=metadata,
+                    dataset=dataset,
+                    dataset_train=dataset_train,
+                    dataset_eval=dataset_eval,
+                    ignore_policy=ignore_policy,
+                    make_network=make_network,
+                    heldout_eval_cfg=heldout_eval_cfg,
+                    heldout_data=heldout_test_data,
+                    wandb_run=wandb_run,
+                    wandb_step=0,
+                    keep_media_files=args.checkpoint_keep_media_files,
+                )
+            }
 
         if args.checkpoint_every_n_steps == 0:
             params, opt_state, losses = rnn_utils.train_network(
@@ -532,20 +535,7 @@ class GruTrainer(ModelTrainer):
             optimizer = optax.adam(args.learning_rate)
             checkpoint_root = self.output_dir / "checkpoints"
             checkpoint_root.mkdir(parents=True, exist_ok=True)
-
-            params, opt_state, _ = rnn_utils.train_network(
-                make_network,
-                dataset_train,
-                dataset_eval,
-                opt=optimizer,
-                loss=args.loss,
-                loss_param=args.loss_param,
-                n_steps=0,
-                max_grad_norm=args.max_grad_norm,
-                random_key=key,
-                report_progress_by="wandb",
-                wandb_run=wandb_run,
-            )
+            opt_state = init_opt_state
 
             all_training_losses: list[float] = []
             all_validation_losses: list[float] = []
@@ -555,7 +545,6 @@ class GruTrainer(ModelTrainer):
             xs_full_for_checkpoint, _ = dataset.get_all()
             df_for_checkpoint = bundle.raw
             random_key = key
-            opt_state = init_opt_state
 
             while steps_completed < args.n_steps:
                 chunk_steps = min(

@@ -114,7 +114,7 @@ class TestGruTrainer(unittest.TestCase):
         self.assertIn("random_key", output)
         before_training = output["initial_evaluations"]["before_training"]
         self.assertTrue(Path(before_training["params_path"]).exists())
-        self.assertTrue(Path(before_training["output_df_path"]).exists())
+        self.assertNotIn("output_df_path", before_training)
         self.assertIn("split_examples", before_training)
         self.assertIsInstance(output["likelihood"], float)
         self.assertIsInstance(output["likelihood_train"], float)

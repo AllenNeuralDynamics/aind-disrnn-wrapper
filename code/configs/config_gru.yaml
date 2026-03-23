@@ -96,6 +96,7 @@ model:
     checkpoint_keep_media_files: true
     checkpoint_run_heldout_eval: true
     checkpoint_include_final_in_heldout: true
+    initialization_eval_before_training: true  # run/log checkpoint-style eval before training
     save_output_df: true
   run_name_component: gru_H${.architecture.hidden_size}
 
