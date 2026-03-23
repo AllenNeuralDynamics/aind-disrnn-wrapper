@@ -352,6 +352,58 @@ class TestGruTrainer(unittest.TestCase):
         ):
             trainer.fit(self.multisubject_bundle)
 
+    def test_multisubject_accepts_all_subject_embedding_init_modes(self):
+        for init_mode in ("zeros", "small_random", "subject_count_scaled_random"):
+            trainer = GruTrainer(
+                architecture={
+                    "multisubject": True,
+                    "hidden_size": 8,
+                    "num_layers": 1,
+                    "subject_embedding_size": 3,
+                    "subject_embedding_init": init_mode,
+                },
+                training={
+                    "lr": 1e-3,
+                    "n_steps": 0,
+                    "loss": "categorical",
+                    "loss_param": 1,
+                    "max_grad_norm": 1.0,
+                    "checkpoint_run_heldout_eval": False,
+                    "save_output_df": False,
+                },
+                output_dir=str(self.output_dir / init_mode),
+                seed=42,
+            )
+
+            output = trainer.fit(self.multisubject_bundle)
+            self.assertTrue(output["multisubject"])
+
+    def test_multisubject_rejects_unknown_subject_embedding_init_mode(self):
+        trainer = GruTrainer(
+            architecture={
+                "multisubject": True,
+                "hidden_size": 8,
+                "num_layers": 1,
+                "subject_embedding_size": 3,
+                "subject_embedding_init": "not_a_real_mode",
+            },
+            training={
+                "lr": 1e-3,
+                "n_steps": 0,
+                "loss": "categorical",
+                "loss_param": 1,
+                "max_grad_norm": 1.0,
+            },
+            output_dir=str(self.output_dir),
+            seed=42,
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "Unsupported subject_embedding_init",
+        ):
+            trainer.fit(self.multisubject_bundle)
+
     def test_multisubject_requires_subject_count_metadata(self):
         missing_metadata_bundle = DatasetBundle(
             raw=self.multisubject_bundle.raw.copy(),

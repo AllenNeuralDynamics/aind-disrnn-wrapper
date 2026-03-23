@@ -680,6 +680,7 @@ class GruTrainer(ModelTrainer):
 
         max_n_subjects: int | None = None
         subject_embedding_size: int | None = None
+        subject_embedding_init = str(self.architecture.get("subject_embedding_init", "zeros"))
         if is_multisubject:
             subject_embedding_size = self.architecture.get("subject_embedding_size")
             if subject_embedding_size is None or int(subject_embedding_size) <= 0:
@@ -786,6 +787,7 @@ class GruTrainer(ModelTrainer):
             subject_embedding_size=(
                 int(subject_embedding_size) if subject_embedding_size is not None else None
             ),
+            subject_embedding_init=subject_embedding_init,
         )
 
         heldout_eval_cfg = None
