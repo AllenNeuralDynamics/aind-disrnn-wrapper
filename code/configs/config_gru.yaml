@@ -41,11 +41,11 @@ data:
   type: mice_snapshot
   _target_: data_loaders.mice.MiceSnapshotDatasetLoader
   subject_ids: null
-  subject_start: 0
-  subject_end: 2
+  subject_start: 4
+  subject_end: 8
   test_subject_ids: null        # e.g. [444, 555, 666]
-  test_subject_start: 2      # inclusive, 0-based rank index
-  test_subject_end: 3        # exclusive rank index
+  test_subject_start: 8      # inclusive, 0-based rank index
+  test_subject_end: 10        # exclusive rank index
   # ── Held-out test subject selection ─────────────────────────────────────
   # Leave all null to disable post-training held-out test-subject evaluation.
   # Selection follows the same rules as train subjects:
@@ -73,6 +73,36 @@ data:
 
 ####################################################################
 # # gru
+# model:
+#   type: gru
+#   _target_: model_trainers.gru_trainer.GruTrainer
+#   architecture:
+#     hidden_size: 8
+#     num_layers: 1
+#   training:
+#     lr: 1e-3
+#     n_steps: 30
+#     loss: categorical
+#     loss_param: 1
+#     max_grad_norm: 1.0
+#     checkpoint_every_n_steps: 10
+#     checkpoint_eval_on_train_split: true
+#     checkpoint_eval_on_eval_split: true        # compute eval-split likelihood at each checkpoint
+#     checkpoint_log_train_to_wandb: true
+#     checkpoint_log_eval_to_wandb: true         # log checkpoint eval likelihood to W&B
+#     checkpoint_plot_split_examples_every_n: 10
+#     checkpoint_save_output_df_every_n: 0
+#     checkpoint_log_split_examples_to_wandb: true
+#     checkpoint_run_heldout_eval: true
+#     checkpoint_include_final_in_heldout: true
+#     checkpoint_keep_media_files: false
+#     initialization_eval_before_training: true  # run/log checkpoint-style eval before training
+#     save_output_df: false
+
+#   run_name_component: gru_H${.architecture.hidden_size}
+
+
+# gru, multi-subject
 model:
   type: gru
   _target_: model_trainers.gru_trainer.GruTrainer
@@ -99,7 +129,7 @@ model:
     checkpoint_run_heldout_eval: true
     checkpoint_include_final_in_heldout: true
     initialization_eval_before_training: true  # run/log checkpoint-style eval before training
-    save_output_df: true
+    save_output_df: false
   run_name_component: gru_H${.architecture.hidden_size}
 
 
