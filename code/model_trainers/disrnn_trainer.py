@@ -448,6 +448,357 @@ class DisrnnTrainer(ModelTrainer):
         fig.tight_layout(rect=(0, 0, 1, 0.95))
         return fig
 
+    def _remove_media_files(self, paths: list[Any]) -> None:
+        for raw_path in paths:
+            if not raw_path:
+                continue
+            try:
+                Path(str(raw_path)).unlink(missing_ok=True)
+            except Exception as exc:
+                logger.warning("Failed to remove media file %s: %s", raw_path, exc)
+
+    def _cleanup_split_example_media(self, split_examples: dict[str, Any]) -> None:
+        for split_summary in split_examples.values():
+            if not isinstance(split_summary, dict):
+                continue
+            plots = split_summary.get("plots", {})
+            if not isinstance(plots, dict):
+                continue
+            for key in ("latents_over_trials_examples", "latents_in_space_examples"):
+                raw_paths = plots.get(key, [])
+                if not isinstance(raw_paths, list):
+                    continue
+                self._remove_media_files(raw_paths)
+                plots[key] = []
+
+    def _cleanup_heldout_media(self, heldout_summary: dict[str, Any]) -> None:
+        plots = heldout_summary.get("plots", {})
+        if not isinstance(plots, dict):
+            return
+        all_paths = []
+        for key in ("latents_over_trials_examples", "latents_in_space_examples"):
+            raw_paths = plots.get(key, [])
+            if not isinstance(raw_paths, list):
+                continue
+            all_paths.extend(raw_paths)
+            plots[key] = []
+        self._remove_media_files(all_paths)
+
+    def _log_heldout_summary_to_wandb(
+        self,
+        *,
+        heldout_summary: dict[str, Any],
+        wandb_run: Any | None,
+        wandb_step: int | None,
+        wandb_key_prefix: str,
+    ) -> None:
+        if wandb_run is None:
+            return
+
+        metric_payload = {
+            f"{wandb_key_prefix}/heldout_test_likelihood": float(
+                heldout_summary["test_likelihood"]
+            ),
+        }
+        if wandb_step is None:
+            wandb_run.log(metric_payload)
+        else:
+            wandb_run.log(metric_payload, step=wandb_step)
+
+        trial_plot_paths = heldout_summary.get("plots", {}).get(
+            "latents_over_trials_examples",
+            [],
+        )
+        space_plot_paths = heldout_summary.get("plots", {}).get(
+            "latents_in_space_examples",
+            [],
+        )
+        image_payload = {}
+        if trial_plot_paths:
+            image_payload[f"{wandb_key_prefix}/heldout/latents_over_trials_examples"] = [
+                wandb.Image(str(path)) for path in trial_plot_paths
+            ]
+        if space_plot_paths:
+            image_payload[f"{wandb_key_prefix}/heldout/latents_in_space_examples"] = [
+                wandb.Image(str(path)) for path in space_plot_paths
+            ]
+        if image_payload:
+            if wandb_step is None:
+                wandb_run.log(image_payload)
+            else:
+                wandb_run.log(image_payload, step=wandb_step)
+
+    def _evaluate_initialization_snapshot(
+        self,
+        *,
+        stage_name: str,
+        params: Any,
+        bundle: DatasetBundle,
+        metadata: dict[str, Any],
+        dataset: Any,
+        dataset_train: Any,
+        dataset_eval: Any,
+        ignore_policy: str,
+        make_eval_network: Callable[[], Any],
+        disrnn_config: Any,
+        is_multisubject: bool,
+        heldout_eval_cfg: Any | None,
+        heldout_data: dict[str, Any] | None,
+        wandb_run: Any | None,
+        wandb_step: int | None,
+        keep_media_files: bool,
+    ) -> dict[str, Any]:
+        stage_dir = self.output_dir / "initialization" / stage_name
+        stage_dir.mkdir(parents=True, exist_ok=True)
+        log_scope = stage_name.replace("_", " ").title()
+        wandb_key_prefix = f"initialization/{stage_name}"
+
+        params_path = stage_dir / "params.json"
+        with params_path.open("w") as f:
+            f.write(json.dumps(params, cls=rnn_utils.NpJnpJsonEncoder))
+
+        xs_train, ys_train = dataset_train.get_all()
+        yhat_train, _ = rnn_utils.eval_network(make_eval_network, params, xs_train)
+        n_action_logits_train = int(getattr(dataset_train, "n_classes", 0))
+        if n_action_logits_train <= 0:
+            n_action_logits_train = int(np.asarray(yhat_train).shape[2] - 1)
+        if n_action_logits_train <= 0:
+            raise ValueError(
+                "Invalid number of action logits inferred for initialization train likelihood."
+            )
+        train_likelihood = float(
+            rnn_utils.normalized_likelihood(
+                ys_train,
+                np.asarray(yhat_train)[:, :, :n_action_logits_train],
+            )
+        )
+
+        xs_eval, ys_eval = dataset_eval.get_all()
+        yhat_eval, _ = rnn_utils.eval_network(make_eval_network, params, xs_eval)
+        n_action_logits_eval = int(getattr(dataset_eval, "n_classes", 0))
+        if n_action_logits_eval <= 0:
+            n_action_logits_eval = int(np.asarray(yhat_eval).shape[2] - 1)
+        if n_action_logits_eval <= 0:
+            raise ValueError(
+                "Invalid number of action logits inferred for initialization eval likelihood."
+            )
+        eval_likelihood = float(
+            rnn_utils.normalized_likelihood(
+                ys_eval,
+                np.asarray(yhat_eval)[:, :, :n_action_logits_eval],
+            )
+        )
+
+        logger.info("%s training likelihood: %.4f", log_scope, train_likelihood)
+        logger.info("%s eval likelihood: %.4f", log_scope, eval_likelihood)
+
+        if wandb_run is not None:
+            metric_payload = {
+                f"{wandb_key_prefix}/train_likelihood": train_likelihood,
+                f"{wandb_key_prefix}/eval_likelihood": eval_likelihood,
+            }
+            if wandb_step is None:
+                wandb_run.log(metric_payload)
+            else:
+                wandb_run.log(metric_payload, step=wandb_step)
+
+        plot_paths: dict[str, Any] = {
+            "bottlenecks": None,
+            "choice_rule": None,
+            "subject_embedding_state_space": None,
+            "update_rules": [],
+        }
+        try:
+            bottlenecks_fig = plotting.plot_bottlenecks(
+                params,
+                disrnn_config,
+                sort_latents=False,
+            )
+            bottlenecks_fig.tight_layout()
+            bottlenecks_path = stage_dir / "bottlenecks.png"
+            bottlenecks_fig.savefig(bottlenecks_path)
+            plt.close(bottlenecks_fig)
+            plot_paths["bottlenecks"] = str(bottlenecks_path)
+
+            if is_multisubject:
+                subject_embedding_fig = self._plot_subject_embedding_state_space(
+                    params=params,
+                    raw_df=bundle.raw,
+                    metadata=metadata,
+                )
+                if subject_embedding_fig is not None:
+                    subject_embedding_path = stage_dir / "subject_embedding_state_space.png"
+                    subject_embedding_fig.savefig(subject_embedding_path)
+                    plt.close(subject_embedding_fig)
+                    plot_paths["subject_embedding_state_space"] = str(subject_embedding_path)
+
+            plot_subject_embedding, plot_subject_index = self._subject_plot_context(
+                params=params,
+                multisubject=is_multisubject,
+            )
+            should_plot_choice_rule = bool(
+                self.training.get("plot_choice_rule", False)
+                or self.training.get("checkpoint_plot_choice_rule", False)
+            )
+            if should_plot_choice_rule:
+                choice_fig = plotting.plot_choice_rule(
+                    params,
+                    disrnn_config,
+                    subj_embedding=plot_subject_embedding,
+                )
+                if choice_fig is not None:
+                    for ax in choice_fig.get_axes():
+                        ax.axhline(0, alpha=.5)
+                        ax.axvline(0, alpha=.5)
+                    choice_fig.tight_layout()
+                    choice_path = stage_dir / "choice_rule.png"
+                    choice_fig.savefig(choice_path)
+                    plt.close(choice_fig)
+                    plot_paths["choice_rule"] = str(choice_path)
+
+            should_plot_update_rules = bool(
+                self.training.get("plot_update_rules", False)
+                or self.training.get("checkpoint_plot_update_rules", False)
+            )
+            if should_plot_update_rules:
+                params_for_update_rules = (
+                    convert_local_params_to_upstream_multisubject(params)
+                    if is_multisubject
+                    else params
+                )
+                update_figs = plotting.plot_update_rules(
+                    params_for_update_rules,
+                    disrnn_config,
+                    subj_ind=plot_subject_index,
+                )
+                update_rule_paths: list[str] = []
+                for index, fig in enumerate(update_figs):
+                    fig.tight_layout()
+                    update_path = stage_dir / f"update_rule_{index}.png"
+                    fig.savefig(update_path)
+                    plt.close(fig)
+                    update_rule_paths.append(str(update_path))
+                plot_paths["update_rules"] = update_rule_paths
+        except Exception as exc:
+            logger.warning("Initialization plotting failed for %s: %s", stage_name, exc)
+
+        if wandb_run is not None:
+            plot_payload = {}
+            if plot_paths["bottlenecks"]:
+                plot_payload[f"{wandb_key_prefix}/fig/bottlenecks"] = wandb.Image(
+                    str(plot_paths["bottlenecks"])
+                )
+            if plot_paths["subject_embedding_state_space"]:
+                plot_payload[
+                    f"{wandb_key_prefix}/fig/subject_embedding_state_space"
+                ] = wandb.Image(str(plot_paths["subject_embedding_state_space"]))
+            if plot_paths["choice_rule"]:
+                plot_payload[f"{wandb_key_prefix}/fig/choice_rule"] = wandb.Image(
+                    str(plot_paths["choice_rule"])
+                )
+            for index, update_rule_path in enumerate(plot_paths["update_rules"]):
+                plot_payload[f"{wandb_key_prefix}/fig/update_rule_{index}"] = wandb.Image(
+                    str(update_rule_path)
+                )
+            if plot_payload:
+                if wandb_step is None:
+                    wandb_run.log(plot_payload)
+                else:
+                    wandb_run.log(plot_payload, step=wandb_step)
+                if not keep_media_files:
+                    self._remove_media_files(
+                        [
+                            plot_paths["bottlenecks"],
+                            plot_paths["subject_embedding_state_space"],
+                            plot_paths["choice_rule"],
+                            *plot_paths["update_rules"],
+                        ]
+                    )
+                    plot_paths["bottlenecks"] = None
+                    plot_paths["subject_embedding_state_space"] = None
+                    plot_paths["choice_rule"] = None
+                    plot_paths["update_rules"] = []
+
+        xs_full, _ = dataset.get_all()
+        yhat_full, network_states_full = rnn_utils.eval_network(
+            make_eval_network,
+            params,
+            xs_full,
+        )
+        output_df = dl.add_model_results(
+            bundle.raw.copy(),
+            np.asarray(network_states_full),
+            yhat_full,
+            ignore_policy=ignore_policy,
+        )
+        output_df_path = stage_dir / "output_df.csv"
+        output_df.to_csv(output_df_path, index=False)
+
+        n_action_logits_full = int(getattr(dataset_eval, "n_classes", 0))
+        if n_action_logits_full <= 0:
+            n_action_logits_full = int(np.asarray(yhat_full).shape[2] - 1)
+        split_summaries = self._generate_split_examples(
+            output_dir=stage_dir,
+            output_df=output_df,
+            network_states_full=np.asarray(network_states_full),
+            yhat_full=np.asarray(yhat_full),
+            params=params,
+            metadata=metadata,
+            n_action_logits=n_action_logits_full,
+            wandb_run=wandb_run,
+            log_scope=log_scope,
+            wandb_step=wandb_step,
+            wandb_key_prefix=wandb_key_prefix,
+        )
+        if wandb_run is not None and not keep_media_files:
+            self._cleanup_split_example_media(split_summaries)
+
+        snapshot_summary: dict[str, Any] = {
+            "stage": stage_name,
+            "params_path": str(params_path),
+            "output_df_path": str(output_df_path),
+            "train_likelihood": train_likelihood,
+            "eval_likelihood": eval_likelihood,
+            "plot_paths": plot_paths,
+            "split_examples": split_summaries,
+        }
+
+        if heldout_eval_cfg is not None:
+            try:
+                heldout_summary = evaluate_disrnn_on_heldout_subjects(
+                    heldout_eval_cfg,
+                    wandb_run=wandb_run,
+                    params_path=params_path,
+                    output_subdir=f"initialization/{stage_name}/heldout_test",
+                    log_to_wandb=False,
+                    heldout_data=heldout_data,
+                    log_scope=log_scope,
+                )
+                if heldout_summary is not None:
+                    snapshot_summary["heldout"] = heldout_summary
+                    snapshot_summary["heldout_test_likelihood"] = float(
+                        heldout_summary["test_likelihood"]
+                    )
+                    self._log_heldout_summary_to_wandb(
+                        heldout_summary=heldout_summary,
+                        wandb_run=wandb_run,
+                        wandb_step=wandb_step,
+                        wandb_key_prefix=wandb_key_prefix,
+                    )
+                    if wandb_run is not None and not keep_media_files:
+                        self._cleanup_heldout_media(heldout_summary)
+            except Exception as exc:
+                logger.warning(
+                    "Initialization held-out evaluation failed for %s: %s",
+                    stage_name,
+                    exc,
+                )
+
+        summary_path = stage_dir / "summary.json"
+        with summary_path.open("w") as f:
+            json.dump(snapshot_summary, f, indent=2)
+        return snapshot_summary
+
     def fit(
         self,
         bundle: DatasetBundle,
@@ -567,6 +918,70 @@ class DisrnnTrainer(ModelTrainer):
             multisubject=is_multisubject,
         )
 
+        heldout_eval_cfg = None
+        heldout_test_data = self.heldout_data
+        runtime_heldout_cfg = HeldoutEvalConfig.from_data_cfg(metadata)
+        if runtime_heldout_cfg.enabled and is_multisubject:
+            logger.info(
+                "Skipping held-out evaluation for multisubject disRNN; "
+                "v1 supports seen-subject personalization only."
+            )
+        elif runtime_heldout_cfg.enabled:
+            heldout_eval_cfg = OmegaConf.create(
+                {
+                    "data": asdict(runtime_heldout_cfg),
+                    "model": {
+                        "architecture": self.architecture,
+                        "penalties": self.penalties,
+                        "output_dir": str(self.output_dir),
+                    },
+                }
+            )
+            if heldout_test_data is None:
+                try:
+                    heldout_test_data = load_disrnn_heldout_subject_data(runtime_heldout_cfg)
+                    self.heldout_data = heldout_test_data
+                    _log_heldout_dataset_details(heldout_test_data)
+                except Exception as exc:
+                    logger.warning(
+                        "Preloading held-out test data failed; evaluation will fall back to lazy loading: %s",
+                        exc,
+                    )
+
+        params, warmup_opt_state, _ = rnn_utils.train_network(
+            make_noiseless_network,
+            dataset_train,
+            dataset_eval,
+            opt=optax.adam(args.learning_rate),
+            loss=args.loss,
+            loss_param=args.loss_param,
+            n_steps=0,
+            max_grad_norm=args.max_grad_norm,
+            random_key=warmup_key,
+            report_progress_by="wandb",
+            wandb_run=wandb_run,
+        )
+        output["initial_evaluations"] = {
+            "before_warmup": self._evaluate_initialization_snapshot(
+                stage_name="before_warmup",
+                params=params,
+                bundle=bundle,
+                metadata=metadata,
+                dataset=dataset,
+                dataset_train=dataset_train,
+                dataset_eval=dataset_eval,
+                ignore_policy=ignore_policy,
+                make_eval_network=make_noiseless_network,
+                disrnn_config=disrnn_config,
+                is_multisubject=is_multisubject,
+                heldout_eval_cfg=heldout_eval_cfg,
+                heldout_data=heldout_test_data,
+                wandb_run=wandb_run,
+                wandb_step=0,
+                keep_media_files=args.checkpoint_keep_media_files,
+            )
+        }
+
         logger.info("Running warmup training phase")
         warmup_start = time.time()
         params, warmup_opt_state, warmup_losses = rnn_utils.train_network(
@@ -576,6 +991,8 @@ class DisrnnTrainer(ModelTrainer):
             opt=optax.adam(args.learning_rate),
             loss=args.loss,
             loss_param=args.loss_param,
+            params=params,
+            opt_state=warmup_opt_state,
             n_steps=args.n_warmup_steps,
             max_grad_norm=args.max_grad_norm,
             random_key=warmup_key,
@@ -590,6 +1007,24 @@ class DisrnnTrainer(ModelTrainer):
         )
         if wandb_run is not None:
             wandb_run.log({"fig/warmup_loss_curve": wandb.Image(str(warmup_path))})
+        output["initial_evaluations"]["after_warmup"] = self._evaluate_initialization_snapshot(
+            stage_name="after_warmup",
+            params=params,
+            bundle=bundle,
+            metadata=metadata,
+            dataset=dataset,
+            dataset_train=dataset_train,
+            dataset_eval=dataset_eval,
+            ignore_policy=ignore_policy,
+            make_eval_network=make_noiseless_network,
+            disrnn_config=disrnn_config,
+            is_multisubject=is_multisubject,
+            heldout_eval_cfg=heldout_eval_cfg,
+            heldout_data=heldout_test_data,
+            wandb_run=wandb_run,
+            wandb_step=int(args.n_warmup_steps),
+            keep_media_files=args.checkpoint_keep_media_files,
+        )
 
         logger.info("Running full training phase")
         start = time.time()
@@ -635,35 +1070,6 @@ class DisrnnTrainer(ModelTrainer):
             xs_full_for_checkpoint, _ = dataset.get_all()
             df_for_checkpoint = bundle.raw
             random_key = training_key
-            heldout_eval_cfg = None
-            heldout_test_data = self.heldout_data
-            runtime_heldout_cfg = HeldoutEvalConfig.from_data_cfg(metadata)
-            if runtime_heldout_cfg.enabled and is_multisubject:
-                logger.info(
-                    "Skipping checkpoint held-out evaluation for multisubject disRNN; "
-                    "v1 supports seen-subject personalization only."
-                )
-            elif runtime_heldout_cfg.enabled:
-                heldout_eval_cfg = OmegaConf.create(
-                    {
-                        "data": asdict(runtime_heldout_cfg),
-                        "model": {
-                            "architecture": self.architecture,
-                            "penalties": self.penalties,
-                            "output_dir": str(self.output_dir),
-                        },
-                    }
-                )
-                if heldout_test_data is None:
-                    try:
-                        heldout_test_data = load_disrnn_heldout_subject_data(runtime_heldout_cfg)
-                        self.heldout_data = heldout_test_data
-                        _log_heldout_dataset_details(heldout_test_data)
-                    except Exception as exc:
-                        logger.warning(
-                            "Preloading held-out test data failed; evaluation will fall back to lazy loading: %s",
-                            exc,
-                        )
 
             while steps_completed < args.n_steps:
                 chunk_steps = min(

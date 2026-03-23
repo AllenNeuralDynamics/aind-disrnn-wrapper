@@ -105,11 +105,17 @@ class TestGruTrainer(unittest.TestCase):
 
         output = trainer.fit(self.bundle)
 
+        self.assertIn("initial_evaluations", output)
+        self.assertIn("before_training", output["initial_evaluations"])
         self.assertIn("likelihood", output)
         self.assertIn("likelihood_train", output)
         self.assertIn("training_time", output)
         self.assertIn("split_examples", output)
         self.assertIn("random_key", output)
+        before_training = output["initial_evaluations"]["before_training"]
+        self.assertTrue(Path(before_training["params_path"]).exists())
+        self.assertTrue(Path(before_training["output_df_path"]).exists())
+        self.assertIn("split_examples", before_training)
         self.assertIsInstance(output["likelihood"], float)
         self.assertIsInstance(output["likelihood_train"], float)
         self.assertGreaterEqual(output["likelihood"], 0.0)
@@ -145,6 +151,8 @@ class TestGruTrainer(unittest.TestCase):
         output = trainer.fit(self.bundle)
 
         self.assertIn("checkpoints", output)
+        self.assertIn("initial_evaluations", output)
+        self.assertIn("before_training", output["initial_evaluations"])
         self.assertEqual(len(output["checkpoints"]), 2)
         for checkpoint in output["checkpoints"]:
             self.assertIn("train_likelihood", checkpoint)

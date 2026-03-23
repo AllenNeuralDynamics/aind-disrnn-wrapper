@@ -128,8 +128,19 @@ class TestDisrnnTrainer(unittest.TestCase):
         output = trainer.fit(self.bundle)
 
         self.assertIn("checkpoints", output)
+        self.assertIn("initial_evaluations", output)
+        self.assertIn("before_warmup", output["initial_evaluations"])
+        self.assertIn("after_warmup", output["initial_evaluations"])
         self.assertIn("likelihood", output)
         self.assertIn("likelihood_train", output)
+        before_warmup = output["initial_evaluations"]["before_warmup"]
+        after_warmup = output["initial_evaluations"]["after_warmup"]
+        self.assertTrue(Path(before_warmup["params_path"]).exists())
+        self.assertTrue(Path(before_warmup["output_df_path"]).exists())
+        self.assertIn("split_examples", before_warmup)
+        self.assertTrue(Path(after_warmup["params_path"]).exists())
+        self.assertTrue(Path(after_warmup["output_df_path"]).exists())
+        self.assertIn("split_examples", after_warmup)
         self.assertEqual(len(output["checkpoints"]), 2)
         for checkpoint in output["checkpoints"]:
             self.assertIn("train_likelihood", checkpoint)

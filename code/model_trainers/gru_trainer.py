@@ -117,6 +117,235 @@ class GruTrainer(ModelTrainer):
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
+    def _remove_media_files(self, paths: list[Any]) -> None:
+        for raw_path in paths:
+            if not raw_path:
+                continue
+            try:
+                Path(str(raw_path)).unlink(missing_ok=True)
+            except Exception as exc:
+                logger.warning("Failed to remove media file %s: %s", raw_path, exc)
+
+    def _cleanup_split_example_media(self, split_examples: dict[str, Any]) -> None:
+        for split_summary in split_examples.values():
+            if not isinstance(split_summary, dict):
+                continue
+            plots = split_summary.get("plots", {})
+            if not isinstance(plots, dict):
+                continue
+            for key in ("latents_over_trials_examples", "latents_in_space_examples"):
+                raw_paths = plots.get(key, [])
+                if not isinstance(raw_paths, list):
+                    continue
+                self._remove_media_files(raw_paths)
+                plots[key] = []
+
+    def _cleanup_heldout_media(self, heldout_summary: dict[str, Any]) -> None:
+        plots = heldout_summary.get("plots", {})
+        if not isinstance(plots, dict):
+            return
+        all_paths = []
+        for key in ("latents_over_trials_examples", "latents_in_space_examples"):
+            raw_paths = plots.get(key, [])
+            if not isinstance(raw_paths, list):
+                continue
+            all_paths.extend(raw_paths)
+            plots[key] = []
+        self._remove_media_files(all_paths)
+
+    def _log_heldout_summary_to_wandb(
+        self,
+        *,
+        heldout_summary: dict[str, Any],
+        wandb_run: Any | None,
+        wandb_step: int | None,
+        wandb_key_prefix: str,
+    ) -> None:
+        if wandb_run is None:
+            return
+
+        metric_payload = {
+            f"{wandb_key_prefix}/heldout_test_likelihood": float(
+                heldout_summary["test_likelihood"]
+            ),
+        }
+        if wandb_step is None:
+            wandb_run.log(metric_payload)
+        else:
+            wandb_run.log(metric_payload, step=wandb_step)
+
+        trial_plot_paths = heldout_summary.get("plots", {}).get(
+            "latents_over_trials_examples",
+            [],
+        )
+        space_plot_paths = heldout_summary.get("plots", {}).get(
+            "latents_in_space_examples",
+            [],
+        )
+        image_payload = {}
+        if trial_plot_paths:
+            image_payload[f"{wandb_key_prefix}/heldout/latents_over_trials_examples"] = [
+                wandb.Image(str(path)) for path in trial_plot_paths
+            ]
+        if space_plot_paths:
+            image_payload[f"{wandb_key_prefix}/heldout/latents_in_space_examples"] = [
+                wandb.Image(str(path)) for path in space_plot_paths
+            ]
+        if image_payload:
+            if wandb_step is None:
+                wandb_run.log(image_payload)
+            else:
+                wandb_run.log(image_payload, step=wandb_step)
+
+    def _evaluate_initialization_snapshot(
+        self,
+        *,
+        stage_name: str,
+        params: Any,
+        bundle: DatasetBundle,
+        metadata: dict[str, Any],
+        dataset: Any,
+        dataset_train: Any,
+        dataset_eval: Any,
+        ignore_policy: str,
+        make_network: Any,
+        heldout_eval_cfg: Any | None,
+        heldout_data: dict[str, Any] | None,
+        wandb_run: Any | None,
+        wandb_step: int | None,
+        keep_media_files: bool,
+    ) -> dict[str, Any]:
+        stage_dir = self.output_dir / "initialization" / stage_name
+        stage_dir.mkdir(parents=True, exist_ok=True)
+        log_scope = stage_name.replace("_", " ").title()
+        wandb_key_prefix = f"initialization/{stage_name}"
+
+        params_path = stage_dir / "params.json"
+        with params_path.open("w") as f:
+            f.write(json.dumps(params, cls=rnn_utils.NpJnpJsonEncoder))
+
+        xs_train, ys_train = dataset_train.get_all()
+        yhat_train, _ = rnn_utils.eval_network(make_network, params, xs_train)
+        n_action_logits_train = _require_n_action_logits(
+            dataset_train,
+            np.asarray(yhat_train),
+            context="initialization train",
+        )
+        train_likelihood = float(
+            rnn_utils.normalized_likelihood(
+                ys_train,
+                np.asarray(yhat_train)[:, :, :n_action_logits_train],
+            )
+        )
+
+        xs_eval, ys_eval = dataset_eval.get_all()
+        yhat_eval, _ = rnn_utils.eval_network(make_network, params, xs_eval)
+        n_action_logits_eval = _require_n_action_logits(
+            dataset_eval,
+            np.asarray(yhat_eval),
+            context="initialization eval",
+        )
+        eval_likelihood = float(
+            rnn_utils.normalized_likelihood(
+                ys_eval,
+                np.asarray(yhat_eval)[:, :, :n_action_logits_eval],
+            )
+        )
+
+        logger.info("%s training likelihood: %.4f", log_scope, train_likelihood)
+        logger.info("%s eval likelihood: %.4f", log_scope, eval_likelihood)
+
+        if wandb_run is not None:
+            metric_payload = {
+                f"{wandb_key_prefix}/train_likelihood": train_likelihood,
+                f"{wandb_key_prefix}/eval_likelihood": eval_likelihood,
+            }
+            if wandb_step is None:
+                wandb_run.log(metric_payload)
+            else:
+                wandb_run.log(metric_payload, step=wandb_step)
+
+        xs_full, _ = dataset.get_all()
+        yhat_full, network_states_full = rnn_utils.eval_network(
+            make_network,
+            params,
+            xs_full,
+        )
+        output_df = add_gru_model_results(
+            bundle.raw.copy(),
+            np.asarray(network_states_full),
+            np.asarray(yhat_full),
+            ignore_policy=ignore_policy,
+        )
+        output_df_path = stage_dir / "output_df.csv"
+        output_df.to_csv(output_df_path, index=False)
+
+        n_action_logits_full = _require_n_action_logits(
+            dataset,
+            np.asarray(yhat_full),
+            context="initialization full-dataset plotting",
+        )
+        split_summaries = self._generate_split_examples(
+            output_dir=stage_dir,
+            output_df=output_df,
+            network_states_full=np.asarray(network_states_full),
+            yhat_full=np.asarray(yhat_full),
+            params=params,
+            metadata=metadata,
+            n_action_logits=n_action_logits_full,
+            wandb_run=wandb_run,
+            log_scope=log_scope,
+            wandb_step=wandb_step,
+            wandb_key_prefix=wandb_key_prefix,
+        )
+        if wandb_run is not None and not keep_media_files:
+            self._cleanup_split_example_media(split_summaries)
+
+        snapshot_summary: dict[str, Any] = {
+            "stage": stage_name,
+            "params_path": str(params_path),
+            "output_df_path": str(output_df_path),
+            "train_likelihood": train_likelihood,
+            "eval_likelihood": eval_likelihood,
+            "split_examples": split_summaries,
+        }
+
+        if heldout_eval_cfg is not None:
+            try:
+                heldout_summary = evaluate_gru_on_heldout_subjects(
+                    heldout_eval_cfg,
+                    wandb_run=wandb_run,
+                    params_path=params_path,
+                    output_subdir=f"initialization/{stage_name}/heldout_test",
+                    log_to_wandb=False,
+                    heldout_data=heldout_data,
+                    log_scope=log_scope,
+                )
+                if heldout_summary is not None:
+                    snapshot_summary["heldout"] = heldout_summary
+                    snapshot_summary["heldout_test_likelihood"] = float(
+                        heldout_summary["test_likelihood"]
+                    )
+                    self._log_heldout_summary_to_wandb(
+                        heldout_summary=heldout_summary,
+                        wandb_run=wandb_run,
+                        wandb_step=wandb_step,
+                        wandb_key_prefix=wandb_key_prefix,
+                    )
+                    if wandb_run is not None and not keep_media_files:
+                        self._cleanup_heldout_media(heldout_summary)
+            except Exception as exc:
+                logger.warning(
+                    "Initialization held-out evaluation failed for %s: %s",
+                    stage_name,
+                    exc,
+                )
+
+        summary_path = stage_dir / "summary.json"
+        with summary_path.open("w") as f:
+            json.dump(snapshot_summary, f, indent=2)
+        return snapshot_summary
+
     def fit(
         self,
         bundle: DatasetBundle,
@@ -222,9 +451,65 @@ class GruTrainer(ModelTrainer):
             output_size=args.output_size,
         )
 
+        heldout_eval_cfg = None
+        heldout_test_data = self.heldout_data
+        runtime_heldout_cfg = HeldoutEvalConfig.from_data_cfg(metadata)
+        if runtime_heldout_cfg.enabled:
+            heldout_eval_cfg = OmegaConf.create(
+                {
+                    "data": asdict(runtime_heldout_cfg),
+                    "model": {
+                        "architecture": self.architecture,
+                        "output_dir": str(self.output_dir),
+                    },
+                }
+            )
+            if heldout_test_data is None:
+                try:
+                    heldout_test_data = load_gru_heldout_subject_data(runtime_heldout_cfg)
+                    self.heldout_data = heldout_test_data
+                    _log_heldout_dataset_details(heldout_test_data)
+                except Exception as exc:
+                    logger.warning(
+                        "Preloading held-out test data failed; evaluation will fall back to lazy loading: %s",
+                        exc,
+                    )
+
         start = time.time()
         checkpoint_records: list[dict[str, Any]] = []
         checkpoint_heldout_summaries: list[dict[str, Any]] = []
+
+        params, init_opt_state, _ = rnn_utils.train_network(
+            make_network,
+            dataset_train,
+            dataset_eval,
+            loss=args.loss,
+            loss_param=args.loss_param,
+            opt=optax.adam(args.learning_rate),
+            n_steps=0,
+            max_grad_norm=args.max_grad_norm,
+            random_key=key,
+            report_progress_by="wandb",
+            wandb_run=wandb_run,
+        )
+        output["initial_evaluations"] = {
+            "before_training": self._evaluate_initialization_snapshot(
+                stage_name="before_training",
+                params=params,
+                bundle=bundle,
+                metadata=metadata,
+                dataset=dataset,
+                dataset_train=dataset_train,
+                dataset_eval=dataset_eval,
+                ignore_policy=ignore_policy,
+                make_network=make_network,
+                heldout_eval_cfg=heldout_eval_cfg,
+                heldout_data=heldout_test_data,
+                wandb_run=wandb_run,
+                wandb_step=0,
+                keep_media_files=args.checkpoint_keep_media_files,
+            )
+        }
 
         if args.checkpoint_every_n_steps == 0:
             params, opt_state, losses = rnn_utils.train_network(
@@ -233,6 +518,8 @@ class GruTrainer(ModelTrainer):
                 dataset_eval,
                 loss=args.loss,
                 loss_param=args.loss_param,
+                params=params,
+                opt_state=init_opt_state,
                 opt=optax.adam(args.learning_rate),
                 n_steps=args.n_steps,
                 max_grad_norm=args.max_grad_norm,
@@ -268,29 +555,7 @@ class GruTrainer(ModelTrainer):
             xs_full_for_checkpoint, _ = dataset.get_all()
             df_for_checkpoint = bundle.raw
             random_key = key
-            heldout_eval_cfg = None
-            heldout_test_data = self.heldout_data
-            runtime_heldout_cfg = HeldoutEvalConfig.from_data_cfg(metadata)
-            if runtime_heldout_cfg.enabled:
-                heldout_eval_cfg = OmegaConf.create(
-                    {
-                        "data": asdict(runtime_heldout_cfg),
-                        "model": {
-                            "architecture": self.architecture,
-                            "output_dir": str(self.output_dir),
-                        },
-                    }
-                )
-                if heldout_test_data is None:
-                    try:
-                        heldout_test_data = load_gru_heldout_subject_data(runtime_heldout_cfg)
-                        self.heldout_data = heldout_test_data
-                        _log_heldout_dataset_details(heldout_test_data)
-                    except Exception as exc:
-                        logger.warning(
-                            "Preloading held-out test data failed; evaluation will fall back to lazy loading: %s",
-                            exc,
-                        )
+            opt_state = init_opt_state
 
             while steps_completed < args.n_steps:
                 chunk_steps = min(
