@@ -21,7 +21,8 @@ from base.types import DatasetBundle
 
 logger = logging.getLogger(__name__)
 
-def make_fip_multisession_trials_df(nwb_list, allow_duplicates=True):
+
+def make_fip_multisession_trials_df(nwb_list, full_channel_name, allow_duplicates=True):
     """
     Builds a dataframe of trials concatenated across multiple sessions
     nwb_list, a list of NWBs to concatenate. Can either be paths to the files
@@ -31,11 +32,6 @@ def make_fip_multisession_trials_df(nwb_list, allow_duplicates=True):
     individual nwb.df_trials. The rows will be sorted by the session date,
     and then trial number within each session
     """
-    # Hard coding these for now
-    fiber = 0
-    channel = 'G'
-    method='dff-bright_mc-iso-IRLS'
-    full_channel_name = f'{channel}_{fiber}_{method}'
 
     unique_sessions = set()
     nwbs = []
@@ -53,17 +49,17 @@ def make_fip_multisession_trials_df(nwb_list, allow_duplicates=True):
             nwb.df_licks = a.annotate_licks(nwb)
             nwb.df_trials = tm.compute_trial_metrics(nwb)
             nwb.df_trials = ms_load.add_side_bias(nwb)
-            nwb.df_fip = nu.create_df_fip(nwb,verbose=False)
+            nwb.df_fip = nu.create_df_fip(nwb, verbose=False)
             nwb.df_fip = ed.zscore_fip(nwb.df_fip)
             nwb.df_trials = tm.get_average_signal_window(
-                nwb, 
-                alignment_event='goCue_start_time_in_session',
-                offsets = [0,2],
+                nwb,
+                alignment_event="goCue_start_time_in_session",
+                offsets=[0, 2],
                 channel=full_channel_name,
-                data_column = 'data_z',
-                output_col='NE_FIP'
+                data_column="data_z",
+                output_col="NE_FIP",
             )
-            nwb.df_trials['NE_FIP'] = nwb.df_trials['NE_FIP'].fillna(0)
+            nwb.df_trials["NE_FIP"] = nwb.df_trials["NE_FIP"].fillna(0)
             nwbs.append(nwb)
         except Exception as e:
             crash_list.append(n)
@@ -83,12 +79,11 @@ def make_fip_multisession_trials_df(nwb_list, allow_duplicates=True):
     return nwbs, df
 
 
-
 class FipDatasetLoader(DatasetLoader):
     """
     Load the foraging dataset for mice experiments with FIP data
 
-    I am doing this as a dev project, so I'm hard coding the 
+    I am doing this as a dev project, so I'm hard coding the
     Green channel of Fiber 0, which is Prelimbic cortex with
     GCaMP LC-NE axon imaging in the mice I'm using. In the future,
     I will need to generalize this code to accept a data model that
@@ -118,39 +113,96 @@ class FipDatasetLoader(DatasetLoader):
         self.batch_mode = batch_mode
         self.extras = extras
 
-
     def load(self) -> DatasetBundle:
-        
+
         # Fix numpy random seed (will affect batch_mode="random")
         if self.seed is not None:
             np.random.seed(self.seed)
-        
+
         if self.multisubject:
             raise NotImplementedError("Multisubject loading is not yet supported.")
 
         subject = self.subject_ids[0]
         new_mice = [774212, 779531, 781173, 781162, 778077]
-        old_mice = []
+        jh_format_mice = [
+            699461,
+            699462,
+            699472,
+            701707,
+            749472,
+            749624,
+            754895,
+            754896,
+            754898,
+            669489,
+            669492,
+            672850,
+        ]
+
         if subject in new_mice:
-            results = []
-            for subject in new_mice: # TODO hack because data is missing on docdb
-                logger.info("Querying docDB for {}".format(subject))
-                subject_results = co.get_subject_assets(
-                    subject, modality=["behavior","fib"], stage=["STAGE_FINAL", "GRADUATED"]
-                )  
-                subject_results = subject_results.sort_values(
-                    by="session_name"
-                ).reset_index(drop=True)
-                results.append(subject_results)
-            results = pd.concat(results)
+            logger.info("Querying docDB for {}".format(subject))
+            results = co.get_subject_assets(
+                subject,
+                modality=["behavior", "fib"],
+                stage=["STAGE_FINAL", "GRADUATED"],
+            )
+            results = subject_results.sort_values(by="session_name").reset_index(
+                drop=True
+            )
             if len(results) == 0:
                 raise Exception("No data found for subject ids")
             logger.info("Getting s3 location")
             results = co.add_s3_location(results)
             logger.info("Loading NWBs")
-            nwbs, df = make_fip_multisession_trials_df(results["s3_nwb_location"])
-        elif subject in old_mice:
-            raise Exception('not implemented yet')
+            # Hard coding these for now
+            fiber = 0
+            channel = "G"
+            method = "dff-bright_mc-iso-IRLS"
+            full_channel_name = f"{channel}_{fiber}_{method}"
+            nwbs, df = make_fip_multisession_trials_df(
+                results["s3_nwb_location"], full_channel_name
+            )
+        elif subject in jh_format_mice:
+            client = co.MetadataDbClient(
+                host="api.allenneuraldynamics.org",
+                database="metadata_index",
+                collection="data_assets",
+            )
+            task_filter = {
+                "session.session_type": {
+                    "$regex": "^(Uncoupled|Coupled)( Without)? Baiting"
+                },
+            }
+            stage = ["STAGE_FINAL", "GRADUATED"]
+            stage_filter = {
+                "session.stimulus_epochs.output_parameters.task_parameters.stage_in_use": {
+                    "$in": stage
+                }
+            }
+            modality = ["behavior", "fib"]
+            modality_filter = {"$and": []}
+            for m in modality:
+                modality_filter["$and"].append(
+                    {"data_description.modalities.abbreviation": {"$regex": m}}
+                )
+            results = pd.DataFrame(
+                client.retrieve_docdb_records(
+                    filter_query={"subject.subject_id": str(subject), **modality_filter}
+                )
+            )
+            if len(results) == 0:
+                raise Exception("No data found for subject ids")
+            logger.info("Getting s3 location")
+            results = co.add_s3_location(results)
+            logger.info("Loading NWBs")
+            # Hard coding this for now
+            fiber = 0
+            channel = "G"
+            method = "bright_mc"
+            full_channel_name = f"{channel}_{fiber}_{method}"
+            nwbs, df = make_fip_multisession_trials_df(
+                results["s3_nwb_location"], full_channel_name
+            )
 
         dataset = dl.create_disrnn_dataset(
             df,
