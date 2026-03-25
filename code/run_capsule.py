@@ -3,6 +3,7 @@
 import logging
 import time
 from pathlib import Path
+import warnings
 
 from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf
@@ -21,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 def main() -> None:
     configure_sys_logger()
+    warnings.simplefilter(action='ignore', category=FutureWarning)
 
     # --- Load Hydra config ---
     config_path = find_hydra_config()
