@@ -37,7 +37,7 @@ def _is_multisubject_personalized_run(hydra_config) -> bool:
     model_type = getattr(hydra_config.model, "type", None)
     architecture_cfg = getattr(hydra_config.model, "architecture", None)
     return bool(
-        model_type in {"disrnn", "gru"}
+        model_type in {"disrnn", "gru", "baseline_rl"}
         and architecture_cfg is not None
         and getattr(architecture_cfg, "multisubject", False)
     )

@@ -261,6 +261,22 @@ def evaluate_baseline_rl_on_heldout_subjects(
         raise FileNotFoundError(f"Could not find baseline output at {baseline_output_path}")
 
     baseline_output = _load_baseline_output(baseline_output_path)
+    if bool(baseline_output.get("multisubject")) or str(
+        baseline_output.get("fit_strategy", "")
+    ) == "per_subject":
+        logger.info(
+            "Skipping held-out baseline RL evaluation because multisubject runs do not "
+            "produce a single global fitted parameter set."
+        )
+        return {
+            "enabled": True,
+            "skipped": True,
+            "reason": (
+                "Held-out evaluation is not supported for multisubject baseline RL "
+                "per-subject fits."
+            ),
+        }
+
     fitted_params = baseline_output.get("fitted_params")
     if not isinstance(fitted_params, dict) or not fitted_params:
         raise ValueError("baseline_rl_output.json missing fitted_params for held-out evaluation")

@@ -53,6 +53,8 @@ data:
 model:
   type: baseline_rl
   _target_: model_trainers.baseline_rl_trainer.BaselineRLTrainer
+  architecture:
+    multisubject: false
   # Agent class from aind_dynamic_foraging_models.generative_model
   # Options: ForagerQLearning, ForagerLossCounting, ForagerCompareThreshold
   agent_class: ForagerQLearning

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import itertools
 import json
 import logging
 import time
@@ -10,7 +11,9 @@ import matplotlib
 matplotlib.use("Agg")  # Use non-interactive backend
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
+from matplotlib.lines import Line2D
 import numpy as np
+import pandas as pd
 import wandb
 from omegaconf import DictConfig, OmegaConf
 
@@ -28,6 +31,11 @@ from utils.baseline_rl_evaluation import (
 
 from base.interfaces import ModelTrainer
 from base.types import DatasetBundle
+from utils.multisubject import (
+    compute_train_eval_session_ids,
+    normalize_subject_id,
+    save_subject_index_map,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +70,15 @@ def _compute_negLL_from_choice_prob(
     return -log_lik
 
 
+def _json_default(value: Any) -> Any:
+    """Convert numpy-backed values into JSON-serializable Python objects."""
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
 class BaselineRLTrainer(ModelTrainer):
     """Trainer for baseline RL model comparisons using aind-dynamic-foraging-models.
 
@@ -73,6 +90,7 @@ class BaselineRLTrainer(ModelTrainer):
     def __init__(
         self,
         agent_class: str,
+        architecture: Mapping[str, Any] | DictConfig = {},
         agent_kwargs: Mapping[str, Any] | DictConfig = {},
         fit_bounds_override: Mapping[str, Any] | DictConfig = {},
         clamp_params: Mapping[str, Any] | DictConfig = {},
@@ -96,6 +114,7 @@ class BaselineRLTrainer(ModelTrainer):
         """
         super().__init__(seed=seed)
         self.agent_class = agent_class
+        self.architecture = _to_dict(architecture)
         self.agent_kwargs = _to_dict(agent_kwargs)
         self.fit_bounds_override = _to_dict(fit_bounds_override)
         self.clamp_params = _to_dict(clamp_params)
@@ -103,27 +122,723 @@ class BaselineRLTrainer(ModelTrainer):
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-    def fit(
+    def _is_multisubject_mode(self, metadata: Mapping[str, Any]) -> bool:
+        return bool(
+            self.architecture.get("multisubject", False)
+            or metadata.get("multisubject", False)
+        )
+
+    def _resolve_agent_class(self) -> Any:
+        agent_class_obj = getattr(generative_model, self.agent_class, None)
+        if agent_class_obj is None:
+            raise ValueError(
+                f"Agent class '{self.agent_class}' not found in "
+                f"aind_dynamic_foraging_models.generative_model"
+            )
+        return agent_class_obj
+
+    def _resolve_subject_curricula(
         self,
+        *,
+        raw_df: pd.DataFrame,
+        metadata: Mapping[str, Any],
+    ) -> dict[Any, str]:
+        subject_curricula = metadata.get("subject_curricula")
+        if isinstance(subject_curricula, dict) and subject_curricula:
+            return {
+                normalize_subject_id(subject_id): str(curriculum)
+                for subject_id, curriculum in subject_curricula.items()
+            }
+
+        if "subject_id" not in raw_df.columns or "curriculum_name" not in raw_df.columns:
+            return {}
+
+        resolved: dict[Any, str] = {}
+        for subject_id, subject_rows in raw_df.groupby("subject_id", sort=False):
+            curricula = [
+                str(value)
+                for value in subject_rows["curriculum_name"].dropna().unique().tolist()
+            ]
+            normalized_subject_id = normalize_subject_id(subject_id)
+            if not curricula:
+                resolved[normalized_subject_id] = "Unknown"
+            elif len(curricula) == 1:
+                resolved[normalized_subject_id] = curricula[0]
+            else:
+                resolved[normalized_subject_id] = "Mixed"
+        return resolved
+
+    def _extract_sessions_from_raw_df(
+        self,
+        raw_df: pd.DataFrame,
+        *,
+        session_ids: List[Any] | None = None,
+    ) -> tuple[List[np.ndarray], List[np.ndarray], List[Any]]:
+        required_cols = {"ses_idx", "trial", "animal_response", "earned_reward"}
+        missing = [column for column in required_cols if column not in raw_df.columns]
+        if missing:
+            raise ValueError(f"Raw dataframe missing required columns for baseline RL: {missing}")
+
+        ordered_session_ids = (
+            list(session_ids)
+            if session_ids is not None
+            else list(dict.fromkeys(raw_df["ses_idx"].tolist()))
+        )
+        choices_sessions: List[np.ndarray] = []
+        rewards_sessions: List[np.ndarray] = []
+        kept_session_ids: List[Any] = []
+
+        for session_id in ordered_session_ids:
+            session_df = raw_df[raw_df["ses_idx"] == session_id].sort_values("trial")
+            if session_df.empty:
+                continue
+            choice_arr = session_df["animal_response"].to_numpy(dtype=int)
+            valid_choice = (choice_arr == 0) | (choice_arr == 1)
+            choice_arr = choice_arr[valid_choice]
+            if len(choice_arr) == 0:
+                continue
+            reward_arr = session_df["earned_reward"].to_numpy(dtype=float)[valid_choice]
+            choices_sessions.append(choice_arr.astype(int))
+            rewards_sessions.append(reward_arr.astype(float))
+            kept_session_ids.append(session_id)
+
+        return choices_sessions, rewards_sessions, kept_session_ids
+
+    def _build_multisubject_subject_records(
+        self,
+        *,
+        raw_df: pd.DataFrame,
+        metadata: Mapping[str, Any],
+    ) -> list[dict[str, Any]]:
+        if "subject_id" not in raw_df.columns:
+            raise ValueError(
+                "Multisubject baseline RL requires a 'subject_id' column in bundle.raw."
+            )
+
+        subject_id_to_index = metadata.get("subject_id_to_index")
+        index_to_subject_id = metadata.get("index_to_subject_id")
+        if not isinstance(subject_id_to_index, dict) or not isinstance(index_to_subject_id, dict):
+            raise ValueError(
+                "Multisubject baseline RL requires subject_id_to_index and "
+                "index_to_subject_id in bundle metadata."
+            )
+
+        eval_every_n = int(metadata.get("eval_every_n", 2))
+        train_session_ids_meta = metadata.get("train_session_ids")
+        eval_session_ids_meta = metadata.get("eval_session_ids")
+        train_session_id_set = (
+            {str(session_id) for session_id in train_session_ids_meta}
+            if isinstance(train_session_ids_meta, list)
+            else None
+        )
+        eval_session_id_set = (
+            {str(session_id) for session_id in eval_session_ids_meta}
+            if isinstance(eval_session_ids_meta, list)
+            else None
+        )
+
+        subject_curricula = self._resolve_subject_curricula(raw_df=raw_df, metadata=metadata)
+        ordered_subjects = sorted(
+            (
+                (int(index), normalize_subject_id(subject_id))
+                for index, subject_id in index_to_subject_id.items()
+            ),
+            key=lambda item: item[0],
+        )
+
+        subject_records: list[dict[str, Any]] = []
+        normalized_subject_series = raw_df["subject_id"].map(normalize_subject_id)
+        for subject_index, subject_id in ordered_subjects:
+            subject_df = raw_df[normalized_subject_series == subject_id].copy()
+            if subject_df.empty:
+                continue
+            subject_df = subject_df.sort_values(["ses_idx", "trial"]).reset_index(drop=True)
+            session_ids = list(dict.fromkeys(subject_df["ses_idx"].tolist()))
+
+            if train_session_id_set is not None and eval_session_id_set is not None:
+                train_session_ids = [
+                    session_id
+                    for session_id in session_ids
+                    if str(session_id) in train_session_id_set
+                ]
+                eval_session_ids = [
+                    session_id
+                    for session_id in session_ids
+                    if str(session_id) in eval_session_id_set
+                ]
+                if not train_session_ids or not eval_session_ids:
+                    logger.warning(
+                        "Could not resolve train/eval session ids from metadata for subject_id=%s; "
+                        "falling back to eval_every_n=%s.",
+                        subject_id,
+                        eval_every_n,
+                    )
+                    train_session_ids, eval_session_ids = compute_train_eval_session_ids(
+                        session_ids,
+                        eval_every_n=eval_every_n,
+                    )
+            else:
+                train_session_ids, eval_session_ids = compute_train_eval_session_ids(
+                    session_ids,
+                    eval_every_n=eval_every_n,
+                )
+
+            train_choices, train_rewards, train_session_ids = self._extract_sessions_from_raw_df(
+                subject_df,
+                session_ids=train_session_ids,
+            )
+            eval_choices, eval_rewards, eval_session_ids = self._extract_sessions_from_raw_df(
+                subject_df,
+                session_ids=eval_session_ids,
+            )
+
+            if not train_choices or not eval_choices:
+                raise ValueError(
+                    "Subject split for baseline RL produced an empty train or eval set for "
+                    f"subject_id={subject_id}."
+                )
+
+            subject_records.append(
+                {
+                    "subject_id": normalize_subject_id(subject_id),
+                    "subject_index": int(subject_index),
+                    "curriculum_name": subject_curricula.get(
+                        normalize_subject_id(subject_id),
+                        "Unknown",
+                    ),
+                    "train_choices": train_choices,
+                    "train_rewards": train_rewards,
+                    "eval_choices": eval_choices,
+                    "eval_rewards": eval_rewards,
+                    "train_session_ids": train_session_ids,
+                    "eval_session_ids": eval_session_ids,
+                }
+            )
+
+        if not subject_records:
+            raise ValueError("No subject records were constructed for multisubject baseline RL.")
+
+        return subject_records
+
+    def _fit_subject_sessions(
+        self,
+        *,
+        train_choices: List[np.ndarray],
+        train_rewards: List[np.ndarray],
+        eval_choices: List[np.ndarray],
+        eval_rewards: List[np.ndarray],
+    ) -> dict[str, Any]:
+        agent_class_obj = self._resolve_agent_class()
+        agent = agent_class_obj(
+            **self.agent_kwargs,
+            seed=self.seed,
+        )
+        logger.info(
+            "Fitting %s with kwargs: %s",
+            self.agent_class,
+            self.agent_kwargs,
+        )
+        logger.info("Agent has %d free parameters", len(agent.params_list_free))
+
+        fitting_result, _ = agent.fit(
+            fit_choice_history=train_choices,
+            fit_reward_history=train_rewards,
+            fit_bounds_override=self.fit_bounds_override,
+            clamp_params=self.clamp_params,
+            DE_kwargs=self.DE_kwargs,
+        )
+
+        fitted_params = {
+            param_name: float(param_value)
+            for param_name, param_value in fitting_result.params.items()
+        }
+        agent.set_params(**fitted_params)
+
+        train_choice_prob_sessions = agent.perform_closed_loop_multi_session(
+            train_choices,
+            train_rewards,
+        )
+        train_choice_prob_sessions = [
+            np.asarray(arr) for arr in train_choice_prob_sessions
+        ]
+        train_likelihood = self._compute_normalized_likelihood(
+            train_choices,
+            train_choice_prob_sessions,
+        )
+
+        eval_agent = agent_class_obj(**self.agent_kwargs, seed=self.seed)
+        eval_agent.set_params(**fitted_params)
+        eval_choice_prob_sessions = eval_agent.perform_closed_loop_multi_session(
+            eval_choices,
+            eval_rewards,
+        )
+        eval_choice_prob_sessions = [np.asarray(arr) for arr in eval_choice_prob_sessions]
+        eval_likelihood = self._compute_normalized_likelihood(
+            eval_choices,
+            eval_choice_prob_sessions,
+        )
+
+        return {
+            "fitted_params": fitted_params,
+            "n_free_params": int(fitting_result.k_model),
+            "train_likelihood": float(train_likelihood),
+            "eval_likelihood": float(eval_likelihood),
+            "log_likelihood_train": float(fitting_result.log_likelihood),
+            "LPT_train": float(fitting_result.LPT),
+            "AIC": float(fitting_result.AIC),
+            "BIC": float(fitting_result.BIC),
+            "train_choice_prob_sessions": train_choice_prob_sessions,
+            "eval_choice_prob_sessions": eval_choice_prob_sessions,
+        }
+
+    def _parameter_display_name(self, param_name: str) -> str:
+        try:
+            return str(ParamsSymbols[param_name].value)
+        except KeyError:
+            return param_name
+
+    def _plot_subject_parameter_state_space(
+        self,
+        subject_metrics_df: pd.DataFrame,
+        *,
+        parameter_columns: List[str],
+    ) -> Figure | None:
+        varying_param_columns = [
+            column
+            for column in parameter_columns
+            if column in subject_metrics_df.columns
+            and subject_metrics_df[column].nunique(dropna=False) > 1
+        ]
+        if len(varying_param_columns) < 2:
+            logger.info(
+                "Skipping subject parameter state-space plot because fewer than two fitted "
+                "parameter columns vary across subjects."
+            )
+            return None
+
+        plot_df = subject_metrics_df.copy()
+        if "curriculum_name" not in plot_df.columns:
+            plot_df["curriculum_name"] = "Unknown"
+        else:
+            plot_df["curriculum_name"] = plot_df["curriculum_name"].fillna("Unknown")
+
+        dim_pairs = list(itertools.combinations(varying_param_columns, 2))
+        ncols = min(3, len(dim_pairs))
+        nrows = int(np.ceil(len(dim_pairs) / ncols))
+        fig, axes = plt.subplots(
+            nrows,
+            ncols,
+            figsize=(5.5 * ncols, 5.0 * nrows),
+            squeeze=False,
+        )
+
+        curriculum_values = list(dict.fromkeys(plot_df["curriculum_name"].astype(str).tolist()))
+        cmap = plt.get_cmap("tab10")
+        curriculum_to_color = {
+            curriculum: cmap(index % max(1, cmap.N))
+            for index, curriculum in enumerate(curriculum_values)
+        }
+
+        for ax, (x_column, y_column) in zip(axes.flat, dim_pairs):
+            for curriculum in curriculum_values:
+                curriculum_rows = plot_df[plot_df["curriculum_name"].astype(str) == curriculum]
+                ax.scatter(
+                    curriculum_rows[x_column],
+                    curriculum_rows[y_column],
+                    color=curriculum_to_color[curriculum],
+                    label=curriculum,
+                    s=55,
+                    alpha=0.9,
+                )
+            for row in plot_df.itertuples(index=False):
+                ax.text(
+                    getattr(row, x_column),
+                    getattr(row, y_column),
+                    str(int(getattr(row, "subject_index"))),
+                    fontsize=8,
+                    alpha=0.8,
+                )
+            ax.axhline(0, color="0.85", linewidth=1)
+            ax.axvline(0, color="0.85", linewidth=1)
+            ax.set_xlabel(self._parameter_display_name(x_column))
+            ax.set_ylabel(self._parameter_display_name(y_column))
+            ax.set_title(
+                f"{self._parameter_display_name(x_column)} vs "
+                f"{self._parameter_display_name(y_column)}"
+            )
+
+        for ax in axes.flat[len(dim_pairs):]:
+            ax.axis("off")
+
+        legend_handles = [
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                linestyle="",
+                markerfacecolor=curriculum_to_color[curriculum],
+                markeredgecolor=curriculum_to_color[curriculum],
+                label=curriculum,
+            )
+            for curriculum in curriculum_values
+        ]
+        fig.legend(
+            handles=legend_handles,
+            loc="upper center",
+            ncol=min(len(legend_handles), 4),
+            title="Curriculum",
+        )
+        fig.suptitle("Subject Parameter State Space", fontsize=14)
+        fig.tight_layout(rect=(0, 0, 1, 0.95))
+        return fig
+
+    def _plot_subject_likelihood_scatter(
+        self,
+        subject_metrics_df: pd.DataFrame,
+        *,
+        mean_subject_train_likelihood: float,
+        mean_subject_eval_likelihood: float,
+        pooled_train_trial_likelihood: float,
+        pooled_eval_trial_likelihood: float,
+    ) -> Figure:
+        plot_df = subject_metrics_df.sort_values("subject_index").reset_index(drop=True).copy()
+        if "curriculum_name" not in plot_df.columns:
+            plot_df["curriculum_name"] = "Unknown"
+        else:
+            plot_df["curriculum_name"] = plot_df["curriculum_name"].fillna("Unknown")
+
+        fig, axes = plt.subplots(1, 2, figsize=(13, 4.8), squeeze=False)
+        curriculum_values = list(dict.fromkeys(plot_df["curriculum_name"].astype(str).tolist()))
+        cmap = plt.get_cmap("tab10")
+        curriculum_to_color = {
+            curriculum: cmap(index % max(1, cmap.N))
+            for index, curriculum in enumerate(curriculum_values)
+        }
+        rng = np.random.default_rng(0)
+        plot_specs = [
+            (
+                axes[0, 0],
+                "train_likelihood",
+                "Train Likelihood",
+                mean_subject_train_likelihood,
+                pooled_train_trial_likelihood,
+            ),
+            (
+                axes[0, 1],
+                "eval_likelihood",
+                "Eval Likelihood",
+                mean_subject_eval_likelihood,
+                pooled_eval_trial_likelihood,
+            ),
+        ]
+
+        for panel_index, (ax, metric_column, title, mean_value, pooled_value) in enumerate(plot_specs):
+            jitter = rng.uniform(-0.35, 0.35, size=len(plot_df))
+            for curriculum in curriculum_values:
+                curriculum_rows = plot_df[plot_df["curriculum_name"].astype(str) == curriculum]
+                curriculum_indices = curriculum_rows.index.to_numpy(dtype=int)
+                ax.scatter(
+                    curriculum_rows[metric_column],
+                    jitter[curriculum_indices],
+                    color=curriculum_to_color[curriculum],
+                    s=65,
+                    alpha=0.9,
+                    label=curriculum,
+                )
+
+            x_values = plot_df[metric_column].to_numpy(dtype=float)
+            x_range = float(np.max(x_values) - np.min(x_values)) if len(x_values) > 0 else 0.0
+            x_pad = max(0.0025, x_range * 0.01)
+            for row_index, row in plot_df.iterrows():
+                label_y_offset = 0.035 if row_index % 2 == 0 else -0.045
+                ax.text(
+                    float(row[metric_column]) + x_pad,
+                    float(jitter[row_index]) + label_y_offset,
+                    str(int(row["subject_index"])),
+                    fontsize=8,
+                    alpha=0.85,
+                )
+
+            ax.axvline(
+                mean_value,
+                color="black",
+                linestyle="--",
+                linewidth=1.8,
+            )
+            ax.axvline(
+                pooled_value,
+                color="dimgray",
+                linestyle=":",
+                linewidth=2.0,
+            )
+            x_margin = max(0.01, x_range * 0.08 if x_range > 0 else 0.02)
+            ax.set_xlim(float(np.min(x_values)) - x_margin, float(np.max(x_values)) + x_margin)
+            ax.set_ylim(-0.55, 0.55)
+            ax.set_yticks([])
+            ax.set_ylabel("")
+            ax.set_xlabel("Likelihood")
+            ax.set_title(f"{title} (n={len(plot_df)})")
+            ax.grid(axis="x", color="0.9", linewidth=1)
+
+        curriculum_handles = [
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                linestyle="",
+                markerfacecolor=curriculum_to_color[curriculum],
+                markeredgecolor=curriculum_to_color[curriculum],
+                label=curriculum,
+            )
+            for curriculum in curriculum_values
+        ]
+        line_handles = [
+            Line2D([0], [0], color="black", linestyle="--", linewidth=1.8, label="Mean subject"),
+            Line2D([0], [0], color="dimgray", linestyle=":", linewidth=2.0, label="Pooled trial"),
+        ]
+        fig.legend(
+            handles=curriculum_handles + line_handles,
+            loc="upper center",
+            ncol=min(len(curriculum_handles) + len(line_handles), 5),
+        )
+        fig.suptitle("Per-Subject Likelihood Scatter", fontsize=14)
+        fig.tight_layout(rect=(0, 0, 1, 0.92))
+        return fig
+
+    def _fit_multisubject(
+        self,
+        *,
         bundle: DatasetBundle,
-        loggers: dict[str, Any] | None = None,
+        metadata: dict[str, Any],
+        wandb_run: Any | None,
+        start_time: float,
     ) -> Dict[str, Any]:
-        """Fit the RL model and compute likelihood on evaluation set.
+        if bundle.raw is None or not hasattr(bundle.raw, "columns"):
+            raise ValueError(
+                "Multisubject baseline RL requires bundle.raw to be a dataframe-like object."
+            )
+        raw_df = pd.DataFrame(bundle.raw).copy()
+        subject_records = self._build_multisubject_subject_records(
+            raw_df=raw_df,
+            metadata=metadata,
+        )
 
-        Args:
-            bundle: DatasetBundle containing training/evaluation data.
-            loggers: Optional dict with logger instances (e.g., {"wandb": wandb_run}).
+        subject_id_to_index = metadata.get("subject_id_to_index")
+        index_to_subject_id = metadata.get("index_to_subject_id")
+        if not isinstance(subject_id_to_index, dict) or not isinstance(index_to_subject_id, dict):
+            raise ValueError(
+                "Multisubject baseline RL requires subject_id_to_index and "
+                "index_to_subject_id in bundle metadata."
+            )
 
-        Returns:
-            Dictionary with fitted parameters and likelihood metrics.
-        """
-        start_time = time.time()
-        metadata = dict(bundle.metadata)
+        subject_output_dir = self.output_dir / "subjects"
+        subject_output_dir.mkdir(parents=True, exist_ok=True)
 
-        wandb_run = None
-        if loggers and "wandb" in loggers:
-            wandb_run = loggers["wandb"]
+        per_subject_rows: list[dict[str, Any]] = []
+        per_subject_summaries: list[dict[str, Any]] = []
+        parameter_columns: List[str] | None = None
+        all_train_choices: List[np.ndarray] = []
+        all_train_choice_prob_sessions: List[np.ndarray] = []
+        all_eval_choices: List[np.ndarray] = []
+        all_eval_choice_prob_sessions: List[np.ndarray] = []
 
+        for subject_record in subject_records:
+            subject_id = subject_record["subject_id"]
+            subject_index = int(subject_record["subject_index"])
+            logger.info(
+                "Fitting multisubject baseline RL subject_id=%s (subject_index=%d)",
+                subject_id,
+                subject_index,
+            )
+            fit_summary = self._fit_subject_sessions(
+                train_choices=subject_record["train_choices"],
+                train_rewards=subject_record["train_rewards"],
+                eval_choices=subject_record["eval_choices"],
+                eval_rewards=subject_record["eval_rewards"],
+            )
+
+            if parameter_columns is None:
+                parameter_columns = list(fit_summary["fitted_params"].keys())
+
+            subject_summary = {
+                "agent_class": self.agent_class,
+                "agent_kwargs": self.agent_kwargs,
+                "subject_id": normalize_subject_id(subject_id),
+                "subject_index": subject_index,
+                "curriculum_name": str(subject_record["curriculum_name"]),
+                "num_train_sessions": int(len(subject_record["train_choices"])),
+                "num_eval_sessions": int(len(subject_record["eval_choices"])),
+                "num_train_trials": int(sum(len(arr) for arr in subject_record["train_choices"])),
+                "num_eval_trials": int(sum(len(arr) for arr in subject_record["eval_choices"])),
+                "train_session_ids": [
+                    _normalize_identifier(session_id)
+                    for session_id in subject_record["train_session_ids"]
+                ],
+                "eval_session_ids": [
+                    _normalize_identifier(session_id)
+                    for session_id in subject_record["eval_session_ids"]
+                ],
+                "fitted_params": fit_summary["fitted_params"],
+                "train_likelihood": float(fit_summary["train_likelihood"]),
+                "eval_likelihood": float(fit_summary["eval_likelihood"]),
+                "log_likelihood_train": float(fit_summary["log_likelihood_train"]),
+                "LPT_train": float(fit_summary["LPT_train"]),
+                "AIC": float(fit_summary["AIC"]),
+                "BIC": float(fit_summary["BIC"]),
+                "n_free_params": int(fit_summary["n_free_params"]),
+            }
+            per_subject_summaries.append(subject_summary)
+
+            subject_row = {
+                key: value
+                for key, value in subject_summary.items()
+                if key not in {"fitted_params", "train_session_ids", "eval_session_ids"}
+            }
+            for param_name, param_value in fit_summary["fitted_params"].items():
+                subject_row[param_name] = float(param_value)
+            per_subject_rows.append(subject_row)
+
+            subject_dir = subject_output_dir / _safe_filename_component(subject_id)
+            subject_dir.mkdir(parents=True, exist_ok=True)
+            subject_summary_path = subject_dir / "fit_summary.json"
+            with subject_summary_path.open("w") as f:
+                json.dump(subject_summary, f, indent=2, default=_json_default)
+
+            all_train_choices.extend(subject_record["train_choices"])
+            all_train_choice_prob_sessions.extend(fit_summary["train_choice_prob_sessions"])
+            all_eval_choices.extend(subject_record["eval_choices"])
+            all_eval_choice_prob_sessions.extend(fit_summary["eval_choice_prob_sessions"])
+
+        assert parameter_columns is not None
+        subject_metrics_df = pd.DataFrame(per_subject_rows).sort_values("subject_index").reset_index(drop=True)
+        subject_metrics_csv_path = self.output_dir / "subject_fit_metrics.csv"
+        subject_metrics_pickle_path = self.output_dir / "subject_fit_metrics.pkl"
+        subject_metrics_df.to_csv(subject_metrics_csv_path, index=False)
+        subject_metrics_df.to_pickle(subject_metrics_pickle_path)
+
+        subject_index_map_path = save_subject_index_map(
+            self.output_dir / "subject_index_map.json",
+            subject_id_to_index=subject_id_to_index,
+            index_to_subject_id=index_to_subject_id,
+        )
+
+        mean_subject_train_likelihood = float(subject_metrics_df["train_likelihood"].mean())
+        mean_subject_eval_likelihood = float(subject_metrics_df["eval_likelihood"].mean())
+        pooled_train_trial_likelihood = float(
+            self._compute_normalized_likelihood(
+                all_train_choices,
+                all_train_choice_prob_sessions,
+            )
+        )
+        pooled_eval_trial_likelihood = float(
+            self._compute_normalized_likelihood(
+                all_eval_choices,
+                all_eval_choice_prob_sessions,
+            )
+        )
+
+        parameter_space_path = None
+        parameter_space_fig = self._plot_subject_parameter_state_space(
+            subject_metrics_df,
+            parameter_columns=parameter_columns,
+        )
+        if parameter_space_fig is not None:
+            parameter_space_path = self.output_dir / "subject_parameter_state_space.png"
+            parameter_space_fig.savefig(parameter_space_path, dpi=150, bbox_inches="tight")
+            plt.close(parameter_space_fig)
+
+        likelihood_scatter_fig = self._plot_subject_likelihood_scatter(
+            subject_metrics_df,
+            mean_subject_train_likelihood=mean_subject_train_likelihood,
+            mean_subject_eval_likelihood=mean_subject_eval_likelihood,
+            pooled_train_trial_likelihood=pooled_train_trial_likelihood,
+            pooled_eval_trial_likelihood=pooled_eval_trial_likelihood,
+        )
+        likelihood_scatter_path = self.output_dir / "subject_likelihood_scatter.png"
+        likelihood_scatter_fig.savefig(likelihood_scatter_path, dpi=150, bbox_inches="tight")
+        plt.close(likelihood_scatter_fig)
+
+        elapsed_time = time.time() - start_time
+        output: Dict[str, Any] = {
+            "multisubject": True,
+            "fit_strategy": "per_subject",
+            "agent_class": self.agent_class,
+            "agent_kwargs": self.agent_kwargs,
+            "num_subjects": int(len(subject_metrics_df)),
+            "num_trials": metadata.get("num_trials"),
+            "num_sessions": metadata.get("num_sessions"),
+            "mean_subject_train_likelihood": mean_subject_train_likelihood,
+            "mean_subject_eval_likelihood": mean_subject_eval_likelihood,
+            "pooled_train_trial_likelihood": pooled_train_trial_likelihood,
+            "pooled_eval_trial_likelihood": pooled_eval_trial_likelihood,
+            "likelihood_train": pooled_train_trial_likelihood,
+            "likelihood": pooled_eval_trial_likelihood,
+            "elapsed_seconds": float(elapsed_time),
+            "parameter_columns": parameter_columns,
+            "subject_artifacts": {
+                "subject_index_map": str(subject_index_map_path),
+                "subject_fit_metrics_csv": str(subject_metrics_csv_path),
+                "subject_fit_metrics_pickle": str(subject_metrics_pickle_path),
+            },
+            "subject_parameter_state_space_path": (
+                str(parameter_space_path) if parameter_space_path is not None else None
+            ),
+            "subject_likelihood_scatter_path": str(likelihood_scatter_path),
+        }
+
+        output_path = self.output_dir / "baseline_rl_output.json"
+        with output_path.open("w") as f:
+            json.dump(output, f, indent=2, default=_json_default)
+        logger.info("Saved multisubject baseline RL output to %s", output_path)
+
+        if wandb_run is not None:
+            wandb_run.summary["mean_subject_train_likelihood"] = mean_subject_train_likelihood
+            wandb_run.summary["mean_subject_eval_likelihood"] = mean_subject_eval_likelihood
+            wandb_run.summary["pooled_train_trial_likelihood"] = pooled_train_trial_likelihood
+            wandb_run.summary["pooled_eval_trial_likelihood"] = pooled_eval_trial_likelihood
+            wandb_run.summary["likelihood_train"] = pooled_train_trial_likelihood
+            wandb_run.summary["likelihood"] = pooled_eval_trial_likelihood
+            wandb_run.summary["num_subjects"] = int(len(subject_metrics_df))
+            wandb_run.summary["agent_class"] = self.agent_class
+            wandb_run.summary["elapsed_seconds"] = float(elapsed_time)
+            wandb_run.log(
+                {
+                    "subject_fit_metrics": wandb.Table(dataframe=subject_metrics_df),
+                }
+            )
+            media_payload: dict[str, Any] = {
+                "fig/subject_likelihood_scatter": wandb.Image(str(likelihood_scatter_path)),
+            }
+            if parameter_space_path is not None:
+                media_payload["fig/subject_parameter_state_space"] = wandb.Image(
+                    str(parameter_space_path)
+                )
+            wandb_run.log(media_payload)
+
+            artifact_name = f"baseline-rl-output-{getattr(wandb_run, 'id', None) or 'latest'}"
+            artifact = wandb.Artifact(artifact_name, type="training-output")
+            artifact.add_dir(str(self.output_dir))
+            wandb_run.log_artifact(artifact)
+
+        logger.info(
+            "Multisubject baseline RL fitting complete. "
+            "Mean subject train likelihood: %.4f, mean subject eval likelihood: %.4f, "
+            "pooled train likelihood: %.4f, pooled eval likelihood: %.4f",
+            mean_subject_train_likelihood,
+            mean_subject_eval_likelihood,
+            pooled_train_trial_likelihood,
+            pooled_eval_trial_likelihood,
+        )
+        return output
+
+    def _fit_single_subject(
+        self,
+        *,
+        bundle: DatasetBundle,
+        metadata: dict[str, Any],
+        wandb_run: Any | None,
+        start_time: float,
+    ) -> Dict[str, Any]:
         # --- Extract session data ---
         train_choices, train_rewards, eval_choices, eval_rewards = (
             self._extract_session_data(bundle)
@@ -139,13 +854,7 @@ class BaselineRLTrainer(ModelTrainer):
             f"evaluating on {n_eval_sessions} sessions ({n_eval_trials} trials)"
         )
 
-        # --- Instantiate and fit the agent ---
-        agent_class_obj = getattr(generative_model, self.agent_class, None)
-        if agent_class_obj is None:
-            raise ValueError(
-                f"Agent class '{self.agent_class}' not found in "
-                f"aind_dynamic_foraging_models.generative_model"
-            )
+        agent_class_obj = self._resolve_agent_class()
 
         # Create agent for fitting
         agent = agent_class_obj(
@@ -165,13 +874,17 @@ class BaselineRLTrainer(ModelTrainer):
             DE_kwargs=self.DE_kwargs,
         )
 
-        fitted_params = fitting_result.params
+        fitted_params = {
+            param_name: float(param_value)
+            for param_name, param_value in fitting_result.params.items()
+        }
         logger.info(f"Fitted parameters: {fitted_params}")
 
         # --- Evaluate on held-out sessions ---
         # Create a fresh agent with fitted parameters
         eval_agent = agent_class_obj(**self.agent_kwargs, seed=self.seed)
         eval_agent.set_params(**fitted_params)
+        agent.set_params(**fitted_params)
 
         # Run closed-loop simulation on evaluation sessions
         eval_choice_prob_sessions = eval_agent.perform_closed_loop_multi_session(
@@ -179,15 +892,10 @@ class BaselineRLTrainer(ModelTrainer):
         )
         eval_choice_prob_sessions = [np.asarray(arr) for arr in eval_choice_prob_sessions]
 
-        # Compute normalized likelihood on evaluation set
-        # Convert to format expected by rnn_utils.normalized_likelihood
-        # Shape: (n_timesteps, n_episodes, 1) for labels
-        # Shape: (n_timesteps, n_episodes, n_classes) for logits
         eval_likelihood = self._compute_normalized_likelihood(
             eval_choices, eval_choice_prob_sessions
         )
 
-        # Also compute likelihood on training set for reference
         train_choice_prob_sessions = agent.perform_closed_loop_multi_session(
             train_choices, train_rewards
         )
@@ -210,16 +918,21 @@ class BaselineRLTrainer(ModelTrainer):
             )
             eval_q_histories = eval_choice_prob_sessions
 
-        # --- Build output ---
         output: Dict[str, Any] = {
+            "multisubject": False,
+            "fit_strategy": "single_subject",
             "agent_class": self.agent_class,
             "agent_kwargs": self.agent_kwargs,
             "fitted_params": fitted_params,
-            "n_free_params": fitting_result.k_model,
+            "n_free_params": int(fitting_result.k_model),
             "num_train_sessions": n_train_sessions,
             "num_eval_sessions": n_eval_sessions,
             "num_train_trials": n_train_trials,
             "num_eval_trials": n_eval_trials,
+            "mean_subject_train_likelihood": float(train_likelihood),
+            "mean_subject_eval_likelihood": float(eval_likelihood),
+            "pooled_train_trial_likelihood": float(train_likelihood),
+            "pooled_eval_trial_likelihood": float(eval_likelihood),
             "likelihood": float(eval_likelihood),
             "likelihood_train": float(train_likelihood),
             "log_likelihood_train": float(fitting_result.log_likelihood),
@@ -228,7 +941,6 @@ class BaselineRLTrainer(ModelTrainer):
             "BIC": float(fitting_result.BIC),
         }
 
-        # Compare to groundtruth likelihood if available
         gt_likelihood = metadata.get("avg_eval_likelihood_groundtruth")
         if gt_likelihood is not None:
             output["groundtruth_likelihood"] = float(gt_likelihood)
@@ -236,20 +948,17 @@ class BaselineRLTrainer(ModelTrainer):
                 float(eval_likelihood) / float(gt_likelihood)
             )
 
-        # Include metadata
         output["num_trials"] = metadata.get("num_trials")
         output["num_sessions"] = metadata.get("num_sessions")
 
         elapsed_time = time.time() - start_time
         output["elapsed_seconds"] = float(elapsed_time)
 
-        # --- Save outputs ---
         output_path = self.output_dir / "baseline_rl_output.json"
-        with open(output_path, "w") as f:
-            json.dump(output, f, indent=4, default=str)
+        with output_path.open("w") as f:
+            json.dump(output, f, indent=4, default=_json_default)
         logger.info(f"Saved output to {output_path}")
 
-        # --- Generate parameter recovery plot if session_details available ---
         extras = bundle.extras or {}
         session_details = extras.get("session_details")
         eval_every_n = metadata.get("eval_every_n", 2)
@@ -265,7 +974,6 @@ class BaselineRLTrainer(ModelTrainer):
             )
             output["parameter_recovery_plot_path"] = str(plot_path)
 
-        # --- Generate heldout-style Q/probability examples for train/eval sessions ---
         train_examples_summary: dict[str, Any] = {
             "split": "train",
             "plotting_failed": True,
@@ -412,12 +1120,15 @@ class BaselineRLTrainer(ModelTrainer):
         if eval_plot_paths:
             output["eval_choice_reward_fitted_prob_plot_path"] = str(eval_plot_paths[0])
 
-        # --- Log to wandb ---
         if wandb_run is not None:
-            wandb_run.summary["eval_likelihood"] = float(eval_likelihood)
+            wandb_run.summary["mean_subject_train_likelihood"] = float(train_likelihood)
+            wandb_run.summary["mean_subject_eval_likelihood"] = float(eval_likelihood)
+            wandb_run.summary["pooled_train_trial_likelihood"] = float(train_likelihood)
+            wandb_run.summary["pooled_eval_trial_likelihood"] = float(eval_likelihood)
             wandb_run.summary["likelihood_train"] = float(train_likelihood)
+            wandb_run.summary["likelihood"] = float(eval_likelihood)
             wandb_run.summary["agent_class"] = self.agent_class
-            wandb_run.summary["n_free_params"] = fitting_result.k_model
+            wandb_run.summary["n_free_params"] = int(fitting_result.k_model)
             wandb_run.summary["elapsed_seconds"] = float(elapsed_time)
 
             if gt_likelihood is not None:
@@ -426,11 +1137,9 @@ class BaselineRLTrainer(ModelTrainer):
                     float(eval_likelihood) / float(gt_likelihood)
                 )
 
-            # Log fitted parameters individually
             for param_name, param_value in fitted_params.items():
                 wandb_run.summary[f"param/{param_name}"] = float(param_value)
 
-            # Log parameter recovery plot to wandb
             if param_recovery_fig is not None:
                 wandb_run.log({"parameter_recovery": wandb.Image(param_recovery_fig)})
                 logger.info("Logged parameter recovery plot to W&B")
@@ -453,13 +1162,11 @@ class BaselineRLTrainer(ModelTrainer):
                     }
                 )
 
-            # Upload output as artifact
             artifact_name = f"baseline-rl-output-{getattr(wandb_run, 'id', None) or 'latest'}"
             artifact = wandb.Artifact(artifact_name, type="training-output")
             artifact.add_dir(str(self.output_dir))
             wandb_run.log_artifact(artifact)
 
-        # Close figure to free memory
         if param_recovery_fig is not None:
             plt.close(param_recovery_fig)
 
@@ -470,6 +1177,40 @@ class BaselineRLTrainer(ModelTrainer):
         )
 
         return output
+
+    def fit(
+        self,
+        bundle: DatasetBundle,
+        loggers: dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        """Fit the RL model and compute likelihood on evaluation set.
+
+        Args:
+            bundle: DatasetBundle containing training/evaluation data.
+            loggers: Optional dict with logger instances (e.g., {"wandb": wandb_run}).
+
+        Returns:
+            Dictionary with fitted parameters and likelihood metrics.
+        """
+        start_time = time.time()
+        metadata = dict(bundle.metadata)
+
+        wandb_run = None
+        if loggers and "wandb" in loggers:
+            wandb_run = loggers["wandb"]
+        if self._is_multisubject_mode(metadata):
+            return self._fit_multisubject(
+                bundle=bundle,
+                metadata=metadata,
+                wandb_run=wandb_run,
+                start_time=start_time,
+            )
+        return self._fit_single_subject(
+            bundle=bundle,
+            metadata=metadata,
+            wandb_run=wandb_run,
+            start_time=start_time,
+        )
 
     def _plot_choice_reward_and_fitted_prob(
         self,

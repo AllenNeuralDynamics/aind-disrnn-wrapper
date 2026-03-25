@@ -1,11 +1,21 @@
 """Unit tests for BaselineRLTrainer using aind-dynamic-foraging-models."""
 
+import json
 import os
-import numpy as np
+import tempfile
+import types
 import unittest
+from pathlib import Path
 
+import numpy as np
+import pandas as pd
+
+from aind_dynamic_foraging_models import generative_model
+
+from base.types import DatasetBundle
 from model_trainers.baseline_rl_trainer import BaselineRLTrainer
 from data_loaders.synthetic import SyntheticCognitiveAgents
+from utils.baseline_rl_evaluation import evaluate_baseline_rl_on_heldout_subjects
 
 
 class TestBaselineRLTrainer(unittest.TestCase):
@@ -53,6 +63,69 @@ class TestBaselineRLTrainer(unittest.TestCase):
             eval_every_n=2,
         )
         self.bundle = self.loader.load()
+        self.multisubject_bundle = self._make_multisubject_bundle()
+
+    def _make_multisubject_bundle(self) -> DatasetBundle:
+        raw_df = self.bundle.raw.copy()
+        session_ids = list(dict.fromkeys(raw_df["ses_idx"].tolist()))
+        subject_specs = [
+            (101, "Curriculum A", session_ids[:3]),
+            (202, "Curriculum B", session_ids[3:6]),
+        ]
+
+        session_frames = []
+        train_session_ids = []
+        eval_session_ids = []
+        subject_id_to_index = {}
+        index_to_subject_id = {}
+        subject_curricula = {}
+
+        for subject_index, (subject_id, curriculum_name, subject_session_ids) in enumerate(subject_specs):
+            subject_id_to_index[subject_id] = subject_index
+            index_to_subject_id[subject_index] = subject_id
+            subject_curricula[subject_id] = curriculum_name
+
+            for local_session_index, session_id in enumerate(subject_session_ids):
+                session_df = raw_df[raw_df["ses_idx"] == session_id].copy()
+                session_df["subject_id"] = subject_id
+                session_df["curriculum_name"] = curriculum_name
+                session_df["source_ses_idx"] = session_df["ses_idx"]
+                unique_session_id = f"{subject_id}__{local_session_index}"
+                session_df["ses_idx"] = unique_session_id
+                session_frames.append(session_df)
+
+                if local_session_index == 1:
+                    eval_session_ids.append(unique_session_id)
+                else:
+                    train_session_ids.append(unique_session_id)
+
+        multisubject_raw = (
+            pd.concat(session_frames, ignore_index=True)
+            .sort_values(["ses_idx", "trial"])
+            .reset_index(drop=True)
+        )
+        metadata = dict(self.bundle.metadata)
+        metadata.update(
+            {
+                "multisubject": True,
+                "subject_ids": [spec[0] for spec in subject_specs],
+                "subject_id_to_index": subject_id_to_index,
+                "index_to_subject_id": index_to_subject_id,
+                "num_subjects": len(subject_specs),
+                "subject_curricula": subject_curricula,
+                "train_session_ids": train_session_ids,
+                "eval_session_ids": eval_session_ids,
+                "num_trials": int(len(multisubject_raw)),
+                "num_sessions": int(multisubject_raw["ses_idx"].nunique()),
+            }
+        )
+        return DatasetBundle(
+            raw=multisubject_raw,
+            train_set=None,
+            eval_set=None,
+            metadata=metadata,
+            extras={},
+        )
 
     def test_instantiation(self):
         """Test that BaselineRLTrainer can be instantiated."""
@@ -107,6 +180,10 @@ class TestBaselineRLTrainer(unittest.TestCase):
         self.assertIsInstance(output["fitted_params"], dict)
         self.assertIsInstance(output["n_free_params"], int)
         self.assertIsInstance(output["elapsed_seconds"], float)
+        self.assertEqual(output["mean_subject_train_likelihood"], output["likelihood_train"])
+        self.assertEqual(output["mean_subject_eval_likelihood"], output["likelihood"])
+        self.assertEqual(output["pooled_train_trial_likelihood"], output["likelihood_train"])
+        self.assertEqual(output["pooled_eval_trial_likelihood"], output["likelihood"])
 
     def test_fitted_parameters(self):
         """Test that fitted parameters are reasonable."""
@@ -460,6 +537,194 @@ class TestBaselineRLTrainer(unittest.TestCase):
         print(f"\nLikelihood: {output['likelihood']:.4f}")
         print(f"Groundtruth: {output['groundtruth_likelihood']:.4f}")
         print(f"Ratio: {output['likelihood_relative_to_groundtruth']:.4f}")
+
+    def test_multisubject_fit_exports_subject_artifacts_and_metrics(self):
+        """Test that multisubject baseline RL saves per-subject artifacts and metrics."""
+        with tempfile.TemporaryDirectory(prefix="baseline_rl_multisubject_") as tmpdir:
+            trainer = BaselineRLTrainer(
+                architecture={"multisubject": True},
+                agent_class="ForagerQLearning",
+                agent_kwargs={
+                    "number_of_learning_rate": 2,
+                    "number_of_forget_rate": 1,
+                    "choice_kernel": "none",
+                    "action_selection": "softmax",
+                },
+                DE_kwargs={"workers": 1, "maxiter": 2, "popsize": 5},
+                output_dir=tmpdir,
+                seed=42,
+            )
+
+            output = trainer.fit(self.multisubject_bundle)
+
+            self.assertTrue(output["multisubject"])
+            self.assertEqual(output["fit_strategy"], "per_subject")
+            self.assertIn("mean_subject_train_likelihood", output)
+            self.assertIn("mean_subject_eval_likelihood", output)
+            self.assertIn("pooled_train_trial_likelihood", output)
+            self.assertIn("pooled_eval_trial_likelihood", output)
+            self.assertEqual(output["likelihood_train"], output["pooled_train_trial_likelihood"])
+            self.assertEqual(output["likelihood"], output["pooled_eval_trial_likelihood"])
+
+            subject_artifacts = output["subject_artifacts"]
+            subject_index_map_path = Path(subject_artifacts["subject_index_map"])
+            subject_metrics_csv_path = Path(subject_artifacts["subject_fit_metrics_csv"])
+            subject_metrics_pickle_path = Path(subject_artifacts["subject_fit_metrics_pickle"])
+            parameter_space_path = Path(output["subject_parameter_state_space_path"])
+            likelihood_scatter_path = Path(output["subject_likelihood_scatter_path"])
+
+            self.assertTrue(subject_index_map_path.exists())
+            self.assertTrue(subject_metrics_csv_path.exists())
+            self.assertTrue(subject_metrics_pickle_path.exists())
+            self.assertTrue(parameter_space_path.exists())
+            self.assertTrue(likelihood_scatter_path.exists())
+
+            subject_metrics_df = pd.read_csv(subject_metrics_csv_path)
+            self.assertEqual(len(subject_metrics_df), 2)
+            self.assertEqual(subject_metrics_df["subject_index"].tolist(), [0, 1])
+            self.assertCountEqual(
+                subject_metrics_df["curriculum_name"].tolist(),
+                ["Curriculum A", "Curriculum B"],
+            )
+            self.assertAlmostEqual(
+                output["mean_subject_train_likelihood"],
+                float(subject_metrics_df["train_likelihood"].mean()),
+                places=6,
+            )
+            self.assertAlmostEqual(
+                output["mean_subject_eval_likelihood"],
+                float(subject_metrics_df["eval_likelihood"].mean()),
+                places=6,
+            )
+
+            pooled_train_choices = []
+            pooled_train_probs = []
+            pooled_eval_choices = []
+            pooled_eval_probs = []
+            agent_class_obj = generative_model.ForagerQLearning
+
+            for subject_id in subject_metrics_df["subject_id"].tolist():
+                subject_summary_path = (
+                    Path(tmpdir)
+                    / "subjects"
+                    / str(subject_id)
+                    / "fit_summary.json"
+                )
+                self.assertTrue(subject_summary_path.exists())
+                with subject_summary_path.open("r") as f:
+                    subject_summary = json.load(f)
+
+                subject_df = self.multisubject_bundle.raw[
+                    self.multisubject_bundle.raw["subject_id"] == subject_summary["subject_id"]
+                ].copy()
+                train_choices, train_rewards, _ = trainer._extract_sessions_from_raw_df(
+                    subject_df,
+                    session_ids=subject_summary["train_session_ids"],
+                )
+                eval_choices, eval_rewards, _ = trainer._extract_sessions_from_raw_df(
+                    subject_df,
+                    session_ids=subject_summary["eval_session_ids"],
+                )
+
+                agent = agent_class_obj(**trainer.agent_kwargs, seed=trainer.seed)
+                agent.set_params(**subject_summary["fitted_params"])
+                pooled_train_choices.extend(train_choices)
+                pooled_train_probs.extend(
+                    [
+                        np.asarray(arr)
+                        for arr in agent.perform_closed_loop_multi_session(
+                            train_choices,
+                            train_rewards,
+                        )
+                    ]
+                )
+
+                eval_agent = agent_class_obj(**trainer.agent_kwargs, seed=trainer.seed)
+                eval_agent.set_params(**subject_summary["fitted_params"])
+                pooled_eval_choices.extend(eval_choices)
+                pooled_eval_probs.extend(
+                    [
+                        np.asarray(arr)
+                        for arr in eval_agent.perform_closed_loop_multi_session(
+                            eval_choices,
+                            eval_rewards,
+                        )
+                    ]
+                )
+
+            self.assertAlmostEqual(
+                output["pooled_train_trial_likelihood"],
+                trainer._compute_normalized_likelihood(pooled_train_choices, pooled_train_probs),
+                places=6,
+            )
+            self.assertAlmostEqual(
+                output["pooled_eval_trial_likelihood"],
+                trainer._compute_normalized_likelihood(pooled_eval_choices, pooled_eval_probs),
+                places=6,
+            )
+
+    def test_multisubject_parameter_space_plot_skips_when_fewer_than_two_params_vary(self):
+        """Test that the subject parameter-space plot is skipped cleanly when needed."""
+        trainer = BaselineRLTrainer(
+            architecture={"multisubject": True},
+            agent_class="ForagerQLearning",
+            agent_kwargs={
+                "number_of_learning_rate": 2,
+                "number_of_forget_rate": 1,
+                "choice_kernel": "none",
+                "action_selection": "softmax",
+            },
+            seed=42,
+        )
+
+        subject_metrics_df = pd.DataFrame(
+            [
+                {
+                    "subject_index": 0,
+                    "subject_id": 101,
+                    "curriculum_name": "Curriculum A",
+                    "learn_rate_rew": 0.2,
+                    "biasL": 0.0,
+                },
+                {
+                    "subject_index": 1,
+                    "subject_id": 202,
+                    "curriculum_name": "Curriculum B",
+                    "learn_rate_rew": 0.4,
+                    "biasL": 0.0,
+                },
+            ]
+        )
+        fig = trainer._plot_subject_parameter_state_space(
+            subject_metrics_df,
+            parameter_columns=["learn_rate_rew", "biasL"],
+        )
+        self.assertIsNone(fig)
+
+    def test_heldout_eval_skips_multisubject_per_subject_outputs(self):
+        """Test that held-out evaluation skips multisubject per-subject runs."""
+        with tempfile.TemporaryDirectory(prefix="baseline_rl_heldout_skip_") as tmpdir:
+            output_path = Path(tmpdir) / "baseline_rl_output.json"
+            with output_path.open("w") as f:
+                json.dump(
+                    {
+                        "multisubject": True,
+                        "fit_strategy": "per_subject",
+                    },
+                    f,
+                )
+
+            hydra_config = types.SimpleNamespace(
+                data=types.SimpleNamespace(),
+                model=types.SimpleNamespace(
+                    type="baseline_rl",
+                    output_dir=tmpdir,
+                ),
+            )
+            summary = evaluate_baseline_rl_on_heldout_subjects(hydra_config)
+            self.assertIsNotNone(summary)
+            self.assertTrue(summary["skipped"])
+            self.assertIn("multisubject baseline RL", summary["reason"])
 
 
 if __name__ == "__main__":
