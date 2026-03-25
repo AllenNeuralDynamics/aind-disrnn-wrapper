@@ -543,6 +543,7 @@ class TestBaselineRLTrainer(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="baseline_rl_multisubject_") as tmpdir:
             trainer = BaselineRLTrainer(
                 architecture={"multisubject": True},
+                multisubject_subject_workers=2,
                 agent_class="ForagerQLearning",
                 agent_kwargs={
                     "number_of_learning_rate": 2,
@@ -550,7 +551,14 @@ class TestBaselineRLTrainer(unittest.TestCase):
                     "choice_kernel": "none",
                     "action_selection": "softmax",
                 },
-                DE_kwargs={"workers": 1, "maxiter": 2, "popsize": 5},
+                DE_kwargs={
+                    "workers": 4,
+                    "maxiter": 2,
+                    "popsize": 5,
+                    "mutation": (0.5, 0.9),
+                    "recombination": 0.6,
+                    "polish": False,
+                },
                 output_dir=tmpdir,
                 seed=42,
             )
@@ -565,6 +573,8 @@ class TestBaselineRLTrainer(unittest.TestCase):
             self.assertIn("pooled_eval_trial_likelihood", output)
             self.assertEqual(output["likelihood_train"], output["pooled_train_trial_likelihood"])
             self.assertEqual(output["likelihood"], output["pooled_eval_trial_likelihood"])
+            self.assertEqual(output["multisubject_subject_workers"], 2)
+            self.assertEqual(output["effective_de_workers_per_subject"], 1)
 
             subject_artifacts = output["subject_artifacts"]
             subject_index_map_path = Path(subject_artifacts["subject_index_map"])
@@ -662,6 +672,34 @@ class TestBaselineRLTrainer(unittest.TestCase):
                 trainer._compute_normalized_likelihood(pooled_eval_choices, pooled_eval_probs),
                 places=6,
             )
+
+    def test_multisubject_effective_de_kwargs_force_one_worker_and_preserve_other_options(self):
+        """Test that multisubject mode forces one DE worker per subject."""
+        trainer = BaselineRLTrainer(
+            architecture={"multisubject": True},
+            agent_class="ForagerQLearning",
+            agent_kwargs={
+                "number_of_learning_rate": 2,
+                "number_of_forget_rate": 1,
+                "choice_kernel": "none",
+                "action_selection": "softmax",
+            },
+            DE_kwargs={
+                "workers": 8,
+                "popsize": 11,
+                "mutation": (0.4, 0.95),
+                "recombination": 0.55,
+                "polish": False,
+            },
+            seed=42,
+        )
+
+        effective_kwargs = trainer._effective_multisubject_de_kwargs()
+        self.assertEqual(effective_kwargs["workers"], 1)
+        self.assertEqual(effective_kwargs["popsize"], 11)
+        self.assertEqual(tuple(effective_kwargs["mutation"]), (0.4, 0.95))
+        self.assertEqual(effective_kwargs["recombination"], 0.55)
+        self.assertFalse(effective_kwargs["polish"])
 
     def test_multisubject_parameter_space_plot_skips_when_fewer_than_two_params_vary(self):
         """Test that the subject parameter-space plot is skipped cleanly when needed."""

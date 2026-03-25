@@ -55,6 +55,7 @@ model:
   _target_: model_trainers.baseline_rl_trainer.BaselineRLTrainer
   architecture:
     multisubject: false
+  multisubject_subject_workers: 1  # Number of subjects to fit concurrently in multisubject mode
   # Agent class from aind_dynamic_foraging_models.generative_model
   # Options: ForagerQLearning, ForagerLossCounting, ForagerCompareThreshold
   agent_class: ForagerQLearning
@@ -77,8 +78,11 @@ model:
   clamp_params: {}
   # Differential evolution optimizer settings
   DE_kwargs:
-    workers: 1  # Number of parallel workers (increase for faster fitting)
-    # Other DE options: popsize, mutation, recombination, polish, etc.
+    workers: 1        # Used in single-subject mode; multisubject mode forces 1 worker per subject
+    popsize: 15
+    mutation: [0.5, 1.0]
+    recombination: 0.7
+    polish: true
   seed: ${seed}
   run_name_component: baseline_rl_${.agent_class}_L${.agent_kwargs.number_of_learning_rate}F${.agent_kwargs.number_of_forget_rate}
 

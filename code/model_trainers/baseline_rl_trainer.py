@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import concurrent.futures
 import itertools
 import json
 import logging
@@ -70,6 +71,50 @@ def _compute_negLL_from_choice_prob(
     return -log_lik
 
 
+def _compute_likelihood_stats(
+    choice_sessions: List[np.ndarray],
+    choice_prob_sessions: List[np.ndarray],
+) -> dict[str, float | int]:
+    """Return aggregate log-likelihood stats plus normalized likelihood."""
+    total_log_lik = 0.0
+    total_trials = 0
+
+    for choices, choice_prob in zip(choice_sessions, choice_prob_sessions):
+        choice_prob = np.asarray(choice_prob)
+        n_trials = min(len(choices), int(choice_prob.shape[1]))
+        if n_trials == 0:
+            continue
+        choices_idx = np.asarray(choices[:n_trials], dtype=int)
+        valid = choices_idx >= 0
+        if not np.any(valid):
+            continue
+        trial_idx = np.arange(n_trials)[valid]
+        probs = choice_prob[choices_idx[valid], trial_idx]
+        probs = np.clip(probs, 1e-10, 1.0 - 1e-10)
+        total_log_lik += float(np.sum(np.log(probs)))
+        total_trials += int(np.sum(valid))
+
+    normalized_likelihood = _normalized_likelihood_from_log_stats(
+        total_log_lik,
+        total_trials,
+    )
+    return {
+        "total_log_likelihood": float(total_log_lik),
+        "total_trials": int(total_trials),
+        "normalized_likelihood": float(normalized_likelihood),
+    }
+
+
+def _normalized_likelihood_from_log_stats(
+    total_log_likelihood: float,
+    total_trials: int,
+) -> float:
+    """Return geometric-mean likelihood from aggregate log-likelihood stats."""
+    if total_trials <= 0:
+        return 0.0
+    return float(np.exp(float(total_log_likelihood) / float(total_trials)))
+
+
 def _json_default(value: Any) -> Any:
     """Convert numpy-backed values into JSON-serializable Python objects."""
     if isinstance(value, np.ndarray):
@@ -77,6 +122,113 @@ def _json_default(value: Any) -> Any:
     if isinstance(value, np.generic):
         return value.item()
     raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
+def _fit_subject_sessions_impl(
+    *,
+    agent_class: str,
+    agent_kwargs: Mapping[str, Any],
+    fit_bounds_override: Mapping[str, Any],
+    clamp_params: Mapping[str, Any],
+    DE_kwargs: Mapping[str, Any],
+    seed: int | None,
+    train_choices: List[np.ndarray],
+    train_rewards: List[np.ndarray],
+    eval_choices: List[np.ndarray],
+    eval_rewards: List[np.ndarray],
+    include_choice_prob_sessions: bool,
+) -> dict[str, Any]:
+    """Fit one subject's sessions and return summary metrics."""
+    agent_class_obj = getattr(generative_model, agent_class, None)
+    if agent_class_obj is None:
+        raise ValueError(
+            f"Agent class '{agent_class}' not found in "
+            f"aind_dynamic_foraging_models.generative_model"
+        )
+
+    agent = agent_class_obj(
+        **dict(agent_kwargs),
+        seed=seed,
+    )
+    fitting_result, _ = agent.fit(
+        fit_choice_history=train_choices,
+        fit_reward_history=train_rewards,
+        fit_bounds_override=dict(fit_bounds_override),
+        clamp_params=dict(clamp_params),
+        DE_kwargs=dict(DE_kwargs),
+    )
+
+    fitted_params = {
+        param_name: float(param_value)
+        for param_name, param_value in fitting_result.params.items()
+    }
+    agent.set_params(**fitted_params)
+
+    train_choice_prob_sessions = agent.perform_closed_loop_multi_session(
+        train_choices,
+        train_rewards,
+    )
+    train_choice_prob_sessions = [np.asarray(arr) for arr in train_choice_prob_sessions]
+    train_stats = _compute_likelihood_stats(
+        train_choices,
+        train_choice_prob_sessions,
+    )
+
+    eval_agent = agent_class_obj(**dict(agent_kwargs), seed=seed)
+    eval_agent.set_params(**fitted_params)
+    eval_choice_prob_sessions = eval_agent.perform_closed_loop_multi_session(
+        eval_choices,
+        eval_rewards,
+    )
+    eval_choice_prob_sessions = [np.asarray(arr) for arr in eval_choice_prob_sessions]
+    eval_stats = _compute_likelihood_stats(
+        eval_choices,
+        eval_choice_prob_sessions,
+    )
+
+    output = {
+        "fitted_params": fitted_params,
+        "n_free_params": int(fitting_result.k_model),
+        "train_likelihood": float(train_stats["normalized_likelihood"]),
+        "eval_likelihood": float(eval_stats["normalized_likelihood"]),
+        "train_total_log_likelihood": float(train_stats["total_log_likelihood"]),
+        "train_total_trials": int(train_stats["total_trials"]),
+        "eval_total_log_likelihood": float(eval_stats["total_log_likelihood"]),
+        "eval_total_trials": int(eval_stats["total_trials"]),
+        "log_likelihood_train": float(fitting_result.log_likelihood),
+        "LPT_train": float(fitting_result.LPT),
+        "AIC": float(fitting_result.AIC),
+        "BIC": float(fitting_result.BIC),
+    }
+    if include_choice_prob_sessions:
+        output["train_choice_prob_sessions"] = train_choice_prob_sessions
+        output["eval_choice_prob_sessions"] = eval_choice_prob_sessions
+    return output
+
+
+def _fit_multisubject_subject_worker(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Worker entrypoint for fitting one subject in multisubject baseline RL."""
+    fit_summary = _fit_subject_sessions_impl(
+        agent_class=str(payload["agent_class"]),
+        agent_kwargs=dict(payload["agent_kwargs"]),
+        fit_bounds_override=dict(payload["fit_bounds_override"]),
+        clamp_params=dict(payload["clamp_params"]),
+        DE_kwargs=dict(payload["DE_kwargs"]),
+        seed=payload.get("seed"),
+        train_choices=list(payload["train_choices"]),
+        train_rewards=list(payload["train_rewards"]),
+        eval_choices=list(payload["eval_choices"]),
+        eval_rewards=list(payload["eval_rewards"]),
+        include_choice_prob_sessions=False,
+    )
+    return {
+        "subject_id": payload["subject_id"],
+        "subject_index": int(payload["subject_index"]),
+        "curriculum_name": payload["curriculum_name"],
+        "train_session_ids": list(payload["train_session_ids"]),
+        "eval_session_ids": list(payload["eval_session_ids"]),
+        **fit_summary,
+    }
 
 
 class BaselineRLTrainer(ModelTrainer):
@@ -95,6 +247,7 @@ class BaselineRLTrainer(ModelTrainer):
         fit_bounds_override: Mapping[str, Any] | DictConfig = {},
         clamp_params: Mapping[str, Any] | DictConfig = {},
         DE_kwargs: Mapping[str, Any] | DictConfig = {"workers": 1},
+        multisubject_subject_workers: int = 1,
         output_dir: str = "/results/outputs",
         seed: int | None = None,
         **_: Any,
@@ -119,6 +272,7 @@ class BaselineRLTrainer(ModelTrainer):
         self.fit_bounds_override = _to_dict(fit_bounds_override)
         self.clamp_params = _to_dict(clamp_params)
         self.DE_kwargs = _to_dict(DE_kwargs)
+        self.multisubject_subject_workers = int(multisubject_subject_workers)
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -136,6 +290,18 @@ class BaselineRLTrainer(ModelTrainer):
                 f"aind_dynamic_foraging_models.generative_model"
             )
         return agent_class_obj
+
+    def _resolve_multisubject_subject_workers(self, n_subjects: int) -> int:
+        if self.multisubject_subject_workers <= 0:
+            raise ValueError("multisubject_subject_workers must be a positive integer.")
+        if n_subjects <= 0:
+            raise ValueError("n_subjects must be positive.")
+        return min(int(self.multisubject_subject_workers), int(n_subjects))
+
+    def _effective_multisubject_de_kwargs(self) -> dict[str, Any]:
+        effective_kwargs = dict(self.DE_kwargs)
+        effective_kwargs["workers"] = 1
+        return effective_kwargs
 
     def _resolve_subject_curricula(
         self,
@@ -327,69 +493,32 @@ class BaselineRLTrainer(ModelTrainer):
         train_rewards: List[np.ndarray],
         eval_choices: List[np.ndarray],
         eval_rewards: List[np.ndarray],
+        include_choice_prob_sessions: bool = True,
     ) -> dict[str, Any]:
-        agent_class_obj = self._resolve_agent_class()
-        agent = agent_class_obj(
-            **self.agent_kwargs,
-            seed=self.seed,
-        )
         logger.info(
             "Fitting %s with kwargs: %s",
             self.agent_class,
             self.agent_kwargs,
         )
-        logger.info("Agent has %d free parameters", len(agent.params_list_free))
-
-        fitting_result, _ = agent.fit(
-            fit_choice_history=train_choices,
-            fit_reward_history=train_rewards,
+        agent_class_obj = self._resolve_agent_class()
+        agent_for_metadata = agent_class_obj(**self.agent_kwargs, seed=self.seed)
+        logger.info(
+            "Agent has %d free parameters",
+            len(agent_for_metadata.params_list_free),
+        )
+        return _fit_subject_sessions_impl(
+            agent_class=self.agent_class,
+            agent_kwargs=self.agent_kwargs,
             fit_bounds_override=self.fit_bounds_override,
             clamp_params=self.clamp_params,
             DE_kwargs=self.DE_kwargs,
+            seed=self.seed,
+            train_choices=train_choices,
+            train_rewards=train_rewards,
+            eval_choices=eval_choices,
+            eval_rewards=eval_rewards,
+            include_choice_prob_sessions=include_choice_prob_sessions,
         )
-
-        fitted_params = {
-            param_name: float(param_value)
-            for param_name, param_value in fitting_result.params.items()
-        }
-        agent.set_params(**fitted_params)
-
-        train_choice_prob_sessions = agent.perform_closed_loop_multi_session(
-            train_choices,
-            train_rewards,
-        )
-        train_choice_prob_sessions = [
-            np.asarray(arr) for arr in train_choice_prob_sessions
-        ]
-        train_likelihood = self._compute_normalized_likelihood(
-            train_choices,
-            train_choice_prob_sessions,
-        )
-
-        eval_agent = agent_class_obj(**self.agent_kwargs, seed=self.seed)
-        eval_agent.set_params(**fitted_params)
-        eval_choice_prob_sessions = eval_agent.perform_closed_loop_multi_session(
-            eval_choices,
-            eval_rewards,
-        )
-        eval_choice_prob_sessions = [np.asarray(arr) for arr in eval_choice_prob_sessions]
-        eval_likelihood = self._compute_normalized_likelihood(
-            eval_choices,
-            eval_choice_prob_sessions,
-        )
-
-        return {
-            "fitted_params": fitted_params,
-            "n_free_params": int(fitting_result.k_model),
-            "train_likelihood": float(train_likelihood),
-            "eval_likelihood": float(eval_likelihood),
-            "log_likelihood_train": float(fitting_result.log_likelihood),
-            "LPT_train": float(fitting_result.LPT),
-            "AIC": float(fitting_result.AIC),
-            "BIC": float(fitting_result.BIC),
-            "train_choice_prob_sessions": train_choice_prob_sessions,
-            "eval_choice_prob_sessions": eval_choice_prob_sessions,
-        }
 
     def _parameter_display_name(self, param_name: str) -> str:
         try:
@@ -634,28 +763,78 @@ class BaselineRLTrainer(ModelTrainer):
         subject_output_dir = self.output_dir / "subjects"
         subject_output_dir.mkdir(parents=True, exist_ok=True)
 
-        per_subject_rows: list[dict[str, Any]] = []
-        per_subject_summaries: list[dict[str, Any]] = []
-        parameter_columns: List[str] | None = None
-        all_train_choices: List[np.ndarray] = []
-        all_train_choice_prob_sessions: List[np.ndarray] = []
-        all_eval_choices: List[np.ndarray] = []
-        all_eval_choice_prob_sessions: List[np.ndarray] = []
+        subject_parallel_workers = self._resolve_multisubject_subject_workers(
+            len(subject_records)
+        )
+        effective_subject_de_kwargs = self._effective_multisubject_de_kwargs()
+        worker_payloads = [
+            {
+                "agent_class": self.agent_class,
+                "agent_kwargs": self.agent_kwargs,
+                "fit_bounds_override": self.fit_bounds_override,
+                "clamp_params": self.clamp_params,
+                "DE_kwargs": effective_subject_de_kwargs,
+                "seed": self.seed,
+                "subject_id": subject_record["subject_id"],
+                "subject_index": int(subject_record["subject_index"]),
+                "curriculum_name": str(subject_record["curriculum_name"]),
+                "train_choices": subject_record["train_choices"],
+                "train_rewards": subject_record["train_rewards"],
+                "eval_choices": subject_record["eval_choices"],
+                "eval_rewards": subject_record["eval_rewards"],
+                "train_session_ids": subject_record["train_session_ids"],
+                "eval_session_ids": subject_record["eval_session_ids"],
+            }
+            for subject_record in subject_records
+        ]
 
-        for subject_record in subject_records:
-            subject_id = subject_record["subject_id"]
-            subject_index = int(subject_record["subject_index"])
+        per_subject_rows: list[dict[str, Any]] = []
+        parameter_columns: List[str] | None = None
+        per_subject_results: list[dict[str, Any]] = []
+
+        if subject_parallel_workers == 1:
+            for payload in worker_payloads:
+                logger.info(
+                    "Fitting multisubject baseline RL subject_id=%s (subject_index=%d) sequentially",
+                    payload["subject_id"],
+                    int(payload["subject_index"]),
+                )
+                per_subject_results.append(
+                    _fit_multisubject_subject_worker(payload)
+                )
+        else:
             logger.info(
-                "Fitting multisubject baseline RL subject_id=%s (subject_index=%d)",
-                subject_id,
-                subject_index,
+                "Fitting %d multisubject baseline RL subjects in parallel with %d subject workers; "
+                "effective DE workers per subject=%d",
+                len(worker_payloads),
+                subject_parallel_workers,
+                int(effective_subject_de_kwargs.get("workers", 1)),
             )
-            fit_summary = self._fit_subject_sessions(
-                train_choices=subject_record["train_choices"],
-                train_rewards=subject_record["train_rewards"],
-                eval_choices=subject_record["eval_choices"],
-                eval_rewards=subject_record["eval_rewards"],
-            )
+            with concurrent.futures.ProcessPoolExecutor(
+                max_workers=subject_parallel_workers
+            ) as executor:
+                future_to_subject = {
+                    executor.submit(_fit_multisubject_subject_worker, payload): (
+                        payload["subject_id"],
+                        int(payload["subject_index"]),
+                    )
+                    for payload in worker_payloads
+                }
+                for future in concurrent.futures.as_completed(future_to_subject):
+                    subject_id, subject_index = future_to_subject[future]
+                    result = future.result()
+                    logger.info(
+                        "Completed multisubject baseline RL fit for subject_id=%s "
+                        "(subject_index=%d)",
+                        subject_id,
+                        subject_index,
+                    )
+                    per_subject_results.append(result)
+
+        per_subject_results.sort(key=lambda item: int(item["subject_index"]))
+        for fit_summary in per_subject_results:
+            subject_id = fit_summary["subject_id"]
+            subject_index = int(fit_summary["subject_index"])
 
             if parameter_columns is None:
                 parameter_columns = list(fit_summary["fitted_params"].keys())
@@ -665,29 +844,32 @@ class BaselineRLTrainer(ModelTrainer):
                 "agent_kwargs": self.agent_kwargs,
                 "subject_id": normalize_subject_id(subject_id),
                 "subject_index": subject_index,
-                "curriculum_name": str(subject_record["curriculum_name"]),
-                "num_train_sessions": int(len(subject_record["train_choices"])),
-                "num_eval_sessions": int(len(subject_record["eval_choices"])),
-                "num_train_trials": int(sum(len(arr) for arr in subject_record["train_choices"])),
-                "num_eval_trials": int(sum(len(arr) for arr in subject_record["eval_choices"])),
+                "curriculum_name": str(fit_summary["curriculum_name"]),
+                "num_train_sessions": int(len(fit_summary["train_session_ids"])),
+                "num_eval_sessions": int(len(fit_summary["eval_session_ids"])),
+                "num_train_trials": int(fit_summary["train_total_trials"]),
+                "num_eval_trials": int(fit_summary["eval_total_trials"]),
                 "train_session_ids": [
                     _normalize_identifier(session_id)
-                    for session_id in subject_record["train_session_ids"]
+                    for session_id in fit_summary["train_session_ids"]
                 ],
                 "eval_session_ids": [
                     _normalize_identifier(session_id)
-                    for session_id in subject_record["eval_session_ids"]
+                    for session_id in fit_summary["eval_session_ids"]
                 ],
                 "fitted_params": fit_summary["fitted_params"],
                 "train_likelihood": float(fit_summary["train_likelihood"]),
                 "eval_likelihood": float(fit_summary["eval_likelihood"]),
+                "train_total_log_likelihood": float(fit_summary["train_total_log_likelihood"]),
+                "train_total_trials": int(fit_summary["train_total_trials"]),
+                "eval_total_log_likelihood": float(fit_summary["eval_total_log_likelihood"]),
+                "eval_total_trials": int(fit_summary["eval_total_trials"]),
                 "log_likelihood_train": float(fit_summary["log_likelihood_train"]),
                 "LPT_train": float(fit_summary["LPT_train"]),
                 "AIC": float(fit_summary["AIC"]),
                 "BIC": float(fit_summary["BIC"]),
                 "n_free_params": int(fit_summary["n_free_params"]),
             }
-            per_subject_summaries.append(subject_summary)
 
             subject_row = {
                 key: value
@@ -704,13 +886,10 @@ class BaselineRLTrainer(ModelTrainer):
             with subject_summary_path.open("w") as f:
                 json.dump(subject_summary, f, indent=2, default=_json_default)
 
-            all_train_choices.extend(subject_record["train_choices"])
-            all_train_choice_prob_sessions.extend(fit_summary["train_choice_prob_sessions"])
-            all_eval_choices.extend(subject_record["eval_choices"])
-            all_eval_choice_prob_sessions.extend(fit_summary["eval_choice_prob_sessions"])
-
         assert parameter_columns is not None
-        subject_metrics_df = pd.DataFrame(per_subject_rows).sort_values("subject_index").reset_index(drop=True)
+        subject_metrics_df = (
+            pd.DataFrame(per_subject_rows).sort_values("subject_index").reset_index(drop=True)
+        )
         subject_metrics_csv_path = self.output_dir / "subject_fit_metrics.csv"
         subject_metrics_pickle_path = self.output_dir / "subject_fit_metrics.pkl"
         subject_metrics_df.to_csv(subject_metrics_csv_path, index=False)
@@ -724,17 +903,13 @@ class BaselineRLTrainer(ModelTrainer):
 
         mean_subject_train_likelihood = float(subject_metrics_df["train_likelihood"].mean())
         mean_subject_eval_likelihood = float(subject_metrics_df["eval_likelihood"].mean())
-        pooled_train_trial_likelihood = float(
-            self._compute_normalized_likelihood(
-                all_train_choices,
-                all_train_choice_prob_sessions,
-            )
+        pooled_train_trial_likelihood = _normalized_likelihood_from_log_stats(
+            float(subject_metrics_df["train_total_log_likelihood"].sum()),
+            int(subject_metrics_df["train_total_trials"].sum()),
         )
-        pooled_eval_trial_likelihood = float(
-            self._compute_normalized_likelihood(
-                all_eval_choices,
-                all_eval_choice_prob_sessions,
-            )
+        pooled_eval_trial_likelihood = _normalized_likelihood_from_log_stats(
+            float(subject_metrics_df["eval_total_log_likelihood"].sum()),
+            int(subject_metrics_df["eval_total_trials"].sum()),
         )
 
         parameter_space_path = None
@@ -774,6 +949,10 @@ class BaselineRLTrainer(ModelTrainer):
             "likelihood_train": pooled_train_trial_likelihood,
             "likelihood": pooled_eval_trial_likelihood,
             "elapsed_seconds": float(elapsed_time),
+            "multisubject_subject_workers": int(subject_parallel_workers),
+            "effective_de_workers_per_subject": int(
+                effective_subject_de_kwargs.get("workers", 1)
+            ),
             "parameter_columns": parameter_columns,
             "subject_artifacts": {
                 "subject_index_map": str(subject_index_map_path),
@@ -801,6 +980,10 @@ class BaselineRLTrainer(ModelTrainer):
             wandb_run.summary["num_subjects"] = int(len(subject_metrics_df))
             wandb_run.summary["agent_class"] = self.agent_class
             wandb_run.summary["elapsed_seconds"] = float(elapsed_time)
+            wandb_run.summary["multisubject_subject_workers"] = int(subject_parallel_workers)
+            wandb_run.summary["effective_de_workers_per_subject"] = int(
+                effective_subject_de_kwargs.get("workers", 1)
+            )
             wandb_run.log(
                 {
                     "subject_fit_metrics": wandb.Table(dataframe=subject_metrics_df),
@@ -1521,27 +1704,8 @@ class BaselineRLTrainer(ModelTrainer):
         Returns:
             Normalized likelihood (geometric mean of per-trial probabilities).
         """
-        total_log_lik = 0.0
-        total_trials = 0
-
-        for choices, choice_prob in zip(choice_sessions, choice_prob_sessions):
-            n_trials = min(len(choices), choice_prob.shape[1])
-            if n_trials == 0:
-                continue
-            choices_idx = choices[:n_trials].astype(int)
-            valid = choices_idx >= 0  # guard against padded labels
-            if not np.any(valid):
-                continue
-            trial_idx = np.arange(n_trials)[valid]
-            probs = choice_prob[choices_idx[valid], trial_idx]  # gather p(choice_t)
-            probs = np.clip(probs, 1e-10, 1.0 - 1e-10)
-            total_log_lik += float(np.sum(np.log(probs)))
-            total_trials += int(np.sum(valid))
-
-        # Normalized likelihood = exp(mean log likelihood)
-        if total_trials == 0:
-            return 0.0
-        return float(np.exp(total_log_lik / total_trials))
+        stats = _compute_likelihood_stats(choice_sessions, choice_prob_sessions)
+        return float(stats["normalized_likelihood"])
 
     def _plot_parameter_recovery(
         self,
