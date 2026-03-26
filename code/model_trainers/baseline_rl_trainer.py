@@ -627,8 +627,6 @@ class BaselineRLTrainer(ModelTrainer):
         self,
         subject_metrics_df: pd.DataFrame,
         *,
-        mean_subject_train_likelihood: float,
-        mean_subject_eval_likelihood: float,
         pooled_train_trial_likelihood: float,
         pooled_eval_trial_likelihood: float,
     ) -> Figure:
@@ -651,19 +649,17 @@ class BaselineRLTrainer(ModelTrainer):
                 axes[0, 0],
                 "train_likelihood",
                 "Train Likelihood",
-                mean_subject_train_likelihood,
                 pooled_train_trial_likelihood,
             ),
             (
                 axes[0, 1],
                 "eval_likelihood",
                 "Eval Likelihood",
-                mean_subject_eval_likelihood,
                 pooled_eval_trial_likelihood,
             ),
         ]
 
-        for panel_index, (ax, metric_column, title, mean_value, pooled_value) in enumerate(plot_specs):
+        for panel_index, (ax, metric_column, title, pooled_value) in enumerate(plot_specs):
             jitter = rng.uniform(-0.35, 0.35, size=len(plot_df))
             for curriculum in curriculum_values:
                 curriculum_rows = plot_df[plot_df["curriculum_name"].astype(str) == curriculum]
@@ -690,12 +686,6 @@ class BaselineRLTrainer(ModelTrainer):
                     alpha=0.85,
                 )
 
-            ax.axvline(
-                mean_value,
-                color="black",
-                linestyle="--",
-                linewidth=1.8,
-            )
             ax.axvline(
                 pooled_value,
                 color="dimgray",
@@ -724,7 +714,6 @@ class BaselineRLTrainer(ModelTrainer):
             for curriculum in curriculum_values
         ]
         line_handles = [
-            Line2D([0], [0], color="black", linestyle="--", linewidth=1.8, label="Mean subject"),
             Line2D([0], [0], color="dimgray", linestyle=":", linewidth=2.0, label="Pooled trial"),
         ]
         fig.legend(
@@ -903,8 +892,6 @@ class BaselineRLTrainer(ModelTrainer):
             index_to_subject_id=index_to_subject_id,
         )
 
-        mean_subject_train_likelihood = float(subject_metrics_df["train_likelihood"].mean())
-        mean_subject_eval_likelihood = float(subject_metrics_df["eval_likelihood"].mean())
         pooled_train_trial_likelihood = _normalized_likelihood_from_log_stats(
             float(subject_metrics_df["train_total_log_likelihood"].sum()),
             int(subject_metrics_df["train_total_trials"].sum()),
@@ -926,8 +913,6 @@ class BaselineRLTrainer(ModelTrainer):
 
         likelihood_scatter_fig = self._plot_subject_likelihood_scatter(
             subject_metrics_df,
-            mean_subject_train_likelihood=mean_subject_train_likelihood,
-            mean_subject_eval_likelihood=mean_subject_eval_likelihood,
             pooled_train_trial_likelihood=pooled_train_trial_likelihood,
             pooled_eval_trial_likelihood=pooled_eval_trial_likelihood,
         )
@@ -944,8 +929,6 @@ class BaselineRLTrainer(ModelTrainer):
             "num_subjects": int(len(subject_metrics_df)),
             "num_trials": metadata.get("num_trials"),
             "num_sessions": metadata.get("num_sessions"),
-            "mean_subject_train_likelihood": mean_subject_train_likelihood,
-            "mean_subject_eval_likelihood": mean_subject_eval_likelihood,
             "pooled_train_trial_likelihood": pooled_train_trial_likelihood,
             "pooled_eval_trial_likelihood": pooled_eval_trial_likelihood,
             "train_likelihood": pooled_train_trial_likelihood,
@@ -971,8 +954,6 @@ class BaselineRLTrainer(ModelTrainer):
         logger.info("Saved multisubject baseline RL output to %s", output_path)
 
         if wandb_run is not None:
-            wandb_run.summary["mean_subject_train_likelihood"] = mean_subject_train_likelihood
-            wandb_run.summary["mean_subject_eval_likelihood"] = mean_subject_eval_likelihood
             wandb_run.summary["pooled_train_trial_likelihood"] = pooled_train_trial_likelihood
             wandb_run.summary["pooled_eval_trial_likelihood"] = pooled_eval_trial_likelihood
             wandb_run.summary["train_likelihood"] = pooled_train_trial_likelihood
@@ -1005,10 +986,7 @@ class BaselineRLTrainer(ModelTrainer):
 
         logger.info(
             "Multisubject baseline RL fitting complete. "
-            "Mean subject train likelihood: %.4f, mean subject eval likelihood: %.4f, "
-            "pooled train likelihood: %.4f, pooled eval likelihood: %.4f",
-            mean_subject_train_likelihood,
-            mean_subject_eval_likelihood,
+            "Pooled train likelihood: %.4f, pooled eval likelihood: %.4f",
             pooled_train_trial_likelihood,
             pooled_eval_trial_likelihood,
         )
@@ -1114,8 +1092,6 @@ class BaselineRLTrainer(ModelTrainer):
             "num_eval_sessions": n_eval_sessions,
             "num_train_trials": n_train_trials,
             "num_eval_trials": n_eval_trials,
-            "mean_subject_train_likelihood": float(train_likelihood),
-            "mean_subject_eval_likelihood": float(eval_likelihood),
             "pooled_train_trial_likelihood": float(train_likelihood),
             "pooled_eval_trial_likelihood": float(eval_likelihood),
             "eval_likelihood": float(eval_likelihood),
@@ -1303,8 +1279,6 @@ class BaselineRLTrainer(ModelTrainer):
             output["eval_choice_reward_fitted_prob_plot_path"] = str(eval_plot_paths[0])
 
         if wandb_run is not None:
-            wandb_run.summary["mean_subject_train_likelihood"] = float(train_likelihood)
-            wandb_run.summary["mean_subject_eval_likelihood"] = float(eval_likelihood)
             wandb_run.summary["pooled_train_trial_likelihood"] = float(train_likelihood)
             wandb_run.summary["pooled_eval_trial_likelihood"] = float(eval_likelihood)
             wandb_run.summary["train_likelihood"] = float(train_likelihood)

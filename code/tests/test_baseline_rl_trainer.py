@@ -185,8 +185,6 @@ class TestBaselineRLTrainer(unittest.TestCase):
         self.assertIsInstance(output["fitted_params"], dict)
         self.assertIsInstance(output["n_free_params"], int)
         self.assertIsInstance(output["elapsed_seconds"], float)
-        self.assertEqual(output["mean_subject_train_likelihood"], output["train_likelihood"])
-        self.assertEqual(output["mean_subject_eval_likelihood"], output["eval_likelihood"])
         self.assertEqual(output["pooled_train_trial_likelihood"], output["train_likelihood"])
         self.assertEqual(output["pooled_eval_trial_likelihood"], output["eval_likelihood"])
         self.assertNotIn("likelihood", output)
@@ -574,8 +572,6 @@ class TestBaselineRLTrainer(unittest.TestCase):
 
             self.assertTrue(output["multisubject"])
             self.assertEqual(output["fit_strategy"], "per_subject")
-            self.assertIn("mean_subject_train_likelihood", output)
-            self.assertIn("mean_subject_eval_likelihood", output)
             self.assertIn("pooled_train_trial_likelihood", output)
             self.assertIn("pooled_eval_trial_likelihood", output)
             self.assertEqual(output["train_likelihood"], output["pooled_train_trial_likelihood"])
@@ -602,16 +598,6 @@ class TestBaselineRLTrainer(unittest.TestCase):
             self.assertCountEqual(
                 subject_metrics_df["curriculum_name"].tolist(),
                 ["Curriculum A", "Curriculum B"],
-            )
-            self.assertAlmostEqual(
-                output["mean_subject_train_likelihood"],
-                float(subject_metrics_df["train_likelihood"].mean()),
-                places=6,
-            )
-            self.assertAlmostEqual(
-                output["mean_subject_eval_likelihood"],
-                float(subject_metrics_df["eval_likelihood"].mean()),
-                places=6,
             )
 
             pooled_train_choices = []
