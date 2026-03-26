@@ -1444,6 +1444,14 @@ class BaselineRLTrainer(ModelTrainer):
             )
         else:
             try:
+                n_subjects = len(dict(split_alignment["subject_id_to_index"]))
+                logger.info(
+                    "Building single-subject per-subject likelihood breakdown for %d subjects "
+                    "(train_sessions=%d, eval_sessions=%d).",
+                    n_subjects,
+                    len(train_session_ids),
+                    len(eval_session_ids),
+                )
                 subject_metrics_df = self._build_single_subject_metrics_dataframe(
                     split_alignment=split_alignment,
                     train_choices=train_choices,
@@ -1488,6 +1496,13 @@ class BaselineRLTrainer(ModelTrainer):
                     "subject_fit_metrics_pickle": str(subject_metrics_pickle_path),
                 }
                 output["subject_likelihood_scatter_path"] = str(likelihood_scatter_path)
+                logger.info(
+                    "Saved single-subject per-subject breakdown artifacts: metrics=%s, "
+                    "index_map=%s, scatter=%s",
+                    subject_metrics_csv_path,
+                    subject_index_map_path,
+                    likelihood_scatter_path,
+                )
             except Exception as exc:
                 logger.exception("Failed to build single-subject per-subject breakdown")
                 output["subject_breakdown"] = {

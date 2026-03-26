@@ -142,6 +142,7 @@ DEFAULT_COLS: List[str] = [
     "ses_idx",
     "animal_response",
     "earned_reward",
+    "curriculum_name",
 ]
 
 
@@ -354,7 +355,8 @@ def load_mice_snapshot(
     cols_to_retain:
         Columns to keep in the returned DataFrame. Columns that are absent
         from the raw data are silently skipped. Defaults to
-        ``['trial', 'subject_id', 'ses_idx', 'animal_response', 'earned_reward']``.
+        ``['trial', 'subject_id', 'ses_idx', 'animal_response', 'earned_reward',
+        'curriculum_name']``.
 
     Returns
     -------

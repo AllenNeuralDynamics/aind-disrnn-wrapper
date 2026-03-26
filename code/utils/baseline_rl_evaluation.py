@@ -50,6 +50,18 @@ def _load_baseline_output(path: Path) -> dict[str, Any]:
         return json.load(f)
 
 
+def _ensure_curriculum_column(
+    cols_to_retain: list[str] | tuple[str, ...] | None,
+) -> list[str] | None:
+    """Ensure curriculum_name survives snapshot loading for subject breakdowns."""
+    if cols_to_retain is None:
+        return None
+    resolved_cols = list(cols_to_retain)
+    if "curriculum_name" not in resolved_cols:
+        resolved_cols.append("curriculum_name")
+    return resolved_cols
+
+
 def _json_default(value: Any) -> Any:
     if isinstance(value, np.ndarray):
         return value.tolist()
@@ -382,10 +394,219 @@ def _build_heldout_subject_metrics_dataframe(
     )
 
 
+def _expected_trials_from_choice_prob_session(choice_prob_session: np.ndarray) -> int:
+    """Infer the number of trials from a two-action probability array."""
+    arr = _to_numpy(choice_prob_session)
+    if arr.ndim != 2:
+        raise ValueError(
+            "choice_prob_session must be 2D to infer trial count, "
+            f"got shape={arr.shape}"
+        )
+    if arr.shape[0] == 2:
+        return int(arr.shape[1])
+    if arr.shape[1] == 2:
+        return int(arr.shape[0])
+    return int(max(arr.shape))
+
+
+def _coerce_single_q_history_session(
+    candidate: Any,
+    *,
+    expected_trials: int,
+    depth: int,
+    seen: set[int],
+) -> np.ndarray | None:
+    """Return one aligned Q-history session if the candidate can be unwrapped."""
+    histories = _coerce_q_history_candidate(
+        candidate,
+        expected_trials_per_session=[expected_trials],
+        depth=depth,
+        seen=seen,
+    )
+    if histories is None or len(histories) != 1:
+        return None
+    return histories[0]
+
+
+def _coerce_q_history_candidate(
+    candidate: Any,
+    *,
+    expected_trials_per_session: list[int],
+    depth: int = 0,
+    seen: set[int] | None = None,
+) -> list[np.ndarray] | None:
+    """Normalize a nested candidate object into aligned per-session Q histories."""
+    if candidate is None or depth > 6:
+        return None
+
+    if seen is None:
+        seen = set()
+
+    if not isinstance(candidate, (str, bytes, int, float, bool, np.generic)):
+        candidate_id = id(candidate)
+        if candidate_id in seen:
+            return None
+        seen.add(candidate_id)
+
+    expected_n_sessions = len(expected_trials_per_session)
+
+    if isinstance(candidate, np.ndarray) or hasattr(candidate, "__array__"):
+        arr = _to_numpy(candidate)
+        if arr.ndim == 2 and expected_n_sessions == 1:
+            try:
+                return [_align_q_session(arr, expected_trials_per_session[0])]
+            except Exception:
+                return None
+        if arr.ndim == 3:
+            for axis in range(arr.ndim):
+                if arr.shape[axis] != expected_n_sessions:
+                    continue
+                aligned_sessions: list[np.ndarray] = []
+                valid = True
+                for session_index, expected_trials in enumerate(expected_trials_per_session):
+                    session_arr = np.take(arr, session_index, axis=axis)
+                    try:
+                        aligned_sessions.append(
+                            _align_q_session(session_arr, expected_trials)
+                        )
+                    except Exception:
+                        valid = False
+                        break
+                if valid:
+                    return aligned_sessions
+        return None
+
+    if isinstance(candidate, (list, tuple)):
+        if len(candidate) == expected_n_sessions:
+            aligned_sessions: list[np.ndarray] = []
+            valid = True
+            for item, expected_trials in zip(candidate, expected_trials_per_session):
+                aligned_session = _coerce_single_q_history_session(
+                    item,
+                    expected_trials=expected_trials,
+                    depth=depth + 1,
+                    seen=seen,
+                )
+                if aligned_session is None:
+                    valid = False
+                    break
+                aligned_sessions.append(aligned_session)
+            if valid:
+                return aligned_sessions
+
+        for item in candidate:
+            histories = _coerce_q_history_candidate(
+                item,
+                expected_trials_per_session=expected_trials_per_session,
+                depth=depth + 1,
+                seen=seen,
+            )
+            if histories is not None:
+                return histories
+        return None
+
+    if isinstance(candidate, Mapping):
+        preferred_keys = [
+            "q_values",
+            "q_value_history",
+            "q_values_history",
+            "q_history",
+            "Q",
+            "Qs",
+            "history",
+            "values",
+        ]
+        for key in preferred_keys:
+            if key in candidate:
+                histories = _coerce_q_history_candidate(
+                    candidate[key],
+                    expected_trials_per_session=expected_trials_per_session,
+                    depth=depth + 1,
+                    seen=seen,
+                )
+                if histories is not None:
+                    return histories
+
+        for key, value in candidate.items():
+            if isinstance(key, str) and any(
+                token in key.lower() for token in ("q", "value", "history")
+            ):
+                histories = _coerce_q_history_candidate(
+                    value,
+                    expected_trials_per_session=expected_trials_per_session,
+                    depth=depth + 1,
+                    seen=seen,
+                )
+                if histories is not None:
+                    return histories
+
+        for value in candidate.values():
+            histories = _coerce_q_history_candidate(
+                value,
+                expected_trials_per_session=expected_trials_per_session,
+                depth=depth + 1,
+                seen=seen,
+            )
+            if histories is not None:
+                return histories
+        return None
+
+    if hasattr(candidate, "__dict__"):
+        attrs = vars(candidate)
+        preferred_attr_names = [
+            "q_value_history",
+            "q_values_history",
+            "Q_history",
+            "Q_values_history",
+            "Qs_history",
+            "q_values",
+            "q_history",
+            "session_q_values",
+            "q_values_all_sessions",
+        ]
+        for attr_name in preferred_attr_names:
+            if attr_name in attrs:
+                histories = _coerce_q_history_candidate(
+                    attrs[attr_name],
+                    expected_trials_per_session=expected_trials_per_session,
+                    depth=depth + 1,
+                    seen=seen,
+                )
+                if histories is not None:
+                    return histories
+
+        for attr_name, value in attrs.items():
+            if any(token in attr_name.lower() for token in ("q", "value", "history")):
+                histories = _coerce_q_history_candidate(
+                    value,
+                    expected_trials_per_session=expected_trials_per_session,
+                    depth=depth + 1,
+                    seen=seen,
+                )
+                if histories is not None:
+                    return histories
+
+        for value in attrs.values():
+            histories = _coerce_q_history_candidate(
+                value,
+                expected_trials_per_session=expected_trials_per_session,
+                depth=depth + 1,
+                seen=seen,
+            )
+            if histories is not None:
+                return histories
+
+    return None
+
+
 def _extract_q_histories(
     eval_agent: Any,
     choice_prob_sessions: list[np.ndarray],
 ) -> list[np.ndarray] | None:
+    expected_trials_per_session = [
+        _expected_trials_from_choice_prob_session(choice_prob_session)
+        for choice_prob_session in choice_prob_sessions
+    ]
     candidate_attrs = [
         "q_value_history",
         "q_values_history",
@@ -393,45 +614,35 @@ def _extract_q_histories(
         "Q_values_history",
         "Qs_history",
         "q_values",
+        "q_history",
+        "session_q_values",
+        "q_values_all_sessions",
     ]
-    history = None
     for attr in candidate_attrs:
-        if hasattr(eval_agent, attr):
-            history = getattr(eval_agent, attr)
-            if history is not None:
-                break
+        if not hasattr(eval_agent, attr):
+            continue
+        histories = _coerce_q_history_candidate(
+            getattr(eval_agent, attr),
+            expected_trials_per_session=expected_trials_per_session,
+        )
+        if histories is not None:
+            logger.info(
+                "Recovered explicit Q-value histories from agent attribute '%s' for %d sessions.",
+                attr,
+                len(histories),
+            )
+            return histories
 
-    if history is None:
-        return None
-
-    if isinstance(history, dict):
-        for key in ("q_values", "Q", "history"):
-            if key in history:
-                history = history[key]
-                break
-
-    if isinstance(history, np.ndarray):
-        history_arr = _to_numpy(history)
-        if history_arr.ndim == 3:
-            return [history_arr[i] for i in range(history_arr.shape[0])]
-        if history_arr.ndim == 2:
-            return [history_arr]
-        return None
-
-    if isinstance(history, (list, tuple)):
-        out: list[np.ndarray] = []
-        for session_item in history:
-            item = session_item
-            if isinstance(item, dict):
-                for key in ("q_values", "Q", "q_history", "values"):
-                    if key in item:
-                        item = item[key]
-                        break
-            arr = _to_numpy(item)
-            if arr.ndim == 2:
-                out.append(arr)
-        if out:
-            return out
+    histories = _coerce_q_history_candidate(
+        eval_agent,
+        expected_trials_per_session=expected_trials_per_session,
+    )
+    if histories is not None:
+        logger.info(
+            "Recovered explicit Q-value histories from nested agent state for %d sessions.",
+            len(histories),
+        )
+        return histories
     return None
 
 
@@ -613,7 +824,9 @@ def evaluate_baseline_rl_on_heldout_subjects(
         subject_end=getattr(data_cfg, "test_subject_end", None),
         mature_only=bool(getattr(data_cfg, "mature_only", True)),
         curricula=getattr(data_cfg, "curricula", None),
-        cols_to_retain=getattr(data_cfg, "cols_to_retain", None),
+        cols_to_retain=_ensure_curriculum_column(
+            getattr(data_cfg, "cols_to_retain", None)
+        ),
     )
     if len(df_test) == 0:
         raise ValueError("Held-out baseline RL selection resulted in an empty dataset")
@@ -735,6 +948,11 @@ def evaluate_baseline_rl_on_heldout_subjects(
                     }
                 )
 
+    logger.info(
+        "Building held-out per-subject likelihood breakdown for %d subjects across %d sessions.",
+        len(dict.fromkeys(normalize_subject_id(subject_id) for subject_id in session_subject_ids)),
+        len(choice_sessions),
+    )
     subject_metrics_df, subject_id_to_index, index_to_subject_id = (
         _build_heldout_subject_metrics_dataframe(
             df_test=pd.DataFrame(df_test).copy(),
@@ -770,6 +988,12 @@ def evaluate_baseline_rl_on_heldout_subjects(
         bbox_inches="tight",
     )
     plt.close(likelihood_scatter_fig)
+    logger.info(
+        "Saved held-out per-subject breakdown artifacts: metrics=%s, index_map=%s, scatter=%s",
+        subject_metrics_csv_path,
+        subject_index_map_path,
+        likelihood_scatter_path,
+    )
 
     summary: dict[str, Any] = {
         "enabled": True,

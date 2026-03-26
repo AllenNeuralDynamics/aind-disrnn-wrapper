@@ -17,6 +17,7 @@ from base.types import DatasetBundle
 from model_trainers.baseline_rl_trainer import BaselineRLTrainer
 from data_loaders.synthetic import SyntheticCognitiveAgents
 from utils.baseline_rl_evaluation import (
+    _extract_q_histories,
     _plot_q_values_for_session,
     evaluate_baseline_rl_on_heldout_subjects,
     save_baseline_rl_output,
@@ -406,6 +407,59 @@ class TestBaselineRLTrainer(unittest.TestCase):
         )
         self.assertGreater(likelihood_random, 0.4)
         self.assertLess(likelihood_random, 0.6)
+
+    def test_extract_q_histories_recovers_nested_agent_state(self):
+        """Test that nested agent state is searched before Q-history fallback."""
+        class SessionContainer:
+            def __init__(self, q_values):
+                self.metrics = {"Q": q_values}
+
+        class FakeAgent:
+            def __init__(self) -> None:
+                self.memory = {
+                    "rollout": [
+                        SessionContainer(
+                            np.array(
+                                [
+                                    [0.1, 0.2, 0.3],
+                                    [0.0, 0.1, 0.2],
+                                ]
+                            )
+                        ),
+                        SessionContainer(
+                            np.array(
+                                [
+                                    [0.4, 0.5],
+                                    [0.2, 0.3],
+                                ]
+                            )
+                        ),
+                    ]
+                }
+
+        histories = _extract_q_histories(
+            FakeAgent(),
+            choice_prob_sessions=[
+                np.array(
+                    [
+                        [0.6, 0.7, 0.8],
+                        [0.4, 0.3, 0.2],
+                    ]
+                ),
+                np.array(
+                    [
+                        [0.55, 0.45],
+                        [0.45, 0.55],
+                    ]
+                ),
+            ],
+        )
+
+        self.assertIsNotNone(histories)
+        assert histories is not None
+        self.assertEqual(len(histories), 2)
+        self.assertTrue(np.allclose(histories[0], np.array([[0.1, 0.2, 0.3], [0.0, 0.1, 0.2]])))
+        self.assertTrue(np.allclose(histories[1], np.array([[0.4, 0.5], [0.2, 0.3]])))
 
     def test_multiple_agent_types(self):
         """Test that trainer works with different agent types."""
@@ -851,12 +905,25 @@ class TestBaselineRLTrainer(unittest.TestCase):
                 seed=42,
             )
 
-            output = trainer.fit(self.single_subject_grouped_bundle)
+            with self.assertLogs("model_trainers.baseline_rl_trainer", level="INFO") as cm:
+                output = trainer.fit(self.single_subject_grouped_bundle)
 
             self.assertIn("subject_breakdown", output)
             self.assertFalse(output["subject_breakdown"]["skipped"])
             self.assertIn("subject_artifacts", output)
             self.assertIn("subject_likelihood_scatter_path", output)
+            self.assertTrue(
+                any(
+                    "Building single-subject per-subject likelihood breakdown" in message
+                    for message in cm.output
+                )
+            )
+            self.assertTrue(
+                any(
+                    "Saved single-subject per-subject breakdown artifacts" in message
+                    for message in cm.output
+                )
+            )
 
             subject_artifacts = output["subject_artifacts"]
             subject_index_map_path = Path(subject_artifacts["subject_index_map"])
@@ -872,6 +939,10 @@ class TestBaselineRLTrainer(unittest.TestCase):
             subject_metrics_df = pd.read_pickle(subject_metrics_pickle_path)
             self.assertEqual(subject_metrics_df["subject_index"].tolist(), [0, 1])
             self.assertCountEqual(subject_metrics_df["subject_id"].tolist(), [101, 202])
+            self.assertCountEqual(
+                subject_metrics_df["curriculum_name"].tolist(),
+                ["Curriculum A", "Curriculum B"],
+            )
             self.assertIn("train_likelihood", subject_metrics_df.columns)
             self.assertIn("eval_likelihood", subject_metrics_df.columns)
 
@@ -1116,7 +1187,13 @@ class TestBaselineRLTrainer(unittest.TestCase):
                     test_subject_end=None,
                     mature_only=True,
                     curricula=None,
-                    cols_to_retain=None,
+                    cols_to_retain=[
+                        "trial",
+                        "subject_id",
+                        "ses_idx",
+                        "animal_response",
+                        "earned_reward",
+                    ],
                     heldout_example_sessions_per_subject=1,
                     example_max_subjects=2,
                 ),
@@ -1131,17 +1208,33 @@ class TestBaselineRLTrainer(unittest.TestCase):
             with mock.patch(
                 "utils.baseline_rl_evaluation.load_mice_snapshot",
                 return_value=(df_test, [123, 456]),
-            ), mock.patch.object(
+            ) as mock_loader, mock.patch.object(
                 generative_model,
                 "ForagerQLearning",
                 FakeAgent,
-            ):
+            ), self.assertLogs("utils.baseline_rl_evaluation", level="INFO") as cm:
                 summary = evaluate_baseline_rl_on_heldout_subjects(hydra_config)
 
             self.assertIsNotNone(summary)
             assert summary is not None
             self.assertIn("subject_artifacts", summary)
             self.assertIn("subject_likelihood_scatter_path", summary)
+            self.assertTrue(
+                any(
+                    "Building held-out per-subject likelihood breakdown" in message
+                    for message in cm.output
+                )
+            )
+            self.assertTrue(
+                any(
+                    "Saved held-out per-subject breakdown artifacts" in message
+                    for message in cm.output
+                )
+            )
+            self.assertIn(
+                "curriculum_name",
+                mock_loader.call_args.kwargs["cols_to_retain"],
+            )
 
             subject_artifacts = summary["subject_artifacts"]
             subject_metrics_csv_path = Path(subject_artifacts["subject_fit_metrics_csv"])
@@ -1157,6 +1250,10 @@ class TestBaselineRLTrainer(unittest.TestCase):
             subject_metrics_df = pd.read_pickle(subject_metrics_pickle_path)
             self.assertEqual(subject_metrics_df["subject_index"].tolist(), [0, 1])
             self.assertCountEqual(subject_metrics_df["subject_id"].tolist(), [123, 456])
+            self.assertCountEqual(
+                subject_metrics_df["curriculum_name"].tolist(),
+                ["Curriculum A", "Curriculum B"],
+            )
             self.assertIn("heldout_test_likelihood", subject_metrics_df.columns)
 
             pooled_heldout_likelihood = float(

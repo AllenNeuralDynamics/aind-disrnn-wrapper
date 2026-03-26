@@ -667,18 +667,17 @@ class MiceSnapshotDatasetLoader(DatasetLoader):
             np.random.seed(self.seed)
 
         snapshot_cols_to_retain = list(self.cols_to_retain) if self.cols_to_retain is not None else None
-        if self.multisubject:
-            if snapshot_cols_to_retain is None:
-                snapshot_cols_to_retain = [
-                    "trial",
-                    "subject_id",
-                    "ses_idx",
-                    "animal_response",
-                    "earned_reward",
-                    "curriculum_name",
-                ]
-            elif "curriculum_name" not in snapshot_cols_to_retain:
-                snapshot_cols_to_retain.append("curriculum_name")
+        if snapshot_cols_to_retain is None:
+            snapshot_cols_to_retain = [
+                "trial",
+                "subject_id",
+                "ses_idx",
+                "animal_response",
+                "earned_reward",
+                "curriculum_name",
+            ]
+        elif "curriculum_name" not in snapshot_cols_to_retain:
+            snapshot_cols_to_retain.append("curriculum_name")
 
         logger.info("Loading train dataset (mature_only=%s) …", self.mature_only)
         df, subject_ids = load_mice_snapshot(
