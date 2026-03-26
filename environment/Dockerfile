@@ -36,3 +36,4 @@ RUN pip install -U --no-cache-dir \
     isort==7.0.0
 
 RUN --mount=type=secret,id=secrets . /run/secrets/secrets 
+# v2
