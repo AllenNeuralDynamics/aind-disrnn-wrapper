@@ -6,6 +6,7 @@ from typing import Iterable, Literal, Mapping
 
 import numpy as np
 import pandas as pd
+from scipy.stats import zscore
 
 from aind_dynamic_foraging_data_utils import nwb_utils as nu
 import aind_dynamic_foraging_basic_analysis.licks.annotation as a
@@ -63,6 +64,7 @@ def make_fip_multisession_trials_df(nwb_list, full_channel_name, allow_duplicate
                 output_col="NE_FIP",
             )
             nwb.df_trials["NE_FIP"] = nwb.df_trials["NE_FIP"].fillna(0)
+            nwb.df_trials["NE_FIP"] = zscore(nwb.df_trials["NE_FIP"])
             nwbs.append(nwb)
         except Exception as e:
             crash_list.append(n)
