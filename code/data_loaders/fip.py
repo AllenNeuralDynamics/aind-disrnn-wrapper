@@ -45,10 +45,13 @@ def make_fip_multisession_trials_df(nwb_list, full_channel_name, allow_duplicate
             else:
                 unique_sessions.add(nwb.session_id)
             nwb.df_trials = nu.create_df_trials(nwb, verbose=False)
+            if "trial_type" in nwb.df_trials:
+                print("Removing CSminus trials")
+                nwb.df_trials = nwb.df_trials.query('trial_type == "CSplus"').copy()
             nwb.df_events = nu.create_df_events(nwb, verbose=False)
             nwb.df_licks = a.annotate_licks(nwb)
             nwb.df_trials = tm.compute_trial_metrics(nwb)
-            #nwb.df_trials = ms_load.add_side_bias(nwb)
+            # nwb.df_trials = ms_load.add_side_bias(nwb)
             nwb.df_fip = nu.create_df_fip(nwb, verbose=False)
             nwb.df_fip = ed.zscore_fip(nwb.df_fip)
             nwb.df_trials = tm.get_average_signal_window(
