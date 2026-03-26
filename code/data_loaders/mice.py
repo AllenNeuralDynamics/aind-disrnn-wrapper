@@ -39,6 +39,21 @@ def _align_raw_df_with_valid_sessions(
     return aligned
 
 
+def _ordered_split_session_ids_from_aligned_df(
+    df: pd.DataFrame,
+    *,
+    eval_every_n: int,
+) -> tuple[list, list]:
+    """Return train/eval session ids from aligned raw-session order."""
+    if "ses_idx" not in df.columns:
+        raise ValueError("Aligned raw dataframe must contain 'ses_idx'.")
+    ordered_session_ids = list(dict.fromkeys(df["ses_idx"].tolist()))
+    return compute_train_eval_session_ids(
+        ordered_session_ids,
+        eval_every_n=eval_every_n,
+    )
+
+
 def _resolve_multisubject_subject_order(
     df: pd.DataFrame,
     resolved_subject_ids: Iterable[int] | Iterable[str] | None = None,
@@ -391,6 +406,10 @@ class MiceDatasetLoader(DatasetLoader):
             dataset, eval_every_n=self.eval_every_n
         )
         df = _align_raw_df_with_valid_sessions(df, ignore_policy=self.ignore_policy)
+        train_session_ids, eval_session_ids = _ordered_split_session_ids_from_aligned_df(
+            df,
+            eval_every_n=self.eval_every_n,
+        )
         metadata = {
             "subject_ids": self.subject_ids,
             "ignore_policy": self.ignore_policy,
@@ -398,6 +417,8 @@ class MiceDatasetLoader(DatasetLoader):
             "eval_every_n": self.eval_every_n,
             "num_trials": len(df),
             "num_sessions": int(df["ses_idx"].nunique()) if "ses_idx" in df else None,
+            "train_session_ids": train_session_ids,
+            "eval_session_ids": eval_session_ids,
             "multisubject": self.multisubject,
             "batch_size": self.batch_size,
             "batch_mode": self.batch_mode,
@@ -520,6 +541,10 @@ class MiceDatasetLoaderFromFile(DatasetLoader):
             dataset, eval_every_n=self.eval_every_n
         )
         df = _align_raw_df_with_valid_sessions(df, ignore_policy=self.ignore_policy)
+        train_session_ids, eval_session_ids = _ordered_split_session_ids_from_aligned_df(
+            df,
+            eval_every_n=self.eval_every_n,
+        )
 
         metadata = {
             "file_path": str(self.file_path),
@@ -530,6 +555,8 @@ class MiceDatasetLoaderFromFile(DatasetLoader):
             "eval_every_n": self.eval_every_n,
             "num_trials": len(df),
             "num_sessions": int(df["ses_idx"].nunique()) if "ses_idx" in df else None,
+            "train_session_ids": train_session_ids,
+            "eval_session_ids": eval_session_ids,
             "multisubject": self.multisubject,
             "batch_size": self.batch_size,
             "batch_mode": self.batch_mode,
@@ -697,6 +724,10 @@ class MiceSnapshotDatasetLoader(DatasetLoader):
             dataset, eval_every_n=self.eval_every_n
         )
         df = _align_raw_df_with_valid_sessions(df, ignore_policy=self.ignore_policy)
+        train_session_ids, eval_session_ids = _ordered_split_session_ids_from_aligned_df(
+            df,
+            eval_every_n=self.eval_every_n,
+        )
 
         metadata = {
             "subject_ids": subject_ids,
@@ -710,6 +741,8 @@ class MiceSnapshotDatasetLoader(DatasetLoader):
             "num_sessions": (
                 int(df["ses_idx"].nunique()) if "ses_idx" in df.columns else None
             ),
+            "train_session_ids": train_session_ids,
+            "eval_session_ids": eval_session_ids,
             "multisubject": self.multisubject,
             "batch_size": self.batch_size,
             "batch_mode": self.batch_mode,

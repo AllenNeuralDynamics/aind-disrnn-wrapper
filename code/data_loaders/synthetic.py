@@ -18,9 +18,38 @@ from disentangled_rnns.library import rnn_utils
 
 from base.interfaces import DatasetLoader
 from base.types import DatasetBundle
+from utils.multisubject import compute_train_eval_session_ids
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+def _align_raw_df_with_valid_sessions(
+    df: pd.DataFrame,
+    *,
+    ignore_policy: str,
+) -> pd.DataFrame:
+    """Drop sessions that would be removed during dataset construction."""
+    aligned = df.copy()
+    if ignore_policy == "exclude" and "animal_response" in aligned.columns:
+        valid_sessions = aligned.loc[aligned["animal_response"] != 2, "ses_idx"].unique()
+        aligned = aligned[aligned["ses_idx"].isin(valid_sessions)].copy()
+    return aligned
+
+
+def _ordered_split_session_ids_from_aligned_df(
+    df: pd.DataFrame,
+    *,
+    eval_every_n: int,
+) -> tuple[list, list]:
+    """Return train/eval session ids from aligned raw-session order."""
+    if "ses_idx" not in df.columns:
+        raise ValueError("Aligned raw dataframe must contain 'ses_idx'.")
+    ordered_session_ids = list(dict.fromkeys(df["ses_idx"].tolist()))
+    return compute_train_eval_session_ids(
+        ordered_session_ids,
+        eval_every_n=eval_every_n,
+    )
 
 class SyntheticDatasetLoader(DatasetLoader):
     """Placeholder loader for synthetic experiments."""
@@ -187,16 +216,20 @@ class SyntheticCognitiveAgents(DatasetLoader):
         # Align raw df with sessions that survived dataset construction.
         # create_disrnn_dataset (always ignore_policy="exclude" here) silently
         # drops sessions whose every trial is ignored (animal_response==2).
-        if "animal_response" in raw_df.columns:
-            valid_sessions = raw_df[raw_df["animal_response"] != 2]["ses_idx"].unique()
-            raw_df = raw_df[raw_df["ses_idx"].isin(valid_sessions)]
+        raw_df = _align_raw_df_with_valid_sessions(raw_df, ignore_policy="exclude")
+        train_session_ids, eval_session_ids = _ordered_split_session_ids_from_aligned_df(
+            raw_df,
+            eval_every_n=self.eval_every_n,
+        )
 
         # --- Package bundle metadata ---
         metadata: dict[str, Any] = {
-            "num_trials": self.num_trials,
-            "num_sessions": self.num_sessions,
+            "num_trials": int(len(raw_df)),
+            "num_sessions": int(raw_df["ses_idx"].nunique()) if "ses_idx" in raw_df else None,
             "eval_every_n": self.eval_every_n,
             "eval_session_indices": eval_session_indices.tolist(),
+            "train_session_ids": train_session_ids,
+            "eval_session_ids": eval_session_ids,
             "avg_eval_likelihood_groundtruth": avg_eval_groundtruth,
             "batch_size": self.batch_size,
             "batch_mode": self.batch_mode,
@@ -416,6 +449,11 @@ class TaskTrainedRNNDatasetLoader(DatasetLoader):
         dataset_train, dataset_eval = rnn_utils.split_dataset(
             dataset, eval_every_n=self.eval_every_n
         )
+        df = _align_raw_df_with_valid_sessions(df, ignore_policy=self.ignore_policy)
+        train_session_ids, eval_session_ids = _ordered_split_session_ids_from_aligned_df(
+            df,
+            eval_every_n=self.eval_every_n,
+        )
         metadata = {
             "subject_ids": self.subject_ids,
             "ignore_policy": self.ignore_policy,
@@ -423,6 +461,8 @@ class TaskTrainedRNNDatasetLoader(DatasetLoader):
             "eval_every_n": self.eval_every_n,
             "num_trials": len(df),
             "num_sessions": int(df["ses_idx"].nunique()) if "ses_idx" in df else None,
+            "train_session_ids": train_session_ids,
+            "eval_session_ids": eval_session_ids,
             "multisubject": self.multisubject,
         }
         metadata.update(self.extras)

@@ -27,6 +27,7 @@ from utils.baseline_rl_evaluation import (
     _align_q_session,
     _extract_q_histories,
     _normalize_identifier,
+    _plot_subject_likelihood_scatter as _plot_subject_likelihood_scatter_figure,
     _plot_q_values_for_session,
     _safe_filename_component,
     save_baseline_rl_output,
@@ -35,6 +36,7 @@ from utils.baseline_rl_evaluation import (
 from base.interfaces import ModelTrainer
 from base.types import DatasetBundle
 from utils.multisubject import (
+    build_subject_index_maps,
     compute_train_eval_session_ids,
     normalize_subject_id,
     save_subject_index_map,
@@ -115,6 +117,19 @@ def _normalized_likelihood_from_log_stats(
     if total_trials <= 0:
         return 0.0
     return float(np.exp(float(total_log_likelihood) / float(total_trials)))
+
+
+def _optional_normalized_likelihood_from_log_stats(
+    total_log_likelihood: float,
+    total_trials: int,
+) -> float | None:
+    """Return per-subject likelihood, or None when a split has no trials."""
+    if total_trials <= 0:
+        return None
+    return _normalized_likelihood_from_log_stats(
+        total_log_likelihood,
+        total_trials,
+    )
 
 
 def _json_default(value: Any) -> Any:
@@ -372,6 +387,259 @@ class BaselineRLTrainer(ModelTrainer):
 
         return choices_sessions, rewards_sessions, kept_session_ids
 
+    def _resolve_session_curriculum_name(self, session_df: pd.DataFrame) -> str:
+        """Return a stable curriculum label for one session."""
+        if "curriculum_name" not in session_df.columns:
+            return "Unknown"
+        curricula = [
+            str(value)
+            for value in session_df["curriculum_name"].dropna().unique().tolist()
+        ]
+        if not curricula:
+            return "Unknown"
+        if len(curricula) == 1:
+            return curricula[0]
+        return "Mixed"
+
+    def _validate_single_subject_split_metadata(
+        self,
+        *,
+        raw_df: pd.DataFrame | None,
+        metadata: Mapping[str, Any],
+        n_train_sessions: int,
+        n_eval_sessions: int,
+    ) -> dict[str, Any]:
+        """Validate train/eval session-id metadata for single-subject breakdowns."""
+        if raw_df is None or raw_df.empty:
+            return {
+                "enabled": True,
+                "skipped": True,
+                "reason": "bundle.raw is missing or empty; cannot attribute sessions to subjects.",
+            }
+        if "ses_idx" not in raw_df.columns:
+            return {
+                "enabled": True,
+                "skipped": True,
+                "reason": "bundle.raw is missing 'ses_idx'; cannot validate train/eval split alignment.",
+            }
+
+        train_session_ids_meta = metadata.get("train_session_ids")
+        eval_session_ids_meta = metadata.get("eval_session_ids")
+        if not isinstance(train_session_ids_meta, list) or not isinstance(
+            eval_session_ids_meta,
+            list,
+        ):
+            return {
+                "enabled": True,
+                "skipped": True,
+                "reason": (
+                    "Dataset metadata is missing explicit train_session_ids/eval_session_ids; "
+                    "single-subject per-subject breakdown requires loader-provided split metadata."
+                ),
+            }
+
+        raw_session_lookup: dict[Any, dict[str, Any]] = {}
+        ordered_session_ids: list[Any] = []
+        ordered_subject_ids: list[Any] = []
+        for session_id in dict.fromkeys(raw_df["ses_idx"].tolist()):
+            normalized_session_id = _normalize_identifier(session_id)
+            session_rows = raw_df[raw_df["ses_idx"] == session_id]
+            subject_id = "unknown"
+            if "subject_id" in session_rows.columns:
+                subject_id = normalize_subject_id(session_rows["subject_id"].iloc[0])
+            curriculum_name = self._resolve_session_curriculum_name(session_rows)
+            raw_session_lookup[normalized_session_id] = {
+                "session_id": session_id,
+                "subject_id": subject_id,
+                "curriculum_name": curriculum_name,
+            }
+            ordered_session_ids.append(session_id)
+            ordered_subject_ids.append(subject_id)
+
+        raw_session_id_set = set(raw_session_lookup.keys())
+        train_session_id_keys = [_normalize_identifier(session_id) for session_id in train_session_ids_meta]
+        eval_session_id_keys = [_normalize_identifier(session_id) for session_id in eval_session_ids_meta]
+        train_session_id_set = set(train_session_id_keys)
+        eval_session_id_set = set(eval_session_id_keys)
+
+        if len(train_session_id_set) != len(train_session_id_keys):
+            return {
+                "enabled": True,
+                "skipped": True,
+                "reason": "Dataset metadata contains duplicate train_session_ids.",
+            }
+        if len(eval_session_id_set) != len(eval_session_id_keys):
+            return {
+                "enabled": True,
+                "skipped": True,
+                "reason": "Dataset metadata contains duplicate eval_session_ids.",
+            }
+        if train_session_id_set & eval_session_id_set:
+            return {
+                "enabled": True,
+                "skipped": True,
+                "reason": "Dataset metadata train_session_ids and eval_session_ids are not disjoint.",
+            }
+        if train_session_id_set | eval_session_id_set != raw_session_id_set:
+            return {
+                "enabled": True,
+                "skipped": True,
+                "reason": (
+                    "Dataset metadata train/eval session ids do not match the aligned raw session set."
+                ),
+            }
+        if len(train_session_id_keys) != int(n_train_sessions):
+            return {
+                "enabled": True,
+                "skipped": True,
+                "reason": (
+                    "Dataset metadata train_session_ids count does not match the number of "
+                    "train sessions extracted from the split dataset."
+                ),
+            }
+        if len(eval_session_id_keys) != int(n_eval_sessions):
+            return {
+                "enabled": True,
+                "skipped": True,
+                "reason": (
+                    "Dataset metadata eval_session_ids count does not match the number of "
+                    "eval sessions extracted from the split dataset."
+                ),
+            }
+
+        train_session_ids = [
+            raw_session_lookup[session_id_key]["session_id"]
+            for session_id_key in train_session_id_keys
+        ]
+        eval_session_ids = [
+            raw_session_lookup[session_id_key]["session_id"]
+            for session_id_key in eval_session_id_keys
+        ]
+        ordered_subject_ids, subject_id_to_index, index_to_subject_id = build_subject_index_maps(
+            ordered_subject_ids
+        )
+
+        return {
+            "enabled": True,
+            "skipped": False,
+            "train_session_ids": train_session_ids,
+            "eval_session_ids": eval_session_ids,
+            "train_session_subject_ids": [
+                raw_session_lookup[_normalize_identifier(session_id)]["subject_id"]
+                for session_id in train_session_ids
+            ],
+            "eval_session_subject_ids": [
+                raw_session_lookup[_normalize_identifier(session_id)]["subject_id"]
+                for session_id in eval_session_ids
+            ],
+            "session_lookup": raw_session_lookup,
+            "ordered_session_ids": ordered_session_ids,
+            "ordered_subject_ids": ordered_subject_ids,
+            "subject_id_to_index": subject_id_to_index,
+            "index_to_subject_id": index_to_subject_id,
+        }
+
+    def _build_single_subject_metrics_dataframe(
+        self,
+        *,
+        split_alignment: Mapping[str, Any],
+        train_choices: List[np.ndarray],
+        train_choice_prob_sessions: List[np.ndarray],
+        eval_choices: List[np.ndarray],
+        eval_choice_prob_sessions: List[np.ndarray],
+    ) -> pd.DataFrame:
+        """Aggregate one fitted global model into per-subject train/eval metrics."""
+        train_session_ids = list(split_alignment["train_session_ids"])
+        eval_session_ids = list(split_alignment["eval_session_ids"])
+        session_lookup = dict(split_alignment["session_lookup"])
+        index_to_subject_id = dict(split_alignment["index_to_subject_id"])
+
+        if len(train_session_ids) != len(train_choices) or len(train_choices) != len(
+            train_choice_prob_sessions
+        ):
+            raise ValueError(
+                "Train split session metadata does not align with extracted train choices/probabilities."
+            )
+        if len(eval_session_ids) != len(eval_choices) or len(eval_choices) != len(
+            eval_choice_prob_sessions
+        ):
+            raise ValueError(
+                "Eval split session metadata does not align with extracted eval choices/probabilities."
+            )
+
+        rows_by_subject: dict[Any, dict[str, Any]] = {}
+        for subject_index, subject_id in sorted(index_to_subject_id.items(), key=lambda item: int(item[0])):
+            normalized_subject_id = normalize_subject_id(subject_id)
+            curriculum_name = "Unknown"
+            for session_meta in session_lookup.values():
+                if session_meta["subject_id"] == normalized_subject_id:
+                    curriculum_name = str(session_meta["curriculum_name"])
+                    break
+            rows_by_subject[normalized_subject_id] = {
+                "subject_id": normalized_subject_id,
+                "subject_index": int(subject_index),
+                "curriculum_name": curriculum_name,
+                "num_train_sessions": 0,
+                "num_eval_sessions": 0,
+                "num_train_trials": 0,
+                "num_eval_trials": 0,
+                "train_total_log_likelihood": 0.0,
+                "train_total_trials": 0,
+                "eval_total_log_likelihood": 0.0,
+                "eval_total_trials": 0,
+            }
+
+        def accumulate_split(
+            *,
+            split_name: str,
+            session_ids: List[Any],
+            choice_sessions: List[np.ndarray],
+            choice_prob_sessions: List[np.ndarray],
+        ) -> None:
+            for session_id, choices, choice_prob in zip(
+                session_ids,
+                choice_sessions,
+                choice_prob_sessions,
+            ):
+                session_meta = session_lookup[_normalize_identifier(session_id)]
+                subject_id = session_meta["subject_id"]
+                row = rows_by_subject[subject_id]
+                stats = _compute_likelihood_stats([choices], [choice_prob])
+                row[f"num_{split_name}_sessions"] += 1
+                row[f"num_{split_name}_trials"] += int(stats["total_trials"])
+                row[f"{split_name}_total_log_likelihood"] += float(
+                    stats["total_log_likelihood"]
+                )
+                row[f"{split_name}_total_trials"] += int(stats["total_trials"])
+
+        accumulate_split(
+            split_name="train",
+            session_ids=train_session_ids,
+            choice_sessions=train_choices,
+            choice_prob_sessions=train_choice_prob_sessions,
+        )
+        accumulate_split(
+            split_name="eval",
+            session_ids=eval_session_ids,
+            choice_sessions=eval_choices,
+            choice_prob_sessions=eval_choice_prob_sessions,
+        )
+
+        rows: list[dict[str, Any]] = []
+        for subject_index, subject_id in sorted(index_to_subject_id.items(), key=lambda item: int(item[0])):
+            row = rows_by_subject[normalize_subject_id(subject_id)]
+            row["train_likelihood"] = _optional_normalized_likelihood_from_log_stats(
+                float(row["train_total_log_likelihood"]),
+                int(row["train_total_trials"]),
+            )
+            row["eval_likelihood"] = _optional_normalized_likelihood_from_log_stats(
+                float(row["eval_total_log_likelihood"]),
+                int(row["eval_total_trials"]),
+            )
+            rows.append(row)
+
+        return pd.DataFrame(rows)
+
     def _build_multisubject_subject_records(
         self,
         *,
@@ -627,103 +895,14 @@ class BaselineRLTrainer(ModelTrainer):
         self,
         subject_metrics_df: pd.DataFrame,
         *,
-        pooled_train_trial_likelihood: float,
-        pooled_eval_trial_likelihood: float,
+        metric_specs: list[tuple[str, str, float | None]],
+        title: str,
     ) -> Figure:
-        plot_df = subject_metrics_df.sort_values("subject_index").reset_index(drop=True).copy()
-        if "curriculum_name" not in plot_df.columns:
-            plot_df["curriculum_name"] = "Unknown"
-        else:
-            plot_df["curriculum_name"] = plot_df["curriculum_name"].fillna("Unknown")
-
-        fig, axes = plt.subplots(1, 2, figsize=(13, 4.8), squeeze=False)
-        curriculum_values = list(dict.fromkeys(plot_df["curriculum_name"].astype(str).tolist()))
-        cmap = plt.get_cmap("tab10")
-        curriculum_to_color = {
-            curriculum: cmap(index % max(1, cmap.N))
-            for index, curriculum in enumerate(curriculum_values)
-        }
-        rng = np.random.default_rng(0)
-        plot_specs = [
-            (
-                axes[0, 0],
-                "train_likelihood",
-                "Train Likelihood",
-                pooled_train_trial_likelihood,
-            ),
-            (
-                axes[0, 1],
-                "eval_likelihood",
-                "Eval Likelihood",
-                pooled_eval_trial_likelihood,
-            ),
-        ]
-
-        for panel_index, (ax, metric_column, title, pooled_value) in enumerate(plot_specs):
-            jitter = rng.uniform(-0.35, 0.35, size=len(plot_df))
-            for curriculum in curriculum_values:
-                curriculum_rows = plot_df[plot_df["curriculum_name"].astype(str) == curriculum]
-                curriculum_indices = curriculum_rows.index.to_numpy(dtype=int)
-                ax.scatter(
-                    curriculum_rows[metric_column],
-                    jitter[curriculum_indices],
-                    color=curriculum_to_color[curriculum],
-                    s=65,
-                    alpha=0.9,
-                    label=curriculum,
-                )
-
-            x_values = plot_df[metric_column].to_numpy(dtype=float)
-            x_range = float(np.max(x_values) - np.min(x_values)) if len(x_values) > 0 else 0.0
-            x_pad = max(0.0025, x_range * 0.01)
-            for row_index, row in plot_df.iterrows():
-                label_y_offset = 0.035 if row_index % 2 == 0 else -0.045
-                ax.text(
-                    float(row[metric_column]) + x_pad,
-                    float(jitter[row_index]) + label_y_offset,
-                    str(int(row["subject_index"])),
-                    fontsize=8,
-                    alpha=0.85,
-                )
-
-            ax.axvline(
-                pooled_value,
-                color="dimgray",
-                linestyle=":",
-                linewidth=2.0,
-            )
-            x_margin = max(0.01, x_range * 0.08 if x_range > 0 else 0.02)
-            ax.set_xlim(float(np.min(x_values)) - x_margin, float(np.max(x_values)) + x_margin)
-            ax.set_ylim(-0.55, 0.55)
-            ax.set_yticks([])
-            ax.set_ylabel("")
-            ax.set_xlabel("Likelihood")
-            ax.set_title(f"{title} (n={len(plot_df)})")
-            ax.grid(axis="x", color="0.9", linewidth=1)
-
-        curriculum_handles = [
-            Line2D(
-                [0],
-                [0],
-                marker="o",
-                linestyle="",
-                markerfacecolor=curriculum_to_color[curriculum],
-                markeredgecolor=curriculum_to_color[curriculum],
-                label=curriculum,
-            )
-            for curriculum in curriculum_values
-        ]
-        line_handles = [
-            Line2D([0], [0], color="dimgray", linestyle=":", linewidth=2.0, label="Pooled trial"),
-        ]
-        fig.legend(
-            handles=curriculum_handles + line_handles,
-            loc="upper center",
-            ncol=min(len(curriculum_handles) + len(line_handles), 5),
+        return _plot_subject_likelihood_scatter_figure(
+            subject_metrics_df,
+            metric_specs=metric_specs,
+            title=title,
         )
-        fig.suptitle("Per-Subject Likelihood Scatter", fontsize=14)
-        fig.tight_layout(rect=(0, 0, 1, 0.92))
-        return fig
 
     def _fit_multisubject(
         self,
@@ -913,8 +1092,19 @@ class BaselineRLTrainer(ModelTrainer):
 
         likelihood_scatter_fig = self._plot_subject_likelihood_scatter(
             subject_metrics_df,
-            pooled_train_trial_likelihood=pooled_train_trial_likelihood,
-            pooled_eval_trial_likelihood=pooled_eval_trial_likelihood,
+            metric_specs=[
+                (
+                    "train_likelihood",
+                    "Train Likelihood",
+                    pooled_train_trial_likelihood,
+                ),
+                (
+                    "eval_likelihood",
+                    "Eval Likelihood",
+                    pooled_eval_trial_likelihood,
+                ),
+            ],
+            title="Per-Subject Likelihood Scatter",
         )
         likelihood_scatter_path = self.output_dir / "subject_likelihood_scatter.png"
         likelihood_scatter_fig.savefig(likelihood_scatter_path, dpi=150, bbox_inches="tight")
@@ -1163,62 +1353,28 @@ class BaselineRLTrainer(ModelTrainer):
         eval_session_ids = [f"eval_session_{i}" for i in range(n_eval_sessions)]
         train_session_subject_ids = ["unknown"] * n_train_sessions
         eval_session_subject_ids = ["unknown"] * n_eval_sessions
-
-        if (
-            bundle.raw is not None
-            and hasattr(bundle.raw, "columns")
-            and "ses_idx" in bundle.raw.columns
-        ):
-            session_order = list(dict.fromkeys(bundle.raw["ses_idx"].tolist()))
-            n_total_sessions = len(session_order)
-            expected_total = n_train_sessions + n_eval_sessions
-            if n_total_sessions == expected_total:
-                eval_every_n = int(metadata.get("eval_every_n", 2))
-                if eval_every_n <= 0:
-                    raise ValueError(f"Invalid eval_every_n in metadata: {eval_every_n}")
-
-                eval_indices = np.arange(eval_every_n - 1, n_total_sessions, eval_every_n)
-                eval_index_set = set(int(i) for i in eval_indices.tolist())
-                train_indices = [
-                    idx for idx in range(n_total_sessions) if idx not in eval_index_set
-                ]
-
-                if len(train_indices) == n_train_sessions and len(eval_indices) == n_eval_sessions:
-                    train_session_ids = [session_order[idx] for idx in train_indices]
-                    eval_session_ids = [session_order[int(idx)] for idx in eval_indices.tolist()]
-
-                    if "subject_id" in bundle.raw.columns:
-                        session_subject_map: dict[Any, Any] = {}
-                        session_lookup = (
-                            bundle.raw[["ses_idx", "subject_id"]]
-                            .drop_duplicates(subset=["ses_idx"])
-                            .set_index("ses_idx")["subject_id"]
-                            .to_dict()
-                        )
-                        for session_id in session_order:
-                            session_subject_map[session_id] = session_lookup.get(
-                                session_id, "unknown"
-                            )
-                        train_session_subject_ids = [
-                            session_subject_map.get(session_id, "unknown")
-                            for session_id in train_session_ids
-                        ]
-                        eval_session_subject_ids = [
-                            session_subject_map.get(session_id, "unknown")
-                            for session_id in eval_session_ids
-                        ]
-                else:
-                    logger.warning(
-                        "Could not align train/eval split indices to extracted session lists. "
-                        "Using fallback synthetic session IDs."
-                    )
-            else:
-                logger.warning(
-                    "Raw dataframe sessions (%d) do not match split sessions (%d). "
-                    "Using fallback synthetic session IDs.",
-                    n_total_sessions,
-                    expected_total,
-                )
+        raw_df = (
+            pd.DataFrame(bundle.raw).copy()
+            if bundle.raw is not None and hasattr(bundle.raw, "columns")
+            else None
+        )
+        split_alignment = self._validate_single_subject_split_metadata(
+            raw_df=raw_df,
+            metadata=metadata,
+            n_train_sessions=n_train_sessions,
+            n_eval_sessions=n_eval_sessions,
+        )
+        if bool(split_alignment.get("skipped")):
+            logger.warning(
+                "Skipping single-subject per-subject breakdown because split alignment "
+                "validation failed: %s",
+                split_alignment.get("reason", "unknown reason"),
+            )
+        else:
+            train_session_ids = list(split_alignment["train_session_ids"])
+            eval_session_ids = list(split_alignment["eval_session_ids"])
+            train_session_subject_ids = list(split_alignment["train_session_subject_ids"])
+            eval_session_subject_ids = list(split_alignment["eval_session_subject_ids"])
 
         try:
             train_examples_summary = self._plot_q_value_examples_for_split(
@@ -1278,6 +1434,68 @@ class BaselineRLTrainer(ModelTrainer):
         if eval_plot_paths:
             output["eval_choice_reward_fitted_prob_plot_path"] = str(eval_plot_paths[0])
 
+        output["subject_breakdown"] = {
+            "enabled": True,
+            "skipped": bool(split_alignment.get("skipped")),
+        }
+        if bool(split_alignment.get("skipped")):
+            output["subject_breakdown"]["reason"] = str(
+                split_alignment.get("reason", "unknown reason")
+            )
+        else:
+            try:
+                subject_metrics_df = self._build_single_subject_metrics_dataframe(
+                    split_alignment=split_alignment,
+                    train_choices=train_choices,
+                    train_choice_prob_sessions=train_choice_prob_sessions,
+                    eval_choices=eval_choices,
+                    eval_choice_prob_sessions=eval_choice_prob_sessions,
+                )
+                if subject_metrics_df.empty:
+                    raise ValueError("No per-subject rows were generated.")
+
+                subject_metrics_csv_path = self.output_dir / "subject_fit_metrics.csv"
+                subject_metrics_pickle_path = self.output_dir / "subject_fit_metrics.pkl"
+                subject_metrics_df.to_csv(subject_metrics_csv_path, index=False)
+                subject_metrics_df.to_pickle(subject_metrics_pickle_path)
+
+                subject_index_map_path = save_subject_index_map(
+                    self.output_dir / "subject_index_map.json",
+                    subject_id_to_index=dict(split_alignment["subject_id_to_index"]),
+                    index_to_subject_id=dict(split_alignment["index_to_subject_id"]),
+                )
+
+                likelihood_scatter_fig = self._plot_subject_likelihood_scatter(
+                    subject_metrics_df,
+                    metric_specs=[
+                        ("train_likelihood", "Train Likelihood", float(train_likelihood)),
+                        ("eval_likelihood", "Eval Likelihood", float(eval_likelihood)),
+                    ],
+                    title="Per-Subject Likelihood Scatter",
+                )
+                likelihood_scatter_path = self.output_dir / "subject_likelihood_scatter.png"
+                likelihood_scatter_fig.savefig(
+                    likelihood_scatter_path,
+                    dpi=150,
+                    bbox_inches="tight",
+                )
+                plt.close(likelihood_scatter_fig)
+
+                output["subject_breakdown"]["num_subjects"] = int(len(subject_metrics_df))
+                output["subject_artifacts"] = {
+                    "subject_index_map": str(subject_index_map_path),
+                    "subject_fit_metrics_csv": str(subject_metrics_csv_path),
+                    "subject_fit_metrics_pickle": str(subject_metrics_pickle_path),
+                }
+                output["subject_likelihood_scatter_path"] = str(likelihood_scatter_path)
+            except Exception as exc:
+                logger.exception("Failed to build single-subject per-subject breakdown")
+                output["subject_breakdown"] = {
+                    "enabled": True,
+                    "skipped": True,
+                    "reason": f"Failed to build per-subject breakdown: {exc}",
+                }
+
         if wandb_run is not None:
             wandb_run.summary["pooled_train_trial_likelihood"] = float(train_likelihood)
             wandb_run.summary["pooled_eval_trial_likelihood"] = float(eval_likelihood)
@@ -1315,6 +1533,19 @@ class BaselineRLTrainer(ModelTrainer):
                         "eval/q_values_over_trials_examples": [
                             wandb.Image(path) for path in eval_plot_paths
                         ]
+                    }
+                )
+
+            if "subject_artifacts" in output:
+                subject_metrics_df = pd.read_pickle(
+                    output["subject_artifacts"]["subject_fit_metrics_pickle"]
+                )
+                wandb_run.log(
+                    {
+                        "subject_fit_metrics": wandb.Table(dataframe=subject_metrics_df),
+                        "fig/subject_likelihood_scatter": wandb.Image(
+                            output["subject_likelihood_scatter_path"]
+                        ),
                     }
                 )
 

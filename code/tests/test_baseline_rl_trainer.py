@@ -69,6 +69,7 @@ class TestBaselineRLTrainer(unittest.TestCase):
         )
         self.bundle = self.loader.load()
         self.multisubject_bundle = self._make_multisubject_bundle()
+        self.single_subject_grouped_bundle = self._make_single_subject_grouped_bundle()
 
     def _make_multisubject_bundle(self) -> DatasetBundle:
         raw_df = self.bundle.raw.copy()
@@ -130,6 +131,40 @@ class TestBaselineRLTrainer(unittest.TestCase):
             eval_set=None,
             metadata=metadata,
             extras={},
+        )
+
+    def _make_single_subject_grouped_bundle(
+        self,
+        *,
+        include_subject_id: bool = True,
+        metadata_overrides: dict[str, object] | None = None,
+    ) -> DatasetBundle:
+        raw_df = self.bundle.raw.copy()
+        session_ids = list(dict.fromkeys(raw_df["ses_idx"].tolist()))
+
+        for session_id in session_ids[:3]:
+            mask = raw_df["ses_idx"] == session_id
+            if include_subject_id:
+                raw_df.loc[mask, "subject_id"] = 101
+            raw_df.loc[mask, "curriculum_name"] = "Curriculum A"
+
+        for session_id in session_ids[3:]:
+            mask = raw_df["ses_idx"] == session_id
+            if include_subject_id:
+                raw_df.loc[mask, "subject_id"] = 202
+            raw_df.loc[mask, "curriculum_name"] = "Curriculum B"
+
+        metadata = dict(self.bundle.metadata)
+        metadata["multisubject"] = False
+        if metadata_overrides:
+            metadata.update(metadata_overrides)
+
+        return DatasetBundle(
+            raw=raw_df,
+            train_set=self.bundle.train_set,
+            eval_set=self.bundle.eval_set,
+            metadata=metadata,
+            extras=dict(self.bundle.extras),
         )
 
     def test_instantiation(self):
@@ -320,6 +355,21 @@ class TestBaselineRLTrainer(unittest.TestCase):
         for i in range(n_eval_sessions):
             self.assertEqual(len(eval_choices[i]), 100)
             self.assertEqual(len(eval_rewards[i]), 100)
+
+    def test_single_subject_loader_metadata_includes_explicit_split_session_ids(self):
+        """Test that single-subject loaders expose explicit split session ids."""
+        train_session_ids = self.bundle.metadata.get("train_session_ids")
+        eval_session_ids = self.bundle.metadata.get("eval_session_ids")
+
+        self.assertIsInstance(train_session_ids, list)
+        self.assertIsInstance(eval_session_ids, list)
+        self.assertEqual(len(train_session_ids), 3)
+        self.assertEqual(len(eval_session_ids), 3)
+        self.assertEqual(set(train_session_ids).intersection(eval_session_ids), set())
+        self.assertEqual(
+            set(train_session_ids).union(eval_session_ids),
+            set(dict.fromkeys(self.bundle.raw["ses_idx"].tolist())),
+        )
 
     def test_normalization_computation(self):
         """Test that normalized likelihood computation is correct."""
@@ -785,6 +835,121 @@ class TestBaselineRLTrainer(unittest.TestCase):
             self.assertIn("train_choice_reward_fitted_prob_plot_path", saved_output)
             self.assertIn("eval_choice_reward_fitted_prob_plot_path", saved_output)
 
+    def test_single_subject_fit_exports_subject_artifacts_and_metrics(self):
+        """Test that single-subject fits export per-subject breakdown artifacts."""
+        with tempfile.TemporaryDirectory(prefix="baseline_rl_single_subject_subjects_") as tmpdir:
+            trainer = BaselineRLTrainer(
+                agent_class="ForagerQLearning",
+                agent_kwargs={
+                    "number_of_learning_rate": 2,
+                    "number_of_forget_rate": 1,
+                    "choice_kernel": "none",
+                    "action_selection": "softmax",
+                },
+                DE_kwargs={"workers": 1, "maxiter": 3, "popsize": 5},
+                output_dir=tmpdir,
+                seed=42,
+            )
+
+            output = trainer.fit(self.single_subject_grouped_bundle)
+
+            self.assertIn("subject_breakdown", output)
+            self.assertFalse(output["subject_breakdown"]["skipped"])
+            self.assertIn("subject_artifacts", output)
+            self.assertIn("subject_likelihood_scatter_path", output)
+
+            subject_artifacts = output["subject_artifacts"]
+            subject_index_map_path = Path(subject_artifacts["subject_index_map"])
+            subject_metrics_csv_path = Path(subject_artifacts["subject_fit_metrics_csv"])
+            subject_metrics_pickle_path = Path(subject_artifacts["subject_fit_metrics_pickle"])
+            likelihood_scatter_path = Path(output["subject_likelihood_scatter_path"])
+
+            self.assertTrue(subject_index_map_path.exists())
+            self.assertTrue(subject_metrics_csv_path.exists())
+            self.assertTrue(subject_metrics_pickle_path.exists())
+            self.assertTrue(likelihood_scatter_path.exists())
+
+            subject_metrics_df = pd.read_pickle(subject_metrics_pickle_path)
+            self.assertEqual(subject_metrics_df["subject_index"].tolist(), [0, 1])
+            self.assertCountEqual(subject_metrics_df["subject_id"].tolist(), [101, 202])
+            self.assertIn("train_likelihood", subject_metrics_df.columns)
+            self.assertIn("eval_likelihood", subject_metrics_df.columns)
+
+            pooled_train_likelihood = float(
+                np.exp(
+                    subject_metrics_df["train_total_log_likelihood"].sum()
+                    / subject_metrics_df["train_total_trials"].sum()
+                )
+            )
+            pooled_eval_likelihood = float(
+                np.exp(
+                    subject_metrics_df["eval_total_log_likelihood"].sum()
+                    / subject_metrics_df["eval_total_trials"].sum()
+                )
+            )
+            self.assertAlmostEqual(output["train_likelihood"], pooled_train_likelihood, places=6)
+            self.assertAlmostEqual(output["eval_likelihood"], pooled_eval_likelihood, places=6)
+
+    def test_single_subject_subject_breakdown_skips_when_split_metadata_missing(self):
+        """Test that invalid split metadata skips the per-subject breakdown cleanly."""
+        broken_bundle = self._make_single_subject_grouped_bundle(
+            metadata_overrides={
+                "train_session_ids": None,
+                "eval_session_ids": None,
+            }
+        )
+        with tempfile.TemporaryDirectory(prefix="baseline_rl_single_subject_skip_") as tmpdir:
+            trainer = BaselineRLTrainer(
+                agent_class="ForagerQLearning",
+                agent_kwargs={
+                    "number_of_learning_rate": 1,
+                    "number_of_forget_rate": 0,
+                    "choice_kernel": "none",
+                    "action_selection": "softmax",
+                },
+                DE_kwargs={"workers": 1, "maxiter": 2, "popsize": 4},
+                output_dir=tmpdir,
+                seed=42,
+            )
+
+            output = trainer.fit(broken_bundle)
+
+            self.assertIn("subject_breakdown", output)
+            self.assertTrue(output["subject_breakdown"]["skipped"])
+            self.assertIn("train_session_ids/eval_session_ids", output["subject_breakdown"]["reason"])
+            self.assertNotIn("subject_artifacts", output)
+            self.assertIn("train_likelihood", output)
+            self.assertIn("eval_likelihood", output)
+
+    def test_single_subject_missing_subject_id_falls_back_to_unknown_subject(self):
+        """Test that valid split metadata still produces one unknown-subject row when needed."""
+        unknown_subject_bundle = self._make_single_subject_grouped_bundle(
+            include_subject_id=False
+        )
+        with tempfile.TemporaryDirectory(prefix="baseline_rl_single_subject_unknown_") as tmpdir:
+            trainer = BaselineRLTrainer(
+                agent_class="ForagerQLearning",
+                agent_kwargs={
+                    "number_of_learning_rate": 1,
+                    "number_of_forget_rate": 0,
+                    "choice_kernel": "none",
+                    "action_selection": "softmax",
+                },
+                DE_kwargs={"workers": 1, "maxiter": 2, "popsize": 4},
+                output_dir=tmpdir,
+                seed=42,
+            )
+
+            output = trainer.fit(unknown_subject_bundle)
+
+            self.assertIn("subject_artifacts", output)
+            subject_metrics_df = pd.read_pickle(
+                output["subject_artifacts"]["subject_fit_metrics_pickle"]
+            )
+            self.assertEqual(len(subject_metrics_df), 1)
+            self.assertEqual(subject_metrics_df.loc[0, "subject_id"], "unknown")
+            self.assertEqual(int(subject_metrics_df.loc[0, "subject_index"]), 0)
+
     def test_save_baseline_output_rewrite_persists_heldout_summary(self):
         """Test that baseline output rewrites keep the held-out summary."""
         with tempfile.TemporaryDirectory(prefix="baseline_rl_output_merge_") as tmpdir:
@@ -897,6 +1062,114 @@ class TestBaselineRLTrainer(unittest.TestCase):
                 saved_summary = json.load(f)
             self.assertIn("heldout_test_likelihood", saved_summary)
             self.assertNotIn("test_likelihood", saved_summary)
+
+    def test_heldout_eval_exports_per_subject_artifacts_and_metrics(self):
+        """Test that held-out baseline RL eval exports per-subject subject artifacts."""
+        with tempfile.TemporaryDirectory(prefix="baseline_rl_heldout_subjects_") as tmpdir:
+            output_path = Path(tmpdir) / "baseline_rl_output.json"
+            with output_path.open("w") as f:
+                json.dump(
+                    {
+                        "multisubject": False,
+                        "fit_strategy": "single_subject",
+                        "agent_class": "ForagerQLearning",
+                        "agent_kwargs": {},
+                        "fitted_params": {"biasL": 0.0},
+                    },
+                    f,
+                )
+
+            df_test = pd.DataFrame(
+                {
+                    "ses_idx": ["session_1"] * 3
+                    + ["session_2"] * 3
+                    + ["session_3"] * 3
+                    + ["session_4"] * 3,
+                    "trial": [0, 1, 2] * 4,
+                    "animal_response": [0, 1, 0, 1, 1, 0, 0, 0, 1, 1, 0, 1],
+                    "earned_reward": [1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0],
+                    "subject_id": [123] * 6 + [456] * 6,
+                    "curriculum_name": ["Curriculum A"] * 6 + ["Curriculum B"] * 6,
+                }
+            )
+
+            class FakeAgent:
+                def __init__(self, **_: object) -> None:
+                    self.q_value_history = None
+
+                def set_params(self, **_: object) -> None:
+                    return None
+
+                def perform_closed_loop_multi_session(self, choices, rewards):
+                    del rewards
+                    sessions = []
+                    for session_choices in choices:
+                        session_choices = np.asarray(session_choices, dtype=int)
+                        prob_right = np.where(session_choices == 1, 0.8, 0.2)
+                        sessions.append(np.vstack([1.0 - prob_right, prob_right]))
+                    return sessions
+
+            hydra_config = types.SimpleNamespace(
+                data=types.SimpleNamespace(
+                    test_subject_ids=[123, 456],
+                    test_subject_start=None,
+                    test_subject_end=None,
+                    mature_only=True,
+                    curricula=None,
+                    cols_to_retain=None,
+                    heldout_example_sessions_per_subject=1,
+                    example_max_subjects=2,
+                ),
+                model=types.SimpleNamespace(
+                    type="baseline_rl",
+                    output_dir=tmpdir,
+                    agent_class="ForagerQLearning",
+                    seed=42,
+                ),
+            )
+
+            with mock.patch(
+                "utils.baseline_rl_evaluation.load_mice_snapshot",
+                return_value=(df_test, [123, 456]),
+            ), mock.patch.object(
+                generative_model,
+                "ForagerQLearning",
+                FakeAgent,
+            ):
+                summary = evaluate_baseline_rl_on_heldout_subjects(hydra_config)
+
+            self.assertIsNotNone(summary)
+            assert summary is not None
+            self.assertIn("subject_artifacts", summary)
+            self.assertIn("subject_likelihood_scatter_path", summary)
+
+            subject_artifacts = summary["subject_artifacts"]
+            subject_metrics_csv_path = Path(subject_artifacts["subject_fit_metrics_csv"])
+            subject_metrics_pickle_path = Path(subject_artifacts["subject_fit_metrics_pickle"])
+            subject_index_map_path = Path(subject_artifacts["subject_index_map"])
+            likelihood_scatter_path = Path(summary["subject_likelihood_scatter_path"])
+
+            self.assertTrue(subject_metrics_csv_path.exists())
+            self.assertTrue(subject_metrics_pickle_path.exists())
+            self.assertTrue(subject_index_map_path.exists())
+            self.assertTrue(likelihood_scatter_path.exists())
+
+            subject_metrics_df = pd.read_pickle(subject_metrics_pickle_path)
+            self.assertEqual(subject_metrics_df["subject_index"].tolist(), [0, 1])
+            self.assertCountEqual(subject_metrics_df["subject_id"].tolist(), [123, 456])
+            self.assertIn("heldout_test_likelihood", subject_metrics_df.columns)
+
+            pooled_heldout_likelihood = float(
+                np.exp(
+                    subject_metrics_df["heldout_total_log_likelihood"].sum()
+                    / subject_metrics_df["heldout_total_trials"].sum()
+                )
+            )
+            self.assertAlmostEqual(
+                summary["heldout_test_likelihood"],
+                pooled_heldout_likelihood,
+                places=6,
+            )
 
     def test_probability_fallback_plot_uses_direct_probabilities(self):
         """Test that fallback plots show model choice probabilities directly."""

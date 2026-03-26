@@ -8,11 +8,14 @@ from pathlib import Path
 from typing import Any, Mapping
 
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 import numpy as np
+import pandas as pd
 
 from aind_dynamic_foraging_models import generative_model
 
 from utils.load_mice_snapshot import load_mice_snapshot
+from utils.multisubject import build_subject_index_maps, normalize_subject_id, save_subject_index_map
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +129,257 @@ def _compute_normalized_likelihood(
     if total_trials == 0:
         return 0.0
     return float(np.exp(total_log_lik / total_trials))
+
+
+def _compute_likelihood_stats(
+    choice_sessions: list[np.ndarray],
+    choice_prob_sessions: list[np.ndarray],
+) -> dict[str, float | int]:
+    """Return aggregate held-out likelihood stats plus normalized likelihood."""
+    total_log_lik = 0.0
+    total_trials = 0
+
+    for choices, choice_prob in zip(choice_sessions, choice_prob_sessions):
+        choice_prob = _to_numpy(choice_prob)
+        if choice_prob.ndim != 2:
+            continue
+        n_trials = min(len(choices), int(choice_prob.shape[1]))
+        if n_trials == 0:
+            continue
+        choices_idx = choices[:n_trials].astype(int)
+        valid = (choices_idx == 0) | (choices_idx == 1)
+        if not np.any(valid):
+            continue
+        trial_idx = np.arange(n_trials)[valid]
+        probs = choice_prob[choices_idx[valid], trial_idx]
+        probs = np.clip(probs, 1e-10, 1.0 - 1e-10)
+        total_log_lik += float(np.sum(np.log(probs)))
+        total_trials += int(np.sum(valid))
+
+    normalized_likelihood = (
+        float(np.exp(total_log_lik / total_trials)) if total_trials > 0 else 0.0
+    )
+    return {
+        "total_log_likelihood": float(total_log_lik),
+        "total_trials": int(total_trials),
+        "normalized_likelihood": float(normalized_likelihood),
+    }
+
+
+def _optional_normalized_likelihood_from_log_stats(
+    total_log_likelihood: float,
+    total_trials: int,
+) -> float | None:
+    """Return per-subject likelihood, or None when no trials were available."""
+    if total_trials <= 0:
+        return None
+    return float(np.exp(float(total_log_likelihood) / float(total_trials)))
+
+
+def _resolve_subject_curriculum_map(df: pd.DataFrame) -> dict[Any, str]:
+    """Return subject_id -> curriculum_name using first-seen order."""
+    if "subject_id" not in df.columns or "curriculum_name" not in df.columns:
+        return {}
+
+    subject_curriculum_map: dict[Any, str] = {}
+    for subject_id, subject_rows in df.groupby("subject_id", sort=False):
+        curricula = [
+            str(value)
+            for value in subject_rows["curriculum_name"].dropna().unique().tolist()
+        ]
+        normalized_subject_id = normalize_subject_id(subject_id)
+        if not curricula:
+            subject_curriculum_map[normalized_subject_id] = "Unknown"
+        elif len(curricula) == 1:
+            subject_curriculum_map[normalized_subject_id] = curricula[0]
+        else:
+            subject_curriculum_map[normalized_subject_id] = "Mixed"
+    return subject_curriculum_map
+
+
+def _plot_subject_likelihood_scatter(
+    subject_metrics_df: pd.DataFrame,
+    *,
+    metric_specs: list[tuple[str, str, float | None]],
+    title: str,
+) -> plt.Figure:
+    """Plot one or more per-subject likelihood panels with pooled references."""
+    plot_df = subject_metrics_df.sort_values("subject_index").reset_index(drop=True).copy()
+    if "curriculum_name" not in plot_df.columns:
+        plot_df["curriculum_name"] = "Unknown"
+    else:
+        plot_df["curriculum_name"] = plot_df["curriculum_name"].fillna("Unknown")
+
+    n_panels = max(1, len(metric_specs))
+    fig, axes = plt.subplots(
+        1,
+        n_panels,
+        figsize=(6.6 * n_panels, 4.8),
+        squeeze=False,
+    )
+    curriculum_values = list(dict.fromkeys(plot_df["curriculum_name"].astype(str).tolist()))
+    cmap = plt.get_cmap("tab10")
+    curriculum_to_color = {
+        curriculum: cmap(index % max(1, cmap.N))
+        for index, curriculum in enumerate(curriculum_values)
+    }
+    rng = np.random.default_rng(0)
+
+    for panel_index, (metric_column, panel_title, pooled_value) in enumerate(metric_specs):
+        ax = axes[0, panel_index]
+        jitter = rng.uniform(-0.35, 0.35, size=len(plot_df))
+        panel_df = plot_df[plot_df[metric_column].notna()].copy()
+        if panel_df.empty:
+            ax.text(
+                0.5,
+                0.5,
+                "No subject-level data",
+                ha="center",
+                va="center",
+                transform=ax.transAxes,
+            )
+            ax.set_title(panel_title)
+            ax.set_yticks([])
+            continue
+
+        for curriculum in curriculum_values:
+            curriculum_rows = panel_df[panel_df["curriculum_name"].astype(str) == curriculum]
+            if curriculum_rows.empty:
+                continue
+            curriculum_indices = curriculum_rows.index.to_numpy(dtype=int)
+            ax.scatter(
+                curriculum_rows[metric_column].astype(float),
+                jitter[curriculum_indices],
+                color=curriculum_to_color[curriculum],
+                s=65,
+                alpha=0.9,
+                label=curriculum,
+            )
+
+        x_values = panel_df[metric_column].astype(float).to_numpy(dtype=float)
+        x_range = float(np.max(x_values) - np.min(x_values)) if len(x_values) > 0 else 0.0
+        x_pad = max(0.0025, x_range * 0.01)
+        for row_index, row in panel_df.iterrows():
+            label_y_offset = 0.035 if row_index % 2 == 0 else -0.045
+            ax.text(
+                float(row[metric_column]) + x_pad,
+                float(jitter[row_index]) + label_y_offset,
+                str(int(row["subject_index"])),
+                fontsize=8,
+                alpha=0.85,
+            )
+
+        if pooled_value is not None:
+            ax.axvline(
+                float(pooled_value),
+                color="dimgray",
+                linestyle=":",
+                linewidth=2.0,
+            )
+        x_margin = max(0.01, x_range * 0.08 if x_range > 0 else 0.02)
+        ax.set_xlim(float(np.min(x_values)) - x_margin, float(np.max(x_values)) + x_margin)
+        ax.set_ylim(-0.55, 0.55)
+        ax.set_yticks([])
+        ax.set_ylabel("")
+        ax.set_xlabel("Likelihood")
+        ax.set_title(f"{panel_title} (n={len(panel_df)})")
+        ax.grid(axis="x", color="0.9", linewidth=1)
+
+    curriculum_handles = [
+        Line2D(
+            [0],
+            [0],
+            marker="o",
+            linestyle="",
+            markerfacecolor=curriculum_to_color[curriculum],
+            markeredgecolor=curriculum_to_color[curriculum],
+            label=curriculum,
+        )
+        for curriculum in curriculum_values
+    ]
+    handles = list(curriculum_handles)
+    if any(pooled_value is not None for _, _, pooled_value in metric_specs):
+        handles.append(
+            Line2D(
+                [0],
+                [0],
+                color="dimgray",
+                linestyle=":",
+                linewidth=2.0,
+                label="Pooled trial",
+            )
+        )
+    if handles:
+        fig.legend(
+            handles=handles,
+            loc="upper center",
+            ncol=min(len(handles), 5),
+        )
+    fig.suptitle(title, fontsize=14)
+    fig.tight_layout(rect=(0, 0, 1, 0.92))
+    return fig
+
+
+def _build_heldout_subject_metrics_dataframe(
+    *,
+    df_test: pd.DataFrame,
+    choice_sessions: list[np.ndarray],
+    choice_prob_sessions: list[np.ndarray],
+    session_subject_ids: list[Any],
+) -> tuple[pd.DataFrame, dict[Any, int], dict[int, Any]]:
+    """Aggregate held-out session likelihoods by subject."""
+    if len(choice_sessions) != len(choice_prob_sessions) or len(choice_sessions) != len(
+        session_subject_ids
+    ):
+        raise ValueError(
+            "Held-out choice sessions, probabilities, and subject ids must have matching lengths."
+        )
+
+    ordered_subject_ids, subject_id_to_index, index_to_subject_id = build_subject_index_maps(
+        [normalize_subject_id(subject_id) for subject_id in session_subject_ids]
+    )
+    subject_curriculum_map = _resolve_subject_curriculum_map(df_test)
+
+    rows_by_subject: dict[Any, dict[str, Any]] = {
+        subject_id: {
+            "subject_id": subject_id,
+            "subject_index": int(subject_id_to_index[subject_id]),
+            "curriculum_name": str(subject_curriculum_map.get(subject_id, "Unknown")),
+            "num_test_sessions": 0,
+            "num_test_trials": 0,
+            "heldout_total_log_likelihood": 0.0,
+            "heldout_total_trials": 0,
+        }
+        for subject_id in ordered_subject_ids
+    }
+
+    for subject_id, choices, choice_prob in zip(
+        session_subject_ids,
+        choice_sessions,
+        choice_prob_sessions,
+    ):
+        normalized_subject_id = normalize_subject_id(subject_id)
+        row = rows_by_subject[normalized_subject_id]
+        stats = _compute_likelihood_stats([choices], [choice_prob])
+        row["num_test_sessions"] += 1
+        row["num_test_trials"] += int(stats["total_trials"])
+        row["heldout_total_log_likelihood"] += float(stats["total_log_likelihood"])
+        row["heldout_total_trials"] += int(stats["total_trials"])
+
+    rows: list[dict[str, Any]] = []
+    for subject_id in ordered_subject_ids:
+        row = rows_by_subject[subject_id]
+        row["heldout_test_likelihood"] = _optional_normalized_likelihood_from_log_stats(
+            float(row["heldout_total_log_likelihood"]),
+            int(row["heldout_total_trials"]),
+        )
+        rows.append(row)
+
+    return (
+        pd.DataFrame(rows),
+        subject_id_to_index,
+        index_to_subject_id,
+    )
 
 
 def _extract_q_histories(
@@ -481,6 +735,42 @@ def evaluate_baseline_rl_on_heldout_subjects(
                     }
                 )
 
+    subject_metrics_df, subject_id_to_index, index_to_subject_id = (
+        _build_heldout_subject_metrics_dataframe(
+            df_test=pd.DataFrame(df_test).copy(),
+            choice_sessions=choice_sessions,
+            choice_prob_sessions=choice_prob_sessions,
+            session_subject_ids=session_subject_ids,
+        )
+    )
+    subject_metrics_csv_path = plot_dir / "subject_fit_metrics.csv"
+    subject_metrics_pickle_path = plot_dir / "subject_fit_metrics.pkl"
+    subject_metrics_df.to_csv(subject_metrics_csv_path, index=False)
+    subject_metrics_df.to_pickle(subject_metrics_pickle_path)
+    subject_index_map_path = save_subject_index_map(
+        plot_dir / "subject_index_map.json",
+        subject_id_to_index=subject_id_to_index,
+        index_to_subject_id=index_to_subject_id,
+    )
+    likelihood_scatter_fig = _plot_subject_likelihood_scatter(
+        subject_metrics_df,
+        metric_specs=[
+            (
+                "heldout_test_likelihood",
+                "Heldout Test Likelihood",
+                float(heldout_test_likelihood),
+            ),
+        ],
+        title="Heldout Per-Subject Likelihood Scatter",
+    )
+    likelihood_scatter_path = plot_dir / "subject_likelihood_scatter.png"
+    likelihood_scatter_fig.savefig(
+        likelihood_scatter_path,
+        dpi=150,
+        bbox_inches="tight",
+    )
+    plt.close(likelihood_scatter_fig)
+
     summary: dict[str, Any] = {
         "enabled": True,
         "test_subject_ids": [_normalize_identifier(s) for s in test_subject_ids],
@@ -493,6 +783,12 @@ def evaluate_baseline_rl_on_heldout_subjects(
         "plots": {
             "q_values_over_trials_examples": q_plot_paths,
         },
+        "subject_artifacts": {
+            "subject_index_map": str(subject_index_map_path),
+            "subject_fit_metrics_csv": str(subject_metrics_csv_path),
+            "subject_fit_metrics_pickle": str(subject_metrics_pickle_path),
+        },
+        "subject_likelihood_scatter_path": str(likelihood_scatter_path),
     }
 
     summary_path = plot_dir / "heldout_baseline_rl_eval_summary.json"
@@ -506,6 +802,14 @@ def evaluate_baseline_rl_on_heldout_subjects(
         wandb_run.summary["heldout/num_test_sessions"] = int(len(choice_sessions))
         wandb_run.summary["heldout/num_test_trials"] = int(sum(len(x) for x in choice_sessions))
         wandb_run.summary["heldout/example_sessions_per_subject"] = sessions_per_subject
+        wandb_run.log(
+            {
+                "heldout/subject_fit_metrics": wandb.Table(dataframe=subject_metrics_df),
+                "heldout/subject_likelihood_scatter": wandb.Image(
+                    str(likelihood_scatter_path)
+                ),
+            }
+        )
         if q_plot_paths:
             wandb_run.log(
                 {
