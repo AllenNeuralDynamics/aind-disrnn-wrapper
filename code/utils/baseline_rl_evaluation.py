@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -45,6 +45,26 @@ def _resolve_output_dir(model_cfg: Any) -> Path:
 def _load_baseline_output(path: Path) -> dict[str, Any]:
     with path.open("r") as f:
         return json.load(f)
+
+
+def _json_default(value: Any) -> Any:
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
+def save_baseline_rl_output(
+    output_dir: str | Path,
+    output: Mapping[str, Any],
+    *,
+    indent: int = 2,
+) -> Path:
+    output_path = Path(output_dir) / "baseline_rl_output.json"
+    with output_path.open("w") as f:
+        json.dump(dict(output), f, indent=indent, default=_json_default)
+    return output_path
 
 
 def _extract_sessions_from_df(df: Any) -> tuple[list[np.ndarray], list[np.ndarray], list[Any], list[Any]]:
@@ -158,20 +178,18 @@ def _extract_q_histories(
                 out.append(arr)
         if out:
             return out
-
-    q_from_probs: list[np.ndarray] = []
-    for probs in choice_prob_sessions:
-        probs_arr = _to_numpy(probs)
-        if probs_arr.ndim != 2:
-            return None
-        q_from_probs.append(probs_arr)
-    return q_from_probs if q_from_probs else None
+    return None
 
 
-def _align_q_session(q_session: np.ndarray, n_trials: int) -> np.ndarray:
-    arr = _to_numpy(q_session)
+def _align_two_action_history(
+    session_history: np.ndarray,
+    n_trials: int,
+    *,
+    value_name: str,
+) -> np.ndarray:
+    arr = _to_numpy(session_history)
     if arr.ndim != 2:
-        raise ValueError(f"Q-session must be 2D, got shape={arr.shape}")
+        raise ValueError(f"{value_name} session must be 2D, got shape={arr.shape}")
 
     if arr.shape[0] == n_trials and arr.shape[1] >= 2:
         return arr[:, :2].T
@@ -183,8 +201,20 @@ def _align_q_session(q_session: np.ndarray, n_trials: int) -> np.ndarray:
         return transposed[:2, :]
 
     raise ValueError(
-        "Unable to align Q values with trials for plotting: "
+        f"Unable to align {value_name} with trials for plotting: "
         f"q_shape={arr.shape}, n_trials={n_trials}"
+    )
+
+
+def _align_q_session(q_session: np.ndarray, n_trials: int) -> np.ndarray:
+    return _align_two_action_history(q_session, n_trials, value_name="Q values")
+
+
+def _align_choice_prob_session(choice_prob_session: np.ndarray, n_trials: int) -> np.ndarray:
+    return _align_two_action_history(
+        choice_prob_session,
+        n_trials,
+        value_name="choice probabilities",
     )
 
 
@@ -192,8 +222,12 @@ def _plot_q_values_for_session(
     *,
     choices: np.ndarray,
     rewards: np.ndarray,
-    q_values: np.ndarray,
+    q_values: np.ndarray | None = None,
+    choice_probabilities: np.ndarray | None = None,
 ) -> plt.Figure:
+    if (q_values is None) == (choice_probabilities is None):
+        raise ValueError("Provide exactly one of q_values or choice_probabilities.")
+
     n_trials = len(choices)
     trial_idx = np.arange(n_trials)
 
@@ -213,25 +247,56 @@ def _plot_q_values_for_session(
     ax0.set_title("Choices / rewards", fontsize=14)
 
     ax1 = axs[1]
-    ax1.plot(trial_idx, q_values[0], label="Q(left)", lw=1.8)
-    ax1.plot(trial_idx, q_values[1], label="Q(right)", lw=1.8)
-    ax1.set_ylabel("Q value")
-    ax1.set_title("Q trajectories", fontsize=14)
-    ax1.legend(loc="best")
+    if q_values is not None:
+        ax1.plot(trial_idx, q_values[0], label="Q(left)", lw=1.8)
+        ax1.plot(trial_idx, q_values[1], label="Q(right)", lw=1.8)
+        ax1.set_ylabel("Q value")
+        ax1.set_title("Q trajectories", fontsize=14)
+        ax1.legend(loc="best")
+    else:
+        ax1.text(
+            0.5,
+            0.5,
+            "Q trajectories unavailable.\nShowing model choice probabilities below.",
+            ha="center",
+            va="center",
+            transform=ax1.transAxes,
+        )
+        ax1.set_title("Q trajectories unavailable", fontsize=14)
+        ax1.set_xticks([])
+        ax1.set_yticks([])
 
     ax2 = axs[2]
-    q_max = np.max(q_values, axis=0, keepdims=True)
-    q_exp = np.exp(q_values - q_max)
-    p = q_exp / np.sum(q_exp, axis=0, keepdims=True)
+    if q_values is not None:
+        q_max = np.max(q_values, axis=0, keepdims=True)
+        q_exp = np.exp(q_values - q_max)
+        p = q_exp / np.sum(q_exp, axis=0, keepdims=True)
+        probability_labels = {
+            0: "Softmax(Q): P(left)",
+            1: "Softmax(Q): P(right)",
+        }
+        ax2.set_title("Probabilities implied by Q values", fontsize=14)
+    else:
+        p = _to_numpy(choice_probabilities)
+        denom = np.sum(p, axis=0, keepdims=True)
+        denom = np.where(denom == 0, 1.0, denom)
+        p = p / denom
+        probability_labels = {
+            0: "Model P(left)",
+            1: "Model P(right)",
+        }
+        ax2.set_title("Model choice probabilities", fontsize=14)
+
     for action_idx in range(p.shape[0]):
-        if p.shape[0] == 2:
-            action_name = "left" if action_idx == 0 else "right"
-        else:
-            action_name = f"action_{action_idx}"
+        action_name = (
+            probability_labels.get(action_idx)
+            if p.shape[0] == 2
+            else f"Model P(action_{action_idx})"
+        )
         ax2.plot(
             trial_idx,
             p[action_idx],
-            label=f"Softmax(Q): P({action_name})",
+            label=action_name,
             lw=1.8,
         )
     ax2.set_ylim(0.0, 1.0)
@@ -325,13 +390,20 @@ def evaluate_baseline_rl_on_heldout_subjects(
         reward_sessions,
     )
     choice_prob_sessions = [_to_numpy(arr) for arr in choice_prob_sessions]
-    test_likelihood = _compute_normalized_likelihood(choice_sessions, choice_prob_sessions)
-    logger.info("Held-out baseline RL test likelihood: %.6f", test_likelihood)
+    heldout_test_likelihood = _compute_normalized_likelihood(
+        choice_sessions,
+        choice_prob_sessions,
+    )
+    logger.info(
+        "Held-out baseline RL test likelihood: %.6f",
+        heldout_test_likelihood,
+    )
 
     q_histories = _extract_q_histories(eval_agent, choice_prob_sessions)
     if q_histories is None:
-        logger.warning("Could not find explicit Q-value histories; using fallback from action values")
-        q_histories = choice_prob_sessions
+        logger.warning(
+            "Could not find explicit Q-value histories; plotting model choice probabilities directly."
+        )
 
     sessions_per_subject = int(getattr(data_cfg, "heldout_example_sessions_per_subject", 1))
     if sessions_per_subject < 0:
@@ -370,13 +442,23 @@ def evaluate_baseline_rl_on_heldout_subjects(
             for idx in indices[:sessions_per_subject]:
                 choices = choice_sessions[idx]
                 rewards = reward_sessions[idx]
-                q_session = _align_q_session(q_histories[idx], len(choices))
-
-                fig = _plot_q_values_for_session(
-                    choices=choices,
-                    rewards=rewards,
-                    q_values=q_session,
-                )
+                if q_histories is not None:
+                    q_session = _align_q_session(q_histories[idx], len(choices))
+                    fig = _plot_q_values_for_session(
+                        choices=choices,
+                        rewards=rewards,
+                        q_values=q_session,
+                    )
+                else:
+                    choice_prob_session = _align_choice_prob_session(
+                        choice_prob_sessions[idx],
+                        len(choices),
+                    )
+                    fig = _plot_q_values_for_session(
+                        choices=choices,
+                        rewards=rewards,
+                        choice_probabilities=choice_prob_session,
+                    )
                 session_id = session_ids[idx]
                 fig.suptitle(f"Session {_normalize_identifier(session_id)}", fontsize=14)
                 fig.subplots_adjust(top=0.93)
@@ -404,7 +486,7 @@ def evaluate_baseline_rl_on_heldout_subjects(
         "test_subject_ids": [_normalize_identifier(s) for s in test_subject_ids],
         "num_test_trials": int(sum(len(x) for x in choice_sessions)),
         "num_test_sessions": int(len(choice_sessions)),
-        "test_likelihood": float(test_likelihood),
+        "heldout_test_likelihood": float(heldout_test_likelihood),
         "heldout_example_sessions_per_subject": sessions_per_subject,
         "example_max_subjects": max_subjects_to_plot,
         "example_sessions": examples,
@@ -420,7 +502,7 @@ def evaluate_baseline_rl_on_heldout_subjects(
     if wandb_run is not None:
         import wandb
 
-        wandb_run.summary["heldout_test_likelihood"] = float(test_likelihood)
+        wandb_run.summary["heldout_test_likelihood"] = float(heldout_test_likelihood)
         wandb_run.summary["heldout/num_test_sessions"] = int(len(choice_sessions))
         wandb_run.summary["heldout/num_test_trials"] = int(sum(len(x) for x in choice_sessions))
         wandb_run.summary["heldout/example_sessions_per_subject"] = sessions_per_subject

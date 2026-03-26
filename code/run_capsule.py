@@ -11,7 +11,10 @@ from hydra.utils import instantiate
 from omegaconf import OmegaConf
 
 from base.interfaces import DatasetLoader, ModelTrainer
-from utils.baseline_rl_evaluation import evaluate_baseline_rl_on_heldout_subjects
+from utils.baseline_rl_evaluation import (
+    evaluate_baseline_rl_on_heldout_subjects,
+    save_baseline_rl_output,
+)
 from utils.disrnn_evaluation import (
     HeldoutEvalConfig,
     evaluate_disrnn_on_heldout_subjects,
@@ -354,6 +357,16 @@ def main() -> None:
                     float(heldout_test_likelihood),
                 )
             output["heldout_test"] = heldout_summary
+            if model_type == "baseline_rl":
+                output_path = save_baseline_rl_output(
+                    getattr(hydra_config.model, "output_dir", "/results/outputs"),
+                    output,
+                    indent=4,
+                )
+                logger.info(
+                    "Updated baseline RL output with held-out summary at %s",
+                    output_path,
+                )
     elif is_multisubject_personalized_model and heldout_cfg.enabled:
         logger.info(
             "Skipping final held-out evaluation for multisubject %s; v1 supports "

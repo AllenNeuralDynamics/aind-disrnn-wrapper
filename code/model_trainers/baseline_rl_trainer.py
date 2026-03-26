@@ -23,11 +23,13 @@ from aind_dynamic_foraging_models import generative_model
 from aind_dynamic_foraging_models.generative_model.params import ParamsSymbols
 from disentangled_rnns.library import rnn_utils
 from utils.baseline_rl_evaluation import (
+    _align_choice_prob_session,
     _align_q_session,
     _extract_q_histories,
     _normalize_identifier,
     _plot_q_values_for_session,
     _safe_filename_component,
+    save_baseline_rl_output,
 )
 
 from base.interfaces import ModelTrainer
@@ -946,8 +948,8 @@ class BaselineRLTrainer(ModelTrainer):
             "mean_subject_eval_likelihood": mean_subject_eval_likelihood,
             "pooled_train_trial_likelihood": pooled_train_trial_likelihood,
             "pooled_eval_trial_likelihood": pooled_eval_trial_likelihood,
-            "likelihood_train": pooled_train_trial_likelihood,
-            "likelihood": pooled_eval_trial_likelihood,
+            "train_likelihood": pooled_train_trial_likelihood,
+            "eval_likelihood": pooled_eval_trial_likelihood,
             "elapsed_seconds": float(elapsed_time),
             "multisubject_subject_workers": int(subject_parallel_workers),
             "effective_de_workers_per_subject": int(
@@ -965,9 +967,7 @@ class BaselineRLTrainer(ModelTrainer):
             "subject_likelihood_scatter_path": str(likelihood_scatter_path),
         }
 
-        output_path = self.output_dir / "baseline_rl_output.json"
-        with output_path.open("w") as f:
-            json.dump(output, f, indent=2, default=_json_default)
+        output_path = save_baseline_rl_output(self.output_dir, output, indent=2)
         logger.info("Saved multisubject baseline RL output to %s", output_path)
 
         if wandb_run is not None:
@@ -975,8 +975,8 @@ class BaselineRLTrainer(ModelTrainer):
             wandb_run.summary["mean_subject_eval_likelihood"] = mean_subject_eval_likelihood
             wandb_run.summary["pooled_train_trial_likelihood"] = pooled_train_trial_likelihood
             wandb_run.summary["pooled_eval_trial_likelihood"] = pooled_eval_trial_likelihood
-            wandb_run.summary["likelihood_train"] = pooled_train_trial_likelihood
-            wandb_run.summary["likelihood"] = pooled_eval_trial_likelihood
+            wandb_run.summary["train_likelihood"] = pooled_train_trial_likelihood
+            wandb_run.summary["eval_likelihood"] = pooled_eval_trial_likelihood
             wandb_run.summary["num_subjects"] = int(len(subject_metrics_df))
             wandb_run.summary["agent_class"] = self.agent_class
             wandb_run.summary["elapsed_seconds"] = float(elapsed_time)
@@ -1088,18 +1088,20 @@ class BaselineRLTrainer(ModelTrainer):
         )
 
         train_q_histories = _extract_q_histories(agent, train_choice_prob_sessions)
+        train_plot_choice_prob_sessions: List[np.ndarray] | None = None
         if train_q_histories is None:
             logger.warning(
-                "Could not find explicit training Q-value histories; using fallback from action values"
+                "Could not find explicit training Q-value histories; plotting model choice probabilities directly."
             )
-            train_q_histories = train_choice_prob_sessions
+            train_plot_choice_prob_sessions = train_choice_prob_sessions
 
         eval_q_histories = _extract_q_histories(eval_agent, eval_choice_prob_sessions)
+        eval_plot_choice_prob_sessions: List[np.ndarray] | None = None
         if eval_q_histories is None:
             logger.warning(
-                "Could not find explicit evaluation Q-value histories; using fallback from action values"
+                "Could not find explicit evaluation Q-value histories; plotting model choice probabilities directly."
             )
-            eval_q_histories = eval_choice_prob_sessions
+            eval_plot_choice_prob_sessions = eval_choice_prob_sessions
 
         output: Dict[str, Any] = {
             "multisubject": False,
@@ -1116,8 +1118,8 @@ class BaselineRLTrainer(ModelTrainer):
             "mean_subject_eval_likelihood": float(eval_likelihood),
             "pooled_train_trial_likelihood": float(train_likelihood),
             "pooled_eval_trial_likelihood": float(eval_likelihood),
-            "likelihood": float(eval_likelihood),
-            "likelihood_train": float(train_likelihood),
+            "eval_likelihood": float(eval_likelihood),
+            "train_likelihood": float(train_likelihood),
             "log_likelihood_train": float(fitting_result.log_likelihood),
             "LPT_train": float(fitting_result.LPT),
             "AIC": float(fitting_result.AIC),
@@ -1136,11 +1138,6 @@ class BaselineRLTrainer(ModelTrainer):
 
         elapsed_time = time.time() - start_time
         output["elapsed_seconds"] = float(elapsed_time)
-
-        output_path = self.output_dir / "baseline_rl_output.json"
-        with output_path.open("w") as f:
-            json.dump(output, f, indent=4, default=_json_default)
-        logger.info(f"Saved output to {output_path}")
 
         extras = bundle.extras or {}
         session_details = extras.get("session_details")
@@ -1253,6 +1250,7 @@ class BaselineRLTrainer(ModelTrainer):
                 choice_sessions=train_choices,
                 reward_sessions=train_rewards,
                 q_histories=train_q_histories,
+                choice_prob_sessions=train_plot_choice_prob_sessions,
                 session_ids=train_session_ids,
                 session_subject_ids=train_session_subject_ids,
                 sessions_per_subject=train_sessions_per_subject,
@@ -1274,6 +1272,7 @@ class BaselineRLTrainer(ModelTrainer):
                 choice_sessions=eval_choices,
                 reward_sessions=eval_rewards,
                 q_histories=eval_q_histories,
+                choice_prob_sessions=eval_plot_choice_prob_sessions,
                 session_ids=eval_session_ids,
                 session_subject_ids=eval_session_subject_ids,
                 sessions_per_subject=eval_sessions_per_subject,
@@ -1308,8 +1307,8 @@ class BaselineRLTrainer(ModelTrainer):
             wandb_run.summary["mean_subject_eval_likelihood"] = float(eval_likelihood)
             wandb_run.summary["pooled_train_trial_likelihood"] = float(train_likelihood)
             wandb_run.summary["pooled_eval_trial_likelihood"] = float(eval_likelihood)
-            wandb_run.summary["likelihood_train"] = float(train_likelihood)
-            wandb_run.summary["likelihood"] = float(eval_likelihood)
+            wandb_run.summary["train_likelihood"] = float(train_likelihood)
+            wandb_run.summary["eval_likelihood"] = float(eval_likelihood)
             wandb_run.summary["agent_class"] = self.agent_class
             wandb_run.summary["n_free_params"] = int(fitting_result.k_model)
             wandb_run.summary["elapsed_seconds"] = float(elapsed_time)
@@ -1352,6 +1351,9 @@ class BaselineRLTrainer(ModelTrainer):
 
         if param_recovery_fig is not None:
             plt.close(param_recovery_fig)
+
+        output_path = save_baseline_rl_output(self.output_dir, output, indent=4)
+        logger.info("Saved output to %s", output_path)
 
         logger.info(
             f"Baseline RL fitting complete. "
@@ -1541,7 +1543,8 @@ class BaselineRLTrainer(ModelTrainer):
         split_name: str,
         choice_sessions: List[np.ndarray],
         reward_sessions: List[np.ndarray],
-        q_histories: List[np.ndarray],
+        q_histories: List[np.ndarray] | None,
+        choice_prob_sessions: List[np.ndarray] | None,
         session_ids: List[Any],
         session_subject_ids: List[Any],
         sessions_per_subject: int,
@@ -1549,16 +1552,22 @@ class BaselineRLTrainer(ModelTrainer):
     ) -> Dict[str, Any]:
         if sessions_per_subject < 0:
             raise ValueError(f"{split_name}_example_sessions_per_subject must be >= 0")
+        if q_histories is None and choice_prob_sessions is None:
+            raise ValueError(
+                f"{split_name} example plotting requires q_histories or choice_prob_sessions."
+            )
+        history_sessions = q_histories if q_histories is not None else choice_prob_sessions
+        assert history_sessions is not None
         if not (
             len(choice_sessions)
             == len(reward_sessions)
-            == len(q_histories)
+            == len(history_sessions)
             == len(session_ids)
             == len(session_subject_ids)
         ):
             raise ValueError(
                 f"{split_name} split length mismatch: choices={len(choice_sessions)}, "
-                f"rewards={len(reward_sessions)}, q_histories={len(q_histories)}, "
+                f"rewards={len(reward_sessions)}, histories={len(history_sessions)}, "
                 f"session_ids={len(session_ids)}, subject_ids={len(session_subject_ids)}"
             )
 
@@ -1577,13 +1586,24 @@ class BaselineRLTrainer(ModelTrainer):
                 for idx in indices[:sessions_per_subject]:
                     choices = choice_sessions[idx]
                     rewards = reward_sessions[idx]
-                    q_session = _align_q_session(q_histories[idx], len(choices))
-
-                    fig = _plot_q_values_for_session(
-                        choices=choices,
-                        rewards=rewards,
-                        q_values=q_session,
-                    )
+                    if q_histories is not None:
+                        q_session = _align_q_session(q_histories[idx], len(choices))
+                        fig = _plot_q_values_for_session(
+                            choices=choices,
+                            rewards=rewards,
+                            q_values=q_session,
+                        )
+                    else:
+                        assert choice_prob_sessions is not None
+                        choice_prob_session = _align_choice_prob_session(
+                            choice_prob_sessions[idx],
+                            len(choices),
+                        )
+                        fig = _plot_q_values_for_session(
+                            choices=choices,
+                            rewards=rewards,
+                            choice_probabilities=choice_prob_session,
+                        )
                     session_id = session_ids[idx]
                     fig.suptitle(f"Session {_normalize_identifier(session_id)}", fontsize=14)
                     fig.subplots_adjust(top=0.93)

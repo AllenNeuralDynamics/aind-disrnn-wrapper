@@ -6,6 +6,7 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 import pandas as pd
@@ -15,7 +16,11 @@ from aind_dynamic_foraging_models import generative_model
 from base.types import DatasetBundle
 from model_trainers.baseline_rl_trainer import BaselineRLTrainer
 from data_loaders.synthetic import SyntheticCognitiveAgents
-from utils.baseline_rl_evaluation import evaluate_baseline_rl_on_heldout_subjects
+from utils.baseline_rl_evaluation import (
+    _plot_q_values_for_session,
+    evaluate_baseline_rl_on_heldout_subjects,
+    save_baseline_rl_output,
+)
 
 
 class TestBaselineRLTrainer(unittest.TestCase):
@@ -162,8 +167,8 @@ class TestBaselineRLTrainer(unittest.TestCase):
         output = trainer.fit(self.bundle)
 
         # Check required output keys
-        self.assertIn("likelihood", output)
-        self.assertIn("likelihood_train", output)
+        self.assertIn("eval_likelihood", output)
+        self.assertIn("train_likelihood", output)
         self.assertIn("fitted_params", output)
         self.assertIn("agent_class", output)
         self.assertIn("agent_kwargs", output)
@@ -175,15 +180,17 @@ class TestBaselineRLTrainer(unittest.TestCase):
         self.assertIn("elapsed_seconds", output)
 
         # Check types
-        self.assertIsInstance(output["likelihood"], float)
-        self.assertIsInstance(output["likelihood_train"], float)
+        self.assertIsInstance(output["eval_likelihood"], float)
+        self.assertIsInstance(output["train_likelihood"], float)
         self.assertIsInstance(output["fitted_params"], dict)
         self.assertIsInstance(output["n_free_params"], int)
         self.assertIsInstance(output["elapsed_seconds"], float)
-        self.assertEqual(output["mean_subject_train_likelihood"], output["likelihood_train"])
-        self.assertEqual(output["mean_subject_eval_likelihood"], output["likelihood"])
-        self.assertEqual(output["pooled_train_trial_likelihood"], output["likelihood_train"])
-        self.assertEqual(output["pooled_eval_trial_likelihood"], output["likelihood"])
+        self.assertEqual(output["mean_subject_train_likelihood"], output["train_likelihood"])
+        self.assertEqual(output["mean_subject_eval_likelihood"], output["eval_likelihood"])
+        self.assertEqual(output["pooled_train_trial_likelihood"], output["train_likelihood"])
+        self.assertEqual(output["pooled_eval_trial_likelihood"], output["eval_likelihood"])
+        self.assertNotIn("likelihood", output)
+        self.assertNotIn("likelihood_train", output)
 
     def test_fitted_parameters(self):
         """Test that fitted parameters are reasonable."""
@@ -241,10 +248,10 @@ class TestBaselineRLTrainer(unittest.TestCase):
         output = trainer.fit(self.bundle)
 
         # Likelihood should be between 0 and 1 (random guessing would be ~0.5)
-        self.assertGreater(output["likelihood"], 0.0)
-        self.assertLess(output["likelihood"], 1.0)
-        self.assertGreater(output["likelihood_train"], 0.0)
-        self.assertLess(output["likelihood_train"], 1.0)
+        self.assertGreater(output["eval_likelihood"], 0.0)
+        self.assertLess(output["eval_likelihood"], 1.0)
+        self.assertGreater(output["train_likelihood"], 0.0)
+        self.assertLess(output["train_likelihood"], 1.0)
 
     def test_groundtruth_comparison(self):
         """Test that groundtruth likelihood is included in output when available."""
@@ -534,7 +541,7 @@ class TestBaselineRLTrainer(unittest.TestCase):
             error = fitted_val - true_val
             print(f"{param:<30} {true_val:>10.4f} {fitted_val:>10.4f} {error:>+10.4f}")
 
-        print(f"\nLikelihood: {output['likelihood']:.4f}")
+        print(f"\nLikelihood: {output['eval_likelihood']:.4f}")
         print(f"Groundtruth: {output['groundtruth_likelihood']:.4f}")
         print(f"Ratio: {output['likelihood_relative_to_groundtruth']:.4f}")
 
@@ -571,8 +578,8 @@ class TestBaselineRLTrainer(unittest.TestCase):
             self.assertIn("mean_subject_eval_likelihood", output)
             self.assertIn("pooled_train_trial_likelihood", output)
             self.assertIn("pooled_eval_trial_likelihood", output)
-            self.assertEqual(output["likelihood_train"], output["pooled_train_trial_likelihood"])
-            self.assertEqual(output["likelihood"], output["pooled_eval_trial_likelihood"])
+            self.assertEqual(output["train_likelihood"], output["pooled_train_trial_likelihood"])
+            self.assertEqual(output["eval_likelihood"], output["pooled_eval_trial_likelihood"])
             self.assertEqual(output["multisubject_subject_workers"], 2)
             self.assertEqual(output["effective_de_workers_per_subject"], 1)
 
@@ -763,6 +770,208 @@ class TestBaselineRLTrainer(unittest.TestCase):
             self.assertIsNotNone(summary)
             self.assertTrue(summary["skipped"])
             self.assertIn("multisubject baseline RL", summary["reason"])
+
+    def test_single_subject_output_json_matches_returned_output(self):
+        """Test that the saved baseline RL output matches the final returned output."""
+        with tempfile.TemporaryDirectory(prefix="baseline_rl_single_subject_") as tmpdir:
+            trainer = BaselineRLTrainer(
+                agent_class="ForagerQLearning",
+                agent_kwargs={
+                    "number_of_learning_rate": 2,
+                    "number_of_forget_rate": 1,
+                    "choice_kernel": "none",
+                    "action_selection": "softmax",
+                },
+                DE_kwargs={"workers": 1, "maxiter": 3, "popsize": 5},
+                output_dir=tmpdir,
+                seed=42,
+            )
+
+            output = trainer.fit(self.bundle)
+            output_path = Path(tmpdir) / "baseline_rl_output.json"
+            self.assertTrue(output_path.exists())
+            with output_path.open("r") as f:
+                saved_output = json.load(f)
+
+            self.assertEqual(saved_output, output)
+            self.assertIn("train_q_value_examples", saved_output)
+            self.assertIn("eval_q_value_examples", saved_output)
+            self.assertIn("train_choice_reward_fitted_prob_plot_path", saved_output)
+            self.assertIn("eval_choice_reward_fitted_prob_plot_path", saved_output)
+
+    def test_save_baseline_output_rewrite_persists_heldout_summary(self):
+        """Test that baseline output rewrites keep the held-out summary."""
+        with tempfile.TemporaryDirectory(prefix="baseline_rl_output_merge_") as tmpdir:
+            initial_output = {
+                "fit_strategy": "single_subject",
+                "train_likelihood": 0.61,
+                "eval_likelihood": 0.58,
+            }
+            save_baseline_rl_output(tmpdir, initial_output, indent=2)
+
+            rewritten_output = {
+                **initial_output,
+                "heldout_test": {
+                    "enabled": True,
+                    "heldout_test_likelihood": 0.63,
+                },
+            }
+            output_path = save_baseline_rl_output(tmpdir, rewritten_output, indent=4)
+
+            with output_path.open("r") as f:
+                saved_output = json.load(f)
+
+            self.assertEqual(saved_output, rewritten_output)
+            self.assertEqual(
+                saved_output["heldout_test"]["heldout_test_likelihood"],
+                0.63,
+            )
+
+    def test_heldout_eval_uses_renamed_metric_key(self):
+        """Test that held-out baseline RL eval returns and saves heldout_test_likelihood."""
+        with tempfile.TemporaryDirectory(prefix="baseline_rl_heldout_eval_") as tmpdir:
+            output_path = Path(tmpdir) / "baseline_rl_output.json"
+            with output_path.open("w") as f:
+                json.dump(
+                    {
+                        "multisubject": False,
+                        "fit_strategy": "single_subject",
+                        "agent_class": "ForagerQLearning",
+                        "agent_kwargs": {},
+                        "fitted_params": {"biasL": 0.0},
+                    },
+                    f,
+                )
+
+            df_test = pd.DataFrame(
+                {
+                    "ses_idx": ["session_1"] * 3,
+                    "trial": [0, 1, 2],
+                    "animal_response": [0, 1, 0],
+                    "earned_reward": [1.0, 0.0, 1.0],
+                    "subject_id": [123] * 3,
+                }
+            )
+
+            class FakeAgent:
+                def __init__(self, **_: object) -> None:
+                    self.q_value_history = None
+
+                def set_params(self, **_: object) -> None:
+                    return None
+
+                def perform_closed_loop_multi_session(self, choices, rewards):
+                    del rewards
+                    sessions = []
+                    for session_choices in choices:
+                        session_choices = np.asarray(session_choices, dtype=int)
+                        prob_right = np.where(session_choices == 1, 0.8, 0.2)
+                        sessions.append(
+                            np.vstack([1.0 - prob_right, prob_right])
+                        )
+                    return sessions
+
+            hydra_config = types.SimpleNamespace(
+                data=types.SimpleNamespace(
+                    test_subject_ids=[123],
+                    test_subject_start=None,
+                    test_subject_end=None,
+                    mature_only=True,
+                    curricula=None,
+                    cols_to_retain=None,
+                    heldout_example_sessions_per_subject=1,
+                    example_max_subjects=1,
+                ),
+                model=types.SimpleNamespace(
+                    type="baseline_rl",
+                    output_dir=tmpdir,
+                    agent_class="ForagerQLearning",
+                    seed=42,
+                ),
+            )
+
+            with mock.patch(
+                "utils.baseline_rl_evaluation.load_mice_snapshot",
+                return_value=(df_test, [123]),
+            ), mock.patch.object(
+                generative_model,
+                "ForagerQLearning",
+                FakeAgent,
+            ):
+                summary = evaluate_baseline_rl_on_heldout_subjects(hydra_config)
+
+            self.assertIsNotNone(summary)
+            assert summary is not None
+            self.assertIn("heldout_test_likelihood", summary)
+            self.assertNotIn("test_likelihood", summary)
+
+            summary_path = Path(tmpdir) / "heldout_test" / "heldout_baseline_rl_eval_summary.json"
+            self.assertTrue(summary_path.exists())
+            with summary_path.open("r") as f:
+                saved_summary = json.load(f)
+            self.assertIn("heldout_test_likelihood", saved_summary)
+            self.assertNotIn("test_likelihood", saved_summary)
+
+    def test_probability_fallback_plot_uses_direct_probabilities(self):
+        """Test that fallback plots show model choice probabilities directly."""
+        choice_probabilities = np.array(
+            [
+                [0.9, 0.35, 0.1],
+                [0.1, 0.65, 0.9],
+            ]
+        )
+        fig = _plot_q_values_for_session(
+            choices=np.array([0, 1, 1]),
+            rewards=np.array([1.0, 0.0, 1.0]),
+            choice_probabilities=choice_probabilities,
+        )
+        try:
+            ax2 = fig.axes[2]
+            self.assertEqual(ax2.get_title(), "Model choice probabilities")
+            self.assertTrue(np.allclose(ax2.lines[0].get_ydata(), choice_probabilities[0]))
+            self.assertTrue(np.allclose(ax2.lines[1].get_ydata(), choice_probabilities[1]))
+        finally:
+            import matplotlib.pyplot as plt
+
+            plt.close(fig)
+
+    def test_example_generation_uses_probability_fallback_when_q_histories_missing(self):
+        """Test that split example generation works with direct choice probabilities."""
+        with tempfile.TemporaryDirectory(prefix="baseline_rl_plot_fallback_") as tmpdir:
+            trainer = BaselineRLTrainer(
+                agent_class="ForagerQLearning",
+                agent_kwargs={
+                    "number_of_learning_rate": 1,
+                    "number_of_forget_rate": 0,
+                    "choice_kernel": "none",
+                    "action_selection": "softmax",
+                },
+                output_dir=tmpdir,
+                seed=42,
+            )
+
+            summary = trainer._plot_q_value_examples_for_split(
+                split_name="eval",
+                choice_sessions=[np.array([0, 1, 1])],
+                reward_sessions=[np.array([1.0, 0.0, 1.0])],
+                q_histories=None,
+                choice_prob_sessions=[
+                    np.array(
+                        [
+                            [0.9, 0.35, 0.1],
+                            [0.1, 0.65, 0.9],
+                        ]
+                    )
+                ],
+                session_ids=["session_1"],
+                session_subject_ids=["subject_1"],
+                sessions_per_subject=1,
+                output_dir=Path(tmpdir),
+            )
+
+            plot_paths = summary["plots"]["q_values_over_trials_examples"]
+            self.assertEqual(len(plot_paths), 1)
+            self.assertTrue(Path(plot_paths[0]).exists())
 
 
 if __name__ == "__main__":
