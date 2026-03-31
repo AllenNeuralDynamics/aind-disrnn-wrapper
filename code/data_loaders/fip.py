@@ -55,8 +55,8 @@ def make_fip_multisession_trials_df(nwb_list, full_channel_name, ignore_policy, 
             # nwb.df_trials = ms_load.add_side_bias(nwb)
             nwb.df_fip = nu.create_df_fip(nwb, verbose=False)
             nwb.df_fip = ed.zscore_fip(nwb.df_fip)
-            if ignore_policy=='exclude':
-                nwb.df_trials = nwb.df_trials.query('animal_response != 2').copy()
+            #if ignore_policy=='exclude':
+            #    nwb.df_trials = nwb.df_trials.query('animal_response != 2').copy()
             nwb.df_trials = tm.get_average_signal_window(
                 nwb,
                 alignment_event="goCue_start_time_in_session",
