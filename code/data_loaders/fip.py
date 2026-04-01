@@ -39,6 +39,9 @@ def make_fip_multisession_trials_df(nwb_list, full_channel_name, ignore_policy, 
     crash_list = []
     for n in nwb_list:
         print(n)
+        if n == "s3://aind-open-data/699462_2024-01-08_11-59-21_nwb_2025-09-05_16-22-44/699462_2024-01-08_11-59-21_nwb_2025-09-05_16-22-44.nwb.zarr":
+            print('SKIPPING BAD')
+            continue
         try:
             nwb = nu.load_nwb_from_filename(n)
             if (not allow_duplicates) and (nwb.session_id in unique_sessions):
