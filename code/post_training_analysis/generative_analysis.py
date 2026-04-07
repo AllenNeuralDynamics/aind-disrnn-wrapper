@@ -15,6 +15,7 @@ import json
 import logging
 import math
 import pickle
+import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping, Sequence
@@ -72,6 +73,7 @@ def resolve_model_run(
 ) -> ResolvedModelRun:
     """Resolve the trained-model artifacts needed for post-training analysis."""
 
+    started_at = time.perf_counter()
     normalized_split = _normalize_split(split)
     normalized_policy = _normalize_checkpoint_policy(checkpoint_policy)
     model_dir_path = Path(model_dir).expanduser().resolve()
@@ -133,7 +135,7 @@ def resolve_model_run(
         )
     )
 
-    return ResolvedModelRun(
+    resolved = ResolvedModelRun(
         model_dir=str(model_dir_path),
         inputs_path=str(inputs_path),
         outputs_dir=str(outputs_dir),
@@ -163,6 +165,15 @@ def resolve_model_run(
         model_config=_to_serializable(model_config),
         run_config=_to_serializable(run_config),
     )
+    logger.info(
+        "Resolved model run in %.2fs: model_type=%s split=%s checkpoint=%s step=%s",
+        time.perf_counter() - started_at,
+        resolved.model_type,
+        resolved.split,
+        resolved.checkpoint_label,
+        resolved.checkpoint_step,
+    )
+    return resolved
 
 
 def load_animal_session_history(
@@ -178,6 +189,7 @@ def load_animal_session_history(
     histories we need for switch statistics.
     """
 
+    started_at = time.perf_counter()
     resolved_run = _coerce_resolved_run(model_dir, split=split)
     if resolved_run.multisubject:
         raise NotImplementedError(
@@ -196,6 +208,12 @@ def load_animal_session_history(
         "curriculum_name",
         "current_stage_actual",
     ]
+    logger.info(
+        "Loading animal session history from snapshot for model_dir=%s split=%s",
+        resolved_run.model_dir,
+        resolved_run.split,
+    )
+    snapshot_started_at = time.perf_counter()
     snapshot_df, selected_subject_ids = load_mice_snapshot_mod.load_mice_snapshot(
         subject_ids=resolved_run.selection.get("subject_ids"),
         subject_start=resolved_run.selection.get("subject_start"),
@@ -203,6 +221,13 @@ def load_animal_session_history(
         mature_only=resolved_run.mature_only,
         curricula=resolved_run.curricula or None,
         cols_to_retain=snapshot_cols,
+    )
+    logger.info(
+        "Loaded snapshot selection in %.2fs: %d trial rows across %d selected subject%s",
+        time.perf_counter() - snapshot_started_at,
+        len(snapshot_df),
+        len(selected_subject_ids),
+        "" if len(selected_subject_ids) == 1 else "s",
     )
 
     if len(snapshot_df) == 0:
@@ -218,12 +243,23 @@ def load_animal_session_history(
     # The snapshot already contains trial-level choice/reward history and the
     # session annotations added by load_mice_snapshot(). Building the canonical
     # session dataframe from this result avoids the heavier raw-data/NWB path.
+    build_started_at = time.perf_counter()
     session_history = _build_session_history_dataframe(snapshot_df)
+    logger.info(
+        "Built session history dataframe in %.2fs: %d session%s",
+        time.perf_counter() - build_started_at,
+        len(session_history),
+        "" if len(session_history) == 1 else "s",
+    )
     selected_subject_ids = _unique_preserve_order(selected_subject_ids)
     resolved_run.resolved_subject_ids = [
         _normalize_identifier(value) for value in selected_subject_ids
     ]
     resolved_run.resolved_session_ids = sorted(session_history["ses_idx"].tolist())
+    logger.info(
+        "Finished loading animal session history in %.2fs",
+        time.perf_counter() - started_at,
+    )
     return session_history
 
 
@@ -419,24 +455,60 @@ def run_post_training_analysis(
 ) -> dict[str, Any]:
     """Run the end-to-end standalone post-training generative analysis."""
 
+    started_at = time.perf_counter()
+    logger.info(
+        "Starting post-training analysis: model_dir=%s split=%s checkpoint_policy=%s "
+        "rollout_mode=%s n_rollouts_per_session=%d window_size=%d",
+        model_dir,
+        split,
+        checkpoint_policy,
+        rollout_mode,
+        int(n_rollouts_per_session),
+        int(window_size),
+    )
+
+    stage_started_at = time.perf_counter()
     resolved_run = resolve_model_run(
         model_dir=model_dir,
         split=split,
         checkpoint_policy=checkpoint_policy,
     )
+    logger.info(
+        "Completed resolve_model_run in %.2fs",
+        time.perf_counter() - stage_started_at,
+    )
+
+    stage_started_at = time.perf_counter()
     animal_sessions = load_animal_session_history(resolved_run, split=split)
+    logger.info(
+        "Completed load_animal_session_history in %.2fs",
+        time.perf_counter() - stage_started_at,
+    )
+
+    stage_started_at = time.perf_counter()
     simulated_sessions = simulate_model_sessions(
         resolved_run=resolved_run,
         animal_sessions=animal_sessions,
         rollout_mode=rollout_mode,
         n_rollouts_per_session=n_rollouts_per_session,
     )
+    logger.info(
+        "Completed simulate_model_sessions in %.2fs",
+        time.perf_counter() - stage_started_at,
+    )
+
+    stage_started_at = time.perf_counter()
     switch_stats = compute_switch_stats(
         animal_sessions=animal_sessions,
         simulated_sessions=simulated_sessions,
         window_size=window_size,
     )
+    logger.info(
+        "Completed compute_switch_stats in %.2fs",
+        time.perf_counter() - stage_started_at,
+    )
 
+    stage_started_at = time.perf_counter()
     analysis_output_dir = _resolve_analysis_output_dir(
         resolved_run=resolved_run,
         output_dir=output_dir,
@@ -463,6 +535,15 @@ def run_post_training_analysis(
         name: str(path) for name, path in figure_paths.items()
     }
     switch_stats_path.write_text(json.dumps(_to_serializable(switch_stats_with_figures), indent=2))
+    logger.info(
+        "Saved analysis outputs in %.2fs to %s",
+        time.perf_counter() - stage_started_at,
+        analysis_output_dir,
+    )
+    logger.info(
+        "Finished post-training analysis in %.2fs",
+        time.perf_counter() - started_at,
+    )
 
     return {
         "resolved_run": str(resolved_run_path),
