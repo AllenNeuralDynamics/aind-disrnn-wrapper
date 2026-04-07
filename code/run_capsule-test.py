@@ -10,22 +10,20 @@ logging.basicConfig(
 
 
 from post_training_analysis import (
+    run_post_training_analysis,
     resolve_model_run,
     load_animal_session_history,
     simulate_model_sessions,
     compute_switch_stats,
 )
 
-run = resolve_model_run(
-    "/code/ex_model_dir-train10_test3-disrnn-260324/9",
+result = run_post_training_analysis(
+    model_dir="/code/ex_model_dir-train10_test3-disrnn-260324/9",
     split="train",
     checkpoint_policy="best_eval",
+    rollout_mode="curriculum_matched",
+    n_rollouts_per_session=1,
+    window_size=10,
+    save_animal_session_history=True,
+    output_dir="/results",
 )
-animal = load_animal_session_history(run, split="train")
-sim = simulate_model_sessions(run, animal)
-stats = compute_switch_stats(animal, sim, window_size=10)
-
-print(run.to_dict())
-print(animal.head())
-print(sim.head())
-print(stats.keys())
