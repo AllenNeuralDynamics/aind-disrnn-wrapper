@@ -1197,7 +1197,13 @@ def _restore_model_runner(resolved_run: ResolvedModelRun):
         def step(self, inputs: Sequence[float], prev_state):
             input_array = jnp.asarray([list(inputs)], dtype=jnp.float32)
             logits, next_state = step_transform.apply(params, input_array, prev_state)
-            return np.asarray(logits)[0], next_state
+            action_logits = np.asarray(logits)[0, : self.n_actions]
+            if int(action_logits.shape[0]) != self.n_actions:
+                raise ValueError(
+                    "Model output logits width does not match n_actions: "
+                    f"{action_logits.shape[0]} vs {self.n_actions}."
+                )
+            return action_logits, next_state
 
     return _ModelRunner(initial_state=initial_state, n_actions=n_actions)
 
