@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -23,6 +24,28 @@ class TestPostTrainingAnalysis(unittest.TestCase):
             / "ex_model_dir-train10_test3-disrnn-260324"
             / "9"
         )
+
+    def _session(
+        self,
+        *,
+        subject_id: str,
+        ses_idx: str,
+        choice_history: list[int],
+        reward_history: list[int],
+        source_ses_idx: str | None = None,
+    ) -> dict[str, object]:
+        session = {
+            "subject_id": subject_id,
+            "ses_idx": ses_idx,
+            "session_date": "2024-01-01",
+            "curriculum_name": "Uncoupled Baiting",
+            "choice_history": choice_history,
+            "reward_history": reward_history,
+            "n_trials": len(choice_history),
+        }
+        if source_ses_idx is not None:
+            session["source_ses_idx"] = source_ses_idx
+        return session
 
     def test_parse_simple_yaml_handles_saved_hydra_inputs(self):
         parsed = _parse_simple_yaml(
@@ -147,6 +170,9 @@ model:
                 return list(self._values)
 
         class _FakeSessionHistory:
+            def __len__(self):
+                return 1
+
             def __getitem__(self, key):
                 if key != "ses_idx":
                     raise KeyError(key)
@@ -261,6 +287,207 @@ model:
             stats["comparison"]["post_switch_by_reward"]["rewarded"]["animal_probability"],
             None,
         )
+
+    def test_compute_switch_stats_subject_level_points_match_subjects(self):
+        animal_sessions = [
+            self._session(
+                subject_id="m1",
+                ses_idx="m1_s1",
+                choice_history=[0, 1, 0, 1, 0, 0, 1],
+                reward_history=[0, 1, 0, 1, 0, 0, 1],
+            ),
+            self._session(
+                subject_id="m2",
+                ses_idx="m2_s1",
+                choice_history=[0, 0, 1, 1, 0, 0, 1, 1],
+                reward_history=[0, 0, 1, 0, 0, 0, 1, 0],
+            ),
+            self._session(
+                subject_id="m3",
+                ses_idx="m3_s1",
+                choice_history=[0, 1, 0, 1, 0],
+                reward_history=[0, 1, 1, 1, 1],
+            ),
+        ]
+        simulated_sessions = [
+            self._session(
+                subject_id="m1",
+                ses_idx="m1_sim_s1",
+                choice_history=[0, 1, 0, 0, 1, 0, 0],
+                reward_history=[0, 1, 0, 0, 1, 0, 0],
+                source_ses_idx="m1_s1",
+            ),
+            self._session(
+                subject_id="m2",
+                ses_idx="m2_sim_s1",
+                choice_history=[0, 0, 1, 0, 0, 1, 1, 0],
+                reward_history=[0, 0, 1, 0, 0, 1, 0, 0],
+                source_ses_idx="m2_s1",
+            ),
+        ]
+
+        stats = compute_switch_stats(
+            animal_sessions=animal_sessions,
+            simulated_sessions=simulated_sessions,
+            window_size=1,
+        )
+
+        rewarded_points = {
+            point["subject_id"]: point
+            for point in stats["subject_level"]["post_switch_by_reward"]["rewarded"][
+                "points"
+            ]
+        }
+        self.assertEqual(set(rewarded_points), {"m1", "m2"})
+        self.assertEqual(rewarded_points["m1"]["animal_probability"], 1.0)
+        self.assertEqual(rewarded_points["m1"]["animal_n"], 2)
+        self.assertEqual(rewarded_points["m1"]["animal_n_sessions"], 1)
+        self.assertEqual(rewarded_points["m1"]["simulated_probability"], 1.0)
+        self.assertEqual(rewarded_points["m1"]["simulated_effective_n"], 2)
+        self.assertEqual(rewarded_points["m1"]["simulated_n_source_sessions"], 1)
+        self.assertEqual(rewarded_points["m2"]["animal_probability"], 0.0)
+        self.assertEqual(rewarded_points["m2"]["simulated_probability"], 0.5)
+
+        rewarded_run1_points = {
+            point["subject_id"]: point
+            for point in stats["subject_level"]["post_switch_by_reward_and_run_length"][
+                "rewarded"
+            ]["run_length_1"]["points"]
+        }
+        self.assertEqual(rewarded_run1_points["m1"]["animal_probability"], 1.0)
+        self.assertEqual(rewarded_run1_points["m1"]["animal_n"], 2)
+        self.assertEqual(rewarded_run1_points["m1"]["simulated_probability"], 1.0)
+        self.assertEqual(rewarded_run1_points["m2"]["animal_probability"], None)
+        self.assertEqual(rewarded_run1_points["m2"]["animal_n"], 0)
+
+        rewarded_rungt1_points = {
+            point["subject_id"]: point
+            for point in stats["subject_level"]["post_switch_by_reward_and_run_length"][
+                "rewarded"
+            ]["run_length_gt1"]["points"]
+        }
+        self.assertEqual(rewarded_rungt1_points["m1"]["animal_probability"], None)
+        self.assertEqual(rewarded_rungt1_points["m2"]["animal_probability"], 0.0)
+        self.assertEqual(rewarded_rungt1_points["m2"]["simulated_probability"], 0.5)
+
+        rewarded_summary = stats["subject_level"]["post_switch_by_reward"]["rewarded"][
+            "summary"
+        ]
+        self.assertEqual(rewarded_summary["n_subjects"], 0)
+        self.assertIsNone(rewarded_summary["correlation"])
+
+    def test_compute_switch_stats_subject_level_rollouts_are_normalized_by_source_session(self):
+        animal_sessions = [
+            self._session(
+                subject_id="m4",
+                ses_idx="m4_s1",
+                choice_history=[0, 1, 0, 1, 0, 1, 0, 1],
+                reward_history=[0, 1, 1, 1, 1, 1, 1, 0],
+            )
+        ]
+        simulated_sessions = [
+            self._session(
+                subject_id="m4",
+                ses_idx="m4_s1__rollout_0",
+                source_ses_idx="m4_s1",
+                choice_history=[0, 1, 0],
+                reward_history=[0, 1, 0],
+            ),
+            self._session(
+                subject_id="m4",
+                ses_idx="m4_s1__rollout_1",
+                source_ses_idx="m4_s1",
+                choice_history=[0, 1, 1],
+                reward_history=[0, 1, 0],
+            ),
+            self._session(
+                subject_id="m4",
+                ses_idx="m4_s2__rollout_0",
+                source_ses_idx="m4_s2",
+                choice_history=[0, 1, 0],
+                reward_history=[0, 1, 0],
+            ),
+        ]
+
+        stats = compute_switch_stats(
+            animal_sessions=animal_sessions,
+            simulated_sessions=simulated_sessions,
+            window_size=1,
+        )
+
+        rewarded_point = stats["subject_level"]["post_switch_by_reward"]["rewarded"][
+            "points"
+        ][0]
+        self.assertEqual(rewarded_point["subject_id"], "m4")
+        self.assertEqual(rewarded_point["animal_n"], 6)
+        self.assertEqual(rewarded_point["simulated_effective_n"], 2)
+        self.assertEqual(rewarded_point["simulated_n_source_sessions"], 2)
+        self.assertAlmostEqual(rewarded_point["simulated_probability"], 0.75)
+
+        rewarded_summary = stats["subject_level"]["post_switch_by_reward"]["rewarded"][
+            "summary"
+        ]
+        self.assertEqual(rewarded_summary["n_subjects"], 1)
+        self.assertIsNone(rewarded_summary["correlation"])
+        self.assertAlmostEqual(rewarded_summary["rmse"], 0.25)
+        self.assertAlmostEqual(rewarded_summary["bias"], -0.25)
+
+    def test_save_switch_figures_includes_subject_level_scatter_plots(self):
+        try:
+            import matplotlib.pyplot  # noqa: F401
+        except ModuleNotFoundError:
+            self.skipTest("matplotlib is not installed")
+
+        animal_sessions = [
+            self._session(
+                subject_id="m4",
+                ses_idx="m4_s1",
+                choice_history=[0, 1, 0, 1, 0, 1, 0, 1],
+                reward_history=[0, 1, 1, 1, 1, 1, 1, 0],
+            )
+        ]
+        simulated_sessions = [
+            self._session(
+                subject_id="m4",
+                ses_idx="m4_s1__rollout_0",
+                source_ses_idx="m4_s1",
+                choice_history=[0, 1, 0],
+                reward_history=[0, 1, 0],
+            )
+        ]
+        stats = compute_switch_stats(
+            animal_sessions=animal_sessions,
+            simulated_sessions=simulated_sessions,
+            window_size=1,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            figure_paths = generative_analysis._save_switch_figures(
+                switch_stats=stats,
+                output_dir=Path(tmpdir),
+            )
+            self.assertIn("post_switch_by_reward_subject_scatter", figure_paths)
+            self.assertIn(
+                "post_switch_by_reward_and_run_length_subject_scatter",
+                figure_paths,
+            )
+            self.assertTrue(
+                figure_paths["post_switch_by_reward_subject_scatter"]
+                .name.endswith(".png")
+            )
+            self.assertTrue(
+                figure_paths[
+                    "post_switch_by_reward_and_run_length_subject_scatter"
+                ].name.endswith(".png")
+            )
+            self.assertTrue(
+                figure_paths["post_switch_by_reward_subject_scatter"].exists()
+            )
+            self.assertTrue(
+                figure_paths[
+                    "post_switch_by_reward_and_run_length_subject_scatter"
+                ].exists()
+            )
 
 
 if __name__ == "__main__":

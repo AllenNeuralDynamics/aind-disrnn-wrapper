@@ -29,6 +29,9 @@ _CHECKPOINT_POLICY_BEST_HELDOUT = "best_heldout"
 _CHECKPOINT_POLICY_FINAL = "final"
 _ROLLOUT_MODE_CURRICULUM_MATCHED = "curriculum_matched"
 _DEFAULT_WINDOW_SIZE = 10
+_SUBJECT_LEVEL_MIN_ANIMAL_N = 5
+_REWARD_CONDITIONS = ("rewarded", "unrewarded")
+_RUN_LENGTH_CONDITIONS = ("run_length_1", "run_length_gt1")
 
 
 @dataclass
@@ -440,6 +443,10 @@ def compute_switch_stats(
         "animal": animal_summary,
         "simulated": simulated_summary,
         "comparison": _compare_switch_summaries(animal_summary, simulated_summary),
+        "subject_level": _compute_subject_level_comparison(
+            animal_with_switches,
+            simulated_with_switches,
+        ),
     }
 
 
@@ -799,6 +806,424 @@ def analyze_post_switch_probability_by_reward_and_run_length(
                 events
             )
     return results
+
+
+def _compute_subject_level_comparison(
+    animal_sessions,
+    simulated_sessions,
+) -> dict[str, Any]:
+    animal_subject_stats = _build_subject_level_metric_summary(
+        animal_sessions,
+        average_rollouts_by_source=False,
+    )
+    simulated_subject_stats = _build_subject_level_metric_summary(
+        simulated_sessions,
+        average_rollouts_by_source=True,
+    )
+
+    comparison = {
+        "post_switch_by_reward": {},
+        "post_switch_by_reward_and_run_length": {},
+    }
+
+    for reward_condition in _REWARD_CONDITIONS:
+        points = _build_subject_comparison_points(
+            animal_subject_stats,
+            simulated_subject_stats,
+            reward_condition=reward_condition,
+        )
+        comparison["post_switch_by_reward"][reward_condition] = {
+            "points": points,
+            "summary": _summarize_subject_comparison_points(points),
+        }
+
+    for reward_condition in _REWARD_CONDITIONS:
+        comparison["post_switch_by_reward_and_run_length"][reward_condition] = {}
+        for run_condition in _RUN_LENGTH_CONDITIONS:
+            points = _build_subject_comparison_points(
+                animal_subject_stats,
+                simulated_subject_stats,
+                reward_condition=reward_condition,
+                run_condition=run_condition,
+            )
+            comparison["post_switch_by_reward_and_run_length"][reward_condition][
+                run_condition
+            ] = {
+                "points": points,
+                "summary": _summarize_subject_comparison_points(points),
+            }
+
+    return comparison
+
+
+def _build_subject_level_metric_summary(
+    session_rows,
+    *,
+    average_rollouts_by_source: bool,
+) -> dict[Any, dict[str, Any]]:
+    session_counts = [
+        _extract_subject_metric_counts(row)
+        for row in _iter_session_records(session_rows)
+    ]
+    if not session_counts:
+        return {}
+
+    subject_order = _unique_preserve_order(
+        [record["subject_id"] for record in session_counts]
+    )
+    if average_rollouts_by_source and all(
+        record["source_ses_idx"] not in (None, "") for record in session_counts
+    ):
+        per_subject_records, subject_session_counts = _average_rollout_metric_counts(
+            session_counts
+        )
+    else:
+        per_subject_records, subject_session_counts = _collect_direct_metric_counts(
+            session_counts
+        )
+
+    summaries: dict[Any, dict[str, Any]] = {}
+    for subject_id in subject_order:
+        subject_records = per_subject_records.get(subject_id, [])
+        if not subject_records:
+            continue
+
+        reward_totals = _new_reward_count_tree()
+        reward_run_totals = _new_reward_run_count_tree()
+        for record in subject_records:
+            _accumulate_reward_counts(reward_totals, record["reward"])
+            _accumulate_reward_run_counts(
+                reward_run_totals,
+                record["reward_and_run_length"],
+            )
+
+        summaries[subject_id] = {
+            "post_switch_by_reward": {
+                reward_condition: {
+                    "probability": _probability_from_counts(
+                        reward_totals[reward_condition]
+                    ),
+                    "n": _normalize_count_output(
+                        reward_totals[reward_condition]["n"]
+                    ),
+                }
+                for reward_condition in _REWARD_CONDITIONS
+            },
+            "post_switch_by_reward_and_run_length": {
+                reward_condition: {
+                    run_condition: {
+                        "probability": _probability_from_counts(
+                            reward_run_totals[reward_condition][run_condition]
+                        ),
+                        "n": _normalize_count_output(
+                            reward_run_totals[reward_condition][run_condition]["n"]
+                        ),
+                    }
+                    for run_condition in _RUN_LENGTH_CONDITIONS
+                }
+                for reward_condition in _REWARD_CONDITIONS
+            },
+            "n_source_sessions": int(subject_session_counts.get(subject_id, 0)),
+        }
+
+    return summaries
+
+
+def _average_rollout_metric_counts(
+    session_counts: Sequence[Mapping[str, Any]],
+) -> tuple[dict[Any, list[dict[str, Any]]], dict[Any, int]]:
+    grouped: dict[tuple[Any, str], list[Mapping[str, Any]]] = {}
+    for record in session_counts:
+        source_ses_idx = str(record["source_ses_idx"])
+        grouped.setdefault((record["subject_id"], source_ses_idx), []).append(record)
+
+    per_subject_records: dict[Any, list[dict[str, Any]]] = {}
+    subject_session_counts: dict[Any, int] = {}
+    for (subject_id, _source_ses_idx), records in grouped.items():
+        averaged_reward = _new_reward_count_tree()
+        averaged_reward_run = _new_reward_run_count_tree()
+        n_records = float(len(records))
+
+        for reward_condition in _REWARD_CONDITIONS:
+            averaged_reward[reward_condition]["successes"] = (
+                sum(
+                    float(record["reward"][reward_condition]["successes"])
+                    for record in records
+                )
+                / n_records
+            )
+            averaged_reward[reward_condition]["n"] = (
+                sum(float(record["reward"][reward_condition]["n"]) for record in records)
+                / n_records
+            )
+            for run_condition in _RUN_LENGTH_CONDITIONS:
+                averaged_reward_run[reward_condition][run_condition]["successes"] = (
+                    sum(
+                        float(
+                            record["reward_and_run_length"][reward_condition][
+                                run_condition
+                            ]["successes"]
+                        )
+                        for record in records
+                    )
+                    / n_records
+                )
+                averaged_reward_run[reward_condition][run_condition]["n"] = (
+                    sum(
+                        float(
+                            record["reward_and_run_length"][reward_condition][
+                                run_condition
+                            ]["n"]
+                        )
+                        for record in records
+                    )
+                    / n_records
+                )
+
+        per_subject_records.setdefault(subject_id, []).append(
+            {
+                "reward": averaged_reward,
+                "reward_and_run_length": averaged_reward_run,
+            }
+        )
+        subject_session_counts[subject_id] = subject_session_counts.get(subject_id, 0) + 1
+
+    return per_subject_records, subject_session_counts
+
+
+def _collect_direct_metric_counts(
+    session_counts: Sequence[Mapping[str, Any]],
+) -> tuple[dict[Any, list[dict[str, Any]]], dict[Any, int]]:
+    per_subject_records: dict[Any, list[dict[str, Any]]] = {}
+    session_keys_by_subject: dict[Any, list[str]] = {}
+
+    for record in session_counts:
+        subject_id = record["subject_id"]
+        per_subject_records.setdefault(subject_id, []).append(
+            {
+                "reward": _copy_reward_count_tree(record["reward"]),
+                "reward_and_run_length": _copy_reward_run_count_tree(
+                    record["reward_and_run_length"]
+                ),
+            }
+        )
+        session_key = (
+            record["source_ses_idx"]
+            if record["source_ses_idx"] not in (None, "")
+            else record["ses_idx"]
+        )
+        session_keys_by_subject.setdefault(subject_id, []).append(str(session_key))
+
+    subject_session_counts = {
+        subject_id: len(_unique_preserve_order(session_keys))
+        for subject_id, session_keys in session_keys_by_subject.items()
+    }
+    return per_subject_records, subject_session_counts
+
+
+def _extract_subject_metric_counts(row: Mapping[str, Any]) -> dict[str, Any]:
+    choices, rewards = _aligned_choice_reward_histories(
+        row.get("choice_history", []),
+        row.get("reward_history", []),
+    )
+    switch_indices = [int(v) for v in row.get("switch_indices", [])]
+    run_lengths = [int(v) for v in row.get("run_lengths", [])]
+    reward_counts = _new_reward_count_tree()
+    reward_run_counts = _new_reward_run_count_tree()
+
+    for position, switch_idx in enumerate(switch_indices):
+        if (
+            switch_idx <= 0
+            or switch_idx >= len(rewards)
+            or switch_idx + 1 >= len(choices)
+            or position >= len(run_lengths)
+        ):
+            continue
+
+        reward_condition = "rewarded" if rewards[switch_idx] > 0 else "unrewarded"
+        run_condition = "run_length_1" if run_lengths[position] == 1 else "run_length_gt1"
+        post_switch = float(choices[switch_idx + 1] != choices[switch_idx])
+        reward_counts[reward_condition]["successes"] += post_switch
+        reward_counts[reward_condition]["n"] += 1.0
+        reward_run_counts[reward_condition][run_condition]["successes"] += post_switch
+        reward_run_counts[reward_condition][run_condition]["n"] += 1.0
+
+    return {
+        "subject_id": _normalize_identifier(row.get("subject_id")),
+        "ses_idx": str(row.get("ses_idx")),
+        "source_ses_idx": row.get("source_ses_idx"),
+        "reward": reward_counts,
+        "reward_and_run_length": reward_run_counts,
+    }
+
+
+def _build_subject_comparison_points(
+    animal_subject_stats: Mapping[Any, Mapping[str, Any]],
+    simulated_subject_stats: Mapping[Any, Mapping[str, Any]],
+    *,
+    reward_condition: str,
+    run_condition: str | None = None,
+) -> list[dict[str, Any]]:
+    points: list[dict[str, Any]] = []
+    animal_subject_ids = _unique_preserve_order(list(animal_subject_stats.keys()))
+
+    for subject_id in animal_subject_ids:
+        if subject_id not in simulated_subject_stats:
+            continue
+        animal_metrics = animal_subject_stats[subject_id]
+        simulated_metrics = simulated_subject_stats[subject_id]
+        if run_condition is None:
+            animal_leaf = _as_dict(
+                _as_dict(animal_metrics.get("post_switch_by_reward", {})).get(
+                    reward_condition,
+                    {},
+                )
+            )
+            simulated_leaf = _as_dict(
+                _as_dict(simulated_metrics.get("post_switch_by_reward", {})).get(
+                    reward_condition,
+                    {},
+                )
+            )
+        else:
+            animal_leaf = _as_dict(
+                _as_dict(
+                    _as_dict(
+                        animal_metrics.get("post_switch_by_reward_and_run_length", {})
+                    ).get(reward_condition, {})
+                ).get(run_condition, {})
+            )
+            simulated_leaf = _as_dict(
+                _as_dict(
+                    _as_dict(
+                        simulated_metrics.get("post_switch_by_reward_and_run_length", {})
+                    ).get(reward_condition, {})
+                ).get(run_condition, {})
+            )
+
+        points.append(
+            {
+                "subject_id": subject_id,
+                "animal_probability": _coerce_probability(animal_leaf.get("probability")),
+                "animal_n": _normalize_count_output(animal_leaf.get("n", 0)),
+                "animal_n_sessions": int(animal_metrics.get("n_source_sessions", 0)),
+                "simulated_probability": _coerce_probability(
+                    simulated_leaf.get("probability")
+                ),
+                "simulated_effective_n": _normalize_count_output(
+                    simulated_leaf.get("n", 0)
+                ),
+                "simulated_n_source_sessions": int(
+                    simulated_metrics.get("n_source_sessions", 0)
+                ),
+            }
+        )
+
+    return points
+
+
+def _summarize_subject_comparison_points(
+    points: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    valid_points = _select_valid_subject_points(points)
+    xs = [float(point["animal_probability"]) for point in valid_points]
+    ys = [float(point["simulated_probability"]) for point in valid_points]
+
+    return {
+        "n_subjects": len(valid_points),
+        "correlation": _pearson_correlation(xs, ys),
+        "rmse": _rmse(xs, ys),
+        "bias": _mean_difference(xs, ys),
+    }
+
+
+def _select_valid_subject_points(
+    points: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    valid_points = []
+    for point in points:
+        animal_probability = _coerce_probability(point.get("animal_probability"))
+        simulated_probability = _coerce_probability(point.get("simulated_probability"))
+        animal_n = point.get("animal_n")
+        if animal_probability is None or simulated_probability is None:
+            continue
+        if animal_n is None or float(animal_n) < float(_SUBJECT_LEVEL_MIN_ANIMAL_N):
+            continue
+        valid_points.append(dict(point))
+    return valid_points
+
+
+def _new_reward_count_tree() -> dict[str, dict[str, float]]:
+    return {
+        reward_condition: {"successes": 0.0, "n": 0.0}
+        for reward_condition in _REWARD_CONDITIONS
+    }
+
+
+def _new_reward_run_count_tree() -> dict[str, dict[str, dict[str, float]]]:
+    return {
+        reward_condition: {
+            run_condition: {"successes": 0.0, "n": 0.0}
+            for run_condition in _RUN_LENGTH_CONDITIONS
+        }
+        for reward_condition in _REWARD_CONDITIONS
+    }
+
+
+def _copy_reward_count_tree(
+    counts: Mapping[str, Mapping[str, Any]],
+) -> dict[str, dict[str, float]]:
+    copied = _new_reward_count_tree()
+    _accumulate_reward_counts(copied, counts)
+    return copied
+
+
+def _copy_reward_run_count_tree(
+    counts: Mapping[str, Mapping[str, Mapping[str, Any]]],
+) -> dict[str, dict[str, dict[str, float]]]:
+    copied = _new_reward_run_count_tree()
+    _accumulate_reward_run_counts(copied, counts)
+    return copied
+
+
+def _accumulate_reward_counts(
+    target: dict[str, dict[str, float]],
+    source: Mapping[str, Mapping[str, Any]],
+) -> None:
+    for reward_condition in _REWARD_CONDITIONS:
+        source_leaf = _as_dict(source.get(reward_condition, {}))
+        target[reward_condition]["successes"] += float(source_leaf.get("successes", 0.0))
+        target[reward_condition]["n"] += float(source_leaf.get("n", 0.0))
+
+
+def _accumulate_reward_run_counts(
+    target: dict[str, dict[str, dict[str, float]]],
+    source: Mapping[str, Mapping[str, Mapping[str, Any]]],
+) -> None:
+    for reward_condition in _REWARD_CONDITIONS:
+        source_reward_group = _as_dict(source.get(reward_condition, {}))
+        for run_condition in _RUN_LENGTH_CONDITIONS:
+            source_leaf = _as_dict(source_reward_group.get(run_condition, {}))
+            target[reward_condition][run_condition]["successes"] += float(
+                source_leaf.get("successes", 0.0)
+            )
+            target[reward_condition][run_condition]["n"] += float(
+                source_leaf.get("n", 0.0)
+            )
+
+
+def _probability_from_counts(counts: Mapping[str, Any]) -> float:
+    total = float(counts.get("n", 0.0))
+    if total <= 0:
+        return math.nan
+    return float(float(counts.get("successes", 0.0)) / total)
+
+
+def _normalize_count_output(value: Any) -> int | float:
+    numeric = float(value)
+    if abs(numeric - round(numeric)) < 1e-9:
+        return int(round(numeric))
+    return numeric
 
 
 def _compute_switch_summary(session_rows, window_size: int) -> dict[str, Any]:
@@ -1471,6 +1896,26 @@ def _save_switch_figures(
     _plot_post_switch_by_reward_and_run_length(plt, switch_stats, reward_run_path)
     figure_paths["post_switch_by_reward_and_run_length"] = reward_run_path
 
+    reward_subject_scatter_path = output_dir / "post_switch_by_reward_subject_scatter.png"
+    _plot_post_switch_by_reward_subject_scatter(
+        plt,
+        switch_stats,
+        reward_subject_scatter_path,
+    )
+    figure_paths["post_switch_by_reward_subject_scatter"] = reward_subject_scatter_path
+
+    reward_run_subject_scatter_path = (
+        output_dir / "post_switch_by_reward_and_run_length_subject_scatter.png"
+    )
+    _plot_post_switch_by_reward_and_run_length_subject_scatter(
+        plt,
+        switch_stats,
+        reward_run_subject_scatter_path,
+    )
+    figure_paths[
+        "post_switch_by_reward_and_run_length_subject_scatter"
+    ] = reward_run_subject_scatter_path
+
     return figure_paths
 
 
@@ -1571,6 +2016,144 @@ def _plot_post_switch_by_reward_and_run_length(
     fig.tight_layout()
     fig.savefig(output_path)
     plt.close(fig)
+
+
+def _plot_post_switch_by_reward_subject_scatter(
+    plt,
+    switch_stats: Mapping[str, Any],
+    output_path: Path,
+) -> None:
+    fig, axes = plt.subplots(1, 2, figsize=(12, 6))
+    subject_level = _as_dict(switch_stats.get("subject_level", {}))
+    reward_stats = _as_dict(subject_level.get("post_switch_by_reward", {}))
+
+    for axis, reward_condition, label in zip(
+        axes,
+        _REWARD_CONDITIONS,
+        ("Rewarded", "Unrewarded"),
+        strict=False,
+    ):
+        panel_stats = _as_dict(reward_stats.get(reward_condition, {}))
+        _plot_subject_level_scatter_panel(
+            ax=axis,
+            points=list(panel_stats.get("points", [])),
+            summary=_as_dict(panel_stats.get("summary", {})),
+            title=label,
+        )
+
+    fig.suptitle("Subject-Level Post-switch Probability By Reward", fontsize=14)
+    fig.tight_layout()
+    fig.savefig(output_path)
+    plt.close(fig)
+
+
+def _plot_post_switch_by_reward_and_run_length_subject_scatter(
+    plt,
+    switch_stats: Mapping[str, Any],
+    output_path: Path,
+) -> None:
+    fig, axes = plt.subplots(2, 2, figsize=(12, 12))
+    subject_level = _as_dict(switch_stats.get("subject_level", {}))
+    reward_run_stats = _as_dict(
+        subject_level.get("post_switch_by_reward_and_run_length", {})
+    )
+    panel_definitions = [
+        ("rewarded", "run_length_1", "Rewarded / Run=1"),
+        ("rewarded", "run_length_gt1", "Rewarded / Run>1"),
+        ("unrewarded", "run_length_1", "Unrewarded / Run=1"),
+        ("unrewarded", "run_length_gt1", "Unrewarded / Run>1"),
+    ]
+
+    for axis, (reward_condition, run_condition, label) in zip(
+        axes.flatten(),
+        panel_definitions,
+        strict=False,
+    ):
+        panel_stats = _as_dict(
+            _as_dict(reward_run_stats.get(reward_condition, {})).get(
+                run_condition,
+                {},
+            )
+        )
+        _plot_subject_level_scatter_panel(
+            ax=axis,
+            points=list(panel_stats.get("points", [])),
+            summary=_as_dict(panel_stats.get("summary", {})),
+            title=label,
+        )
+
+    fig.suptitle(
+        "Subject-Level Post-switch Probability By Reward And Run Length",
+        fontsize=14,
+    )
+    fig.tight_layout()
+    fig.savefig(output_path)
+    plt.close(fig)
+
+
+def _plot_subject_level_scatter_panel(
+    *,
+    ax,
+    points: Sequence[Mapping[str, Any]],
+    summary: Mapping[str, Any],
+    title: str,
+) -> None:
+    valid_points = _select_valid_subject_points(points)
+    xs = [float(point["animal_probability"]) for point in valid_points]
+    ys = [float(point["simulated_probability"]) for point in valid_points]
+
+    if valid_points:
+        ax.scatter(
+            xs,
+            ys,
+            alpha=0.7,
+            s=45,
+            color="tab:blue",
+            edgecolors="black",
+            linewidths=0.7,
+        )
+    else:
+        ax.text(
+            0.5,
+            0.5,
+            "No valid subjects",
+            transform=ax.transAxes,
+            ha="center",
+            va="center",
+            fontsize=11,
+        )
+
+    ax.plot([0.0, 1.0], [0.0, 1.0], "k--", alpha=0.5, linewidth=1.5)
+    ax.set_xlim(0.0, 1.0)
+    ax.set_ylim(0.0, 1.0)
+    ax.set_aspect("equal", adjustable="box")
+    ax.set_xlabel("Animal p_switch(t+1)")
+    ax.set_ylabel("Simulation p_switch(t+1)")
+    ax.set_title(title)
+    ax.grid(True, alpha=0.3)
+
+    if int(summary.get("n_subjects", 0)) >= 2:
+        annotation_lines = [
+            f"r={float(summary['correlation']):.3f}"
+            if summary.get("correlation") is not None
+            else "r=None",
+            f"RMSE={float(summary['rmse']):.3f}"
+            if summary.get("rmse") is not None
+            else "RMSE=None",
+            f"Bias={float(summary['bias']):.3f}"
+            if summary.get("bias") is not None
+            else "Bias=None",
+            f"n={int(summary['n_subjects'])}",
+        ]
+        ax.text(
+            0.05,
+            0.95,
+            "\n".join(annotation_lines),
+            transform=ax.transAxes,
+            va="top",
+            fontsize=10,
+            bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.8},
+        )
 
 
 def _derive_session_seed(seed: int | None, session_id: str, *, rollout_index: int) -> int:
@@ -1874,6 +2457,35 @@ def _sem(values: Sequence[float]) -> float:
     if not values:
         return math.nan
     return float(_std(values) / math.sqrt(len(values)))
+
+
+def _rmse(xs: Sequence[float], ys: Sequence[float]) -> float | None:
+    if not xs or not ys or len(xs) != len(ys):
+        return None
+    return float(math.sqrt(sum((y - x) ** 2 for x, y in zip(xs, ys)) / len(xs)))
+
+
+def _mean_difference(xs: Sequence[float], ys: Sequence[float]) -> float | None:
+    if not xs or not ys or len(xs) != len(ys):
+        return None
+    return float(sum((y - x) for x, y in zip(xs, ys)) / len(xs))
+
+
+def _pearson_correlation(xs: Sequence[float], ys: Sequence[float]) -> float | None:
+    if len(xs) < 2 or len(xs) != len(ys):
+        return None
+    x_mean = _mean(xs)
+    y_mean = _mean(ys)
+    x_centered = [x - x_mean for x in xs]
+    y_centered = [y - y_mean for y in ys]
+    denominator = math.sqrt(
+        sum(value * value for value in x_centered)
+        * sum(value * value for value in y_centered)
+    )
+    if denominator <= 0:
+        return None
+    numerator = sum(x_value * y_value for x_value, y_value in zip(x_centered, y_centered))
+    return float(numerator / denominator)
 
 
 def _coerce_probability(value: Any) -> float | None:
