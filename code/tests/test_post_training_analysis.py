@@ -5,10 +5,13 @@ from __future__ import annotations
 import math
 import unittest
 from pathlib import Path
+from unittest import mock
 
+from post_training_analysis import generative_analysis
 from post_training_analysis.generative_analysis import (
     _parse_simple_yaml,
     compute_switch_stats,
+    load_animal_session_history,
     resolve_model_run,
 )
 
@@ -90,6 +93,93 @@ model:
         self.assertEqual(resolved.checkpoint_step, 30000)
         self.assertTrue(resolved.params_path.endswith("outputs/params.json"))
         self.assertEqual(resolved.checkpoint_label, "final")
+
+    def test_load_animal_session_history_uses_snapshot_without_raw_nwb_loading(self):
+        resolved = resolve_model_run(
+            self.example_run_dir,
+            split="train",
+            checkpoint_policy="best_eval",
+        )
+
+        class _FakeFrameSeries:
+            def __init__(self, values):
+                self._values = list(values)
+
+            def map(self, func):
+                return [func(value) for value in self._values]
+
+        class _FakeSnapshotFrame:
+            def __init__(self, data):
+                self._data = {key: list(values) for key, values in data.items()}
+
+            def copy(self):
+                return _FakeSnapshotFrame(self._data)
+
+            def __len__(self):
+                if not self._data:
+                    return 0
+                first_key = next(iter(self._data))
+                return len(self._data[first_key])
+
+            def __getitem__(self, key):
+                return _FakeFrameSeries(self._data[key])
+
+            def __setitem__(self, key, value):
+                self._data[key] = list(value)
+
+        snapshot_df = _FakeSnapshotFrame(
+            {
+                "subject_id": ["m1", "m1", "m1"],
+                "ses_idx": ["m1_2024-01-01_00-00-00"] * 3,
+                "trial": [0, 1, 2],
+                "animal_response": [0, 1, 1],
+                "earned_reward": [1, 0, 1],
+                "curriculum_name": ["Uncoupled Baiting"] * 3,
+                "current_stage_actual": ["GRADUATED"] * 3,
+            }
+        )
+
+        class _FakeResultSeries:
+            def __init__(self, values):
+                self._values = list(values)
+
+            def tolist(self):
+                return list(self._values)
+
+        class _FakeSessionHistory:
+            def __getitem__(self, key):
+                if key != "ses_idx":
+                    raise KeyError(key)
+                return _FakeResultSeries(["m1_2024-01-01_00-00-00"])
+
+        built_history = _FakeSessionHistory()
+
+        fake_snapshot_module = mock.Mock()
+        fake_snapshot_module.load_mice_snapshot.return_value = (snapshot_df, ["m1"])
+
+        def _fake_import_module(name):
+            if name == "utils.load_mice_snapshot":
+                return fake_snapshot_module
+            if name == "load_mice_data":
+                raise AssertionError("load_mice_data should not be imported")
+            return __import__(name)
+
+        with mock.patch.object(
+            generative_analysis, "_build_session_history_dataframe", return_value=built_history
+        ) as build_history_mock, mock.patch.object(
+            generative_analysis.importlib,
+            "import_module",
+            side_effect=_fake_import_module,
+        ):
+            session_history = load_animal_session_history(resolved)
+
+        fake_snapshot_module.load_mice_snapshot.assert_called_once()
+        build_history_mock.assert_called_once()
+        snapshot_arg = build_history_mock.call_args.args[0]
+        self.assertIsInstance(snapshot_arg, _FakeSnapshotFrame)
+        self.assertIs(session_history, built_history)
+        self.assertEqual(resolved.resolved_subject_ids, ["m1"])
+        self.assertEqual(resolved.resolved_session_ids, ["m1_2024-01-01_00-00-00"])
 
     def test_compute_switch_stats_matches_expected_reward_conditioning(self):
         animal_sessions = [

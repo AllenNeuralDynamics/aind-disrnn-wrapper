@@ -169,7 +169,14 @@ def load_animal_session_history(
     model_dir: str | Path | ResolvedModelRun,
     split: str = _TRAIN_SPLIT,
 ):
-    """Load the raw animal sessions that correspond to a model run split."""
+    """Load the animal sessions that correspond to a model run split.
+
+    V1 now reconstructs animal trial histories directly from the behavioral
+    snapshot. That keeps post-training analysis independent from the raw NWB
+    loading path and avoids re-querying/rehydrating the original session
+    assets when the snapshot already contains the trial-level choice and reward
+    histories we need for switch statistics.
+    """
 
     resolved_run = _coerce_resolved_run(model_dir, split=split)
     if resolved_run.multisubject:
@@ -178,12 +185,7 @@ def load_animal_session_history(
             "single-subject GRU/disRNN runs only."
         )
 
-    pd = _import_dependency("pandas")
     load_mice_snapshot_mod = importlib.import_module("utils.load_mice_snapshot")
-    load_mice_data_mod = importlib.import_module("load_mice_data")
-    han_pipeline = importlib.import_module(
-        "aind_analysis_arch_result_access.han_pipeline"
-    )
 
     snapshot_cols = [
         "trial",
@@ -209,87 +211,15 @@ def load_animal_session_history(
             f"{resolved_run.model_dir} split={resolved_run.split}."
         )
 
-    selected_subject_ids = _unique_preserve_order(selected_subject_ids)
-    include_stages = (
-        list(getattr(load_mice_snapshot_mod, "MATURE_STAGES", []))
-        if resolved_run.mature_only
-        else None
-    )
-
-    raw_frames = []
-    for subject_id in selected_subject_ids:
-        logger.info("Loading raw trials for subject %s", subject_id)
-        subject_df = load_mice_data_mod.load_subject_data(
-            str(subject_id),
-            include_stages=include_stages,
-        )
-        if subject_df is None or len(subject_df) == 0:
-            logger.warning("No raw trials returned for subject %s", subject_id)
-            continue
-        raw_frames.append(subject_df)
-
-    if not raw_frames:
-        raise ValueError(
-            "Failed to load any raw trials for the selected subjects: "
-            f"{selected_subject_ids}"
-        )
-
-    raw_df = pd.concat(raw_frames, ignore_index=True)
-    raw_df = raw_df.copy()
-    raw_df["subject_id"] = raw_df["subject_id"].map(_normalize_identifier)
-    raw_df["ses_idx"] = raw_df["ses_idx"].map(str)
-
     snapshot_df = snapshot_df.copy()
     snapshot_df["subject_id"] = snapshot_df["subject_id"].map(_normalize_identifier)
     snapshot_df["ses_idx"] = snapshot_df["ses_idx"].map(str)
 
-    df_han = han_pipeline.get_session_table(if_load_bpod=True)
-    session_meta = load_mice_snapshot_mod._build_session_metadata(raw_df, df_han)
-    raw_df = raw_df.merge(
-        session_meta[
-            [
-                "subject_id",
-                "ses_idx",
-                "nwb_suffix",
-                "current_stage_actual",
-                "curriculum_name",
-            ]
-        ],
-        on=["subject_id", "ses_idx"],
-        how="left",
-    )
-
-    snapshot_session_meta = (
-        snapshot_df[
-            [
-                "subject_id",
-                "ses_idx",
-                "curriculum_name",
-                "current_stage_actual",
-            ]
-        ]
-        .drop_duplicates()
-        .rename(
-            columns={
-                "curriculum_name": "curriculum_name_snapshot",
-                "current_stage_actual": "current_stage_actual_snapshot",
-            }
-        )
-    )
-    selected_sessions = snapshot_df[["subject_id", "ses_idx"]].drop_duplicates()
-    raw_df = raw_df.merge(selected_sessions, on=["subject_id", "ses_idx"], how="inner")
-    raw_df = raw_df.merge(
-        snapshot_session_meta,
-        on=["subject_id", "ses_idx"],
-        how="left",
-    )
-    for col in ("curriculum_name", "current_stage_actual"):
-        snapshot_col = f"{col}_snapshot"
-        if snapshot_col in raw_df.columns:
-            raw_df[col] = raw_df[col].where(raw_df[col].notna(), raw_df[snapshot_col])
-            raw_df = raw_df.drop(columns=[snapshot_col])
-
-    session_history = _build_session_history_dataframe(raw_df)
+    # The snapshot already contains trial-level choice/reward history and the
+    # session annotations added by load_mice_snapshot(). Building the canonical
+    # session dataframe from this result avoids the heavier raw-data/NWB path.
+    session_history = _build_session_history_dataframe(snapshot_df)
+    selected_subject_ids = _unique_preserve_order(selected_subject_ids)
     resolved_run.resolved_subject_ids = [
         _normalize_identifier(value) for value in selected_subject_ids
     ]
