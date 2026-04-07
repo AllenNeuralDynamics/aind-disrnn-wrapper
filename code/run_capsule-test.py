@@ -1,3 +1,14 @@
+import logging
+import sys
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    stream=sys.stdout,
+    force=True,
+)
+
+
 from post_training_analysis import (
     resolve_model_run,
     load_animal_session_history,
