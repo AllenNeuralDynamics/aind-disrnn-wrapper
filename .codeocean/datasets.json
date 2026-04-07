@@ -3,7 +3,7 @@
 	"attached_datasets": [
 		{
 			"id": "41983b7d-5708-42a1-9862-4bef8b11da1f",
-			"mount": "DF_data_driven_modeling_1"
+			"mount": "mice_multisubject_train10-gru-260323"
 		},
 		{
 			"id": "4ba57838-f4b7-4215-a9d9-11bccaaf2e1c",
@@ -27,15 +27,15 @@
 		},
 		{
 			"id": "94e6308f-479e-4887-87b3-25c28e864401",
-			"mount": "DF_data_driven_modeling_3"
+			"mount": "mice_train10_test3-gru-260324"
 		},
 		{
 			"id": "a1d53838-4eef-4f86-82b8-f07fd848753d",
-			"mount": "DF_data_driven_modeling"
+			"mount": "mice_multisubject_train10-disrnn-260323"
 		},
 		{
 			"id": "ae0b6d79-dfd5-46ed-ba55-657eb0177d3f",
-			"mount": "DF_data_driven_modeling_2"
+			"mount": "mice_train10_test3-disrnn-260324"
 		},
 		{
 			"id": "c1b3e0ee-baff-4cf3-9e62-0790fb2855bb",
