@@ -258,9 +258,24 @@ def simulate_model_sessions(
     np = _import_dependency("numpy")
     pd = _import_dependency("pandas")
     runner = _restore_model_runner(run)
+    animal_rows = list(_iter_session_records(animal_sessions))
+    total_source_sessions = len(animal_rows)
+    total_requested_rollouts = total_source_sessions * int(n_rollouts_per_session)
+
+    logger.info(
+        "Starting model simulation for %d source sessions (%d rollout%s) from %s "
+        "[checkpoint=%s, mode=%s]",
+        total_source_sessions,
+        total_requested_rollouts,
+        "" if total_requested_rollouts == 1 else "s",
+        run.model_dir,
+        run.checkpoint_label,
+        normalized_rollout_mode,
+    )
 
     records = []
-    for animal_row in _iter_session_records(animal_sessions):
+    completed_rollouts = 0
+    for session_index, animal_row in enumerate(animal_rows, start=1):
         source_ses_idx = str(animal_row.get("ses_idx"))
         subject_id = _normalize_identifier(animal_row.get("subject_id"))
         session_date = str(animal_row.get("session_date"))
@@ -270,8 +285,28 @@ def simulate_model_sessions(
         nwb_name = animal_row.get("nwb_name")
         n_trials = int(animal_row.get("n_trials", 0))
         if n_trials <= 0:
+            logger.info(
+                "Skipping session %d/%d: subject=%s ses_idx=%s has n_trials=%s",
+                session_index,
+                total_source_sessions,
+                subject_id,
+                source_ses_idx,
+                animal_row.get("n_trials"),
+            )
             continue
 
+        logger.info(
+            "Simulating session %d/%d: subject=%s ses_idx=%s curriculum=%s n_trials=%d "
+            "(%d rollout%s)",
+            session_index,
+            total_source_sessions,
+            subject_id,
+            source_ses_idx,
+            curriculum_name,
+            n_trials,
+            int(n_rollouts_per_session),
+            "" if int(n_rollouts_per_session) == 1 else "s",
+        )
         for rollout_index in range(int(n_rollouts_per_session)):
             random_seed = _derive_session_seed(
                 run.seed,
@@ -328,7 +363,22 @@ def simulate_model_sessions(
                     "rollout_mode": normalized_rollout_mode,
                 }
             )
+            completed_rollouts += 1
+            logger.info(
+                "Completed rollout %d/%d for ses_idx=%s seed=%d",
+                completed_rollouts,
+                total_requested_rollouts,
+                simulated_ses_idx,
+                int(random_seed),
+            )
 
+    logger.info(
+        "Finished model simulation: generated %d simulated session%s from %d source session%s.",
+        len(records),
+        "" if len(records) == 1 else "s",
+        total_source_sessions,
+        "" if total_source_sessions == 1 else "s",
+    )
     return pd.DataFrame.from_records(records)
 
 
