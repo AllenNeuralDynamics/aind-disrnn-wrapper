@@ -1,0 +1,207 @@
+hydra:
+  run:
+    dir: /results/${job_id}/
+  sweep:
+    dir: /results/
+    subdir: ${hydra.job.num}
+  launcher:
+    _target_: hydra._internal.core_plugins.basic_launcher.BasicLauncher
+  sweeper:
+    _target_: hydra._internal.core_plugins.basic_sweeper.BasicSweeper
+    max_batch_size: null
+    params: null
+  help:
+    app_name: ${hydra.job.name}
+    header: '${hydra.help.app_name} is powered by Hydra.
+
+      '
+    footer: 'Powered by Hydra (https://hydra.cc)
+
+      Use --hydra-help to view Hydra specific help
+
+      '
+    template: '${hydra.help.header}
+
+      == Configuration groups ==
+
+      Compose your configuration from those groups (group=option)
+
+
+      $APP_CONFIG_GROUPS
+
+
+      == Config ==
+
+      Override anything in the config (foo.bar=value)
+
+
+      $CONFIG
+
+
+      ${hydra.help.footer}
+
+      '
+  hydra_help:
+    template: 'Hydra (${hydra.runtime.version})
+
+      See https://hydra.cc for more info.
+
+
+      == Flags ==
+
+      $FLAGS_HELP
+
+
+      == Configuration groups ==
+
+      Compose your configuration from those groups (For example, append hydra/job_logging=disabled
+      to command line)
+
+
+      $HYDRA_CONFIG_GROUPS
+
+
+      Use ''--cfg hydra'' to Show the Hydra config.
+
+      '
+    hydra_help: ???
+  hydra_logging:
+    version: 1
+    formatters:
+      simple:
+        format: '[%(asctime)s][HYDRA] %(message)s'
+    handlers:
+      console:
+        class: logging.StreamHandler
+        formatter: simple
+        stream: ext://sys.stdout
+    root:
+      level: INFO
+      handlers:
+      - console
+    loggers:
+      logging_example:
+        level: DEBUG
+    disable_existing_loggers: false
+  job_logging:
+    version: 1
+    formatters:
+      simple:
+        format: '[%(asctime)s][%(name)s][%(levelname)s] - %(message)s'
+    handlers:
+      console:
+        class: logging.StreamHandler
+        formatter: simple
+        stream: ext://sys.stdout
+      file:
+        class: logging.FileHandler
+        formatter: simple
+        filename: ${hydra.runtime.output_dir}/${hydra.job.name}.log
+    root:
+      level: INFO
+      handlers:
+      - console
+      - file
+    disable_existing_loggers: false
+  env: {}
+  mode: MULTIRUN
+  searchpath: []
+  callbacks: {}
+  output_subdir: .hydra
+  overrides:
+    hydra:
+    - hydra.mode=MULTIRUN
+    task:
+    - data=mice_snapshot
+    - data.subject_start=0
+    - data.subject_end=10
+    - data.test_subject_start=10
+    - data.test_subject_end=13
+    - data.train_example_sessions_per_subject=1
+    - data.eval_example_sessions_per_subject=1
+    - data.heldout_example_sessions_per_subject=1
+    - data.example_max_subjects=3
+    - data.mature_only=True
+    - data.ignore_policy=exclude
+    - data.eval_every_n=2
+    - data.batch_size=null
+    - data.batch_mode=random
+    - data.multisubject=False
+    - data.run_name_component=mice_snapshot
+    - model=disrnn
+    - model.architecture.latent_size=5
+    - model.architecture.update_net_n_units_per_layer=16
+    - model.architecture.update_net_n_layers=5
+    - model.architecture.choice_net_n_units_per_layer=4
+    - model.architecture.choice_net_n_layers=0
+    - model.architecture.activation=leaky_relu
+    - model.architecture.multisubject=False
+    - model.penalties.beta=5e-05
+    - model.training.n_steps=30000
+    - model.training.n_warmup_steps=3000
+    - model.training.lr=0.001
+    - model.training.loss=penalized_categorical
+    - model.training.loss_param=1.0
+    - model.training.max_grad_norm=1.0
+    - model.training.checkpoint_every_n_steps=3000
+    - model.training.checkpoint_eval_on_train_split=True
+    - model.training.checkpoint_eval_on_eval_split=True
+    - model.training.checkpoint_log_train_to_wandb=True
+    - model.training.checkpoint_log_eval_to_wandb=True
+    - model.training.checkpoint_plot_split_examples_every_n=3000
+    - model.training.checkpoint_log_split_examples_to_wandb=True
+    - model.training.checkpoint_run_heldout_eval=True
+    - model.training.checkpoint_include_final_in_heldout=True
+    - model.training.initialization_eval_before_warmup=True
+    - model.training.initialization_eval_after_warmup=True
+    - model.training.plot_choice_rule=False
+    - model.training.plot_update_rules=False
+    - model.training.checkpoint_plot_choice_rule=False
+    - model.training.checkpoint_plot_update_rules=False
+    - model.training.save_output_df=False
+    - model.training.checkpoint_save_output_df_every_n=0
+    - model.training.checkpoint_keep_media_files=False
+    - seed=85
+    - wandb.project=mice_train10_test3
+  job:
+    name: run_capsule
+    chdir: true
+    override_dirname: data.batch_mode=random,data.batch_size=null,data.eval_every_n=2,data.eval_example_sessions_per_subject=1,data.example_max_subjects=3,data.heldout_example_sessions_per_subject=1,data.ignore_policy=exclude,data.mature_only=True,data.multisubject=False,data.run_name_component=mice_snapshot,data.subject_end=10,data.subject_start=0,data.test_subject_end=13,data.test_subject_start=10,data.train_example_sessions_per_subject=1,data=mice_snapshot,model.architecture.activation=leaky_relu,model.architecture.choice_net_n_layers=0,model.architecture.choice_net_n_units_per_layer=4,model.architecture.latent_size=5,model.architecture.multisubject=False,model.architecture.update_net_n_layers=5,model.architecture.update_net_n_units_per_layer=16,model.penalties.beta=5e-05,model.training.checkpoint_eval_on_eval_split=True,model.training.checkpoint_eval_on_train_split=True,model.training.checkpoint_every_n_steps=3000,model.training.checkpoint_include_final_in_heldout=True,model.training.checkpoint_keep_media_files=False,model.training.checkpoint_log_eval_to_wandb=True,model.training.checkpoint_log_split_examples_to_wandb=True,model.training.checkpoint_log_train_to_wandb=True,model.training.checkpoint_plot_choice_rule=False,model.training.checkpoint_plot_split_examples_every_n=3000,model.training.checkpoint_plot_update_rules=False,model.training.checkpoint_run_heldout_eval=True,model.training.checkpoint_save_output_df_every_n=0,model.training.initialization_eval_after_warmup=True,model.training.initialization_eval_before_warmup=True,model.training.loss=penalized_categorical,model.training.loss_param=1.0,model.training.lr=0.001,model.training.max_grad_norm=1.0,model.training.n_steps=30000,model.training.n_warmup_steps=3000,model.training.plot_choice_rule=False,model.training.plot_update_rules=False,model.training.save_output_df=False,model=disrnn,seed=85,wandb.project=mice_train10_test3
+    id: '8'
+    num: 8
+    config_name: config
+    env_set: {}
+    env_copy: []
+    config:
+      override_dirname:
+        kv_sep: '='
+        item_sep: ','
+        exclude_keys: []
+  runtime:
+    version: 1.3.2
+    version_base: '1.3'
+    cwd: /tmp/nxf.Mw8fDywO6T/capsule/code
+    config_sources:
+    - path: hydra.conf
+      schema: pkg
+      provider: hydra
+    - path: /tmp/nxf.Mw8fDywO6T/capsule/code/config
+      schema: file
+      provider: main
+    - path: ''
+      schema: structured
+      provider: schema
+    output_dir: /results/8
+    choices:
+      model: disrnn
+      data: mice_snapshot
+      hydra/env: default
+      hydra/callbacks: null
+      hydra/job_logging: default
+      hydra/hydra_logging: default
+      hydra/hydra_help: default
+      hydra/help: default
+      hydra/sweeper: basic
+      hydra/launcher: basic
+      hydra/output: default
+  verbose: false

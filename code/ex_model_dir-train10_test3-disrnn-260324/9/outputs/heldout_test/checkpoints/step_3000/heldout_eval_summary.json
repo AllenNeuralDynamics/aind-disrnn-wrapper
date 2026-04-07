@@ -1,0 +1,56 @@
+{
+  "enabled": true,
+  "params_path": "/results/outputs/checkpoints/step_3000/params.json",
+  "test_subject_ids": [
+    "823972",
+    "818909",
+    "781895",
+    "791093",
+    "758018",
+    "781370"
+  ],
+  "num_test_trials": 93629,
+  "num_test_sessions": 212,
+  "test_likelihood": 0.7563146948814392,
+  "heldout_example_sessions_per_subject": 1,
+  "example_max_subjects": 3,
+  "heldout_open_latent_threshold": 0.03,
+  "open_latents": [
+    0,
+    1,
+    2,
+    3,
+    4
+  ],
+  "example_session": "758018_2025-02-11_09-23-53",
+  "example_subject": "758018",
+  "example_sessions": [
+    {
+      "subject_id": "758018",
+      "session_id": "758018_2025-02-11_09-23-53",
+      "latents_over_trials": "/results/outputs/heldout_test/checkpoints/step_3000/latents_over_trials_subject_758018_session_758018_2025-02-11_09-23-53.png"
+    },
+    {
+      "subject_id": "781370",
+      "session_id": "781370_2025-02-11_11-51-01",
+      "latents_over_trials": "/results/outputs/heldout_test/checkpoints/step_3000/latents_over_trials_subject_781370_session_781370_2025-02-11_11-51-01.png"
+    },
+    {
+      "subject_id": "781895",
+      "session_id": "781895_2025-03-28_09-22-10",
+      "latents_over_trials": "/results/outputs/heldout_test/checkpoints/step_3000/latents_over_trials_subject_781895_session_781895_2025-03-28_09-22-10.png"
+    }
+  ],
+  "plots": {
+    "latents_over_trials_examples": [
+      "/results/outputs/heldout_test/checkpoints/step_3000/latents_over_trials_subject_758018_session_758018_2025-02-11_09-23-53.png",
+      "/results/outputs/heldout_test/checkpoints/step_3000/latents_over_trials_subject_781370_session_781370_2025-02-11_11-51-01.png",
+      "/results/outputs/heldout_test/checkpoints/step_3000/latents_over_trials_subject_781895_session_781895_2025-03-28_09-22-10.png"
+    ],
+    "latents_in_space_examples": [
+      "/results/outputs/heldout_test/checkpoints/step_3000/latents_in_space_subject_758018.png",
+      "/results/outputs/heldout_test/checkpoints/step_3000/latents_in_space_subject_781370.png",
+      "/results/outputs/heldout_test/checkpoints/step_3000/latents_in_space_subject_781895.png"
+    ]
+  }
+}

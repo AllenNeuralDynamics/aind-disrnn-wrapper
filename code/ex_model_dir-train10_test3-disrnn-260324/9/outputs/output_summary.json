@@ -1,0 +1,1325 @@
+{
+    "num_trials": 525441,
+    "num_sessions": 1052,
+    "multisubject": false,
+    "random_key": [
+        0,
+        85
+    ],
+    "initial_evaluations": {
+        "before_warmup": {
+            "stage": "before_warmup",
+            "params_path": "/results/outputs/initialization/before_warmup/params.json",
+            "train_likelihood": 0.3820230960845947,
+            "eval_likelihood": 0.37974321842193604,
+            "plot_paths": {
+                "bottlenecks": null,
+                "choice_rule": null,
+                "subject_embedding_state_space": null,
+                "update_rules": []
+            },
+            "split_examples": {
+                "training": {
+                    "split": "training",
+                    "num_sessions": 526,
+                    "num_trials": 263984,
+                    "example_sessions_per_subject": 1,
+                    "example_max_subjects": 3,
+                    "open_latent_threshold": 0.03,
+                    "open_latents": [
+                        0,
+                        1,
+                        2,
+                        3,
+                        4
+                    ],
+                    "example_session": "700708_2024-05-29_11-18-13",
+                    "example_subject": "700708",
+                    "example_sessions": [
+                        {
+                            "subject_id": "700708",
+                            "session_id": "700708_2024-05-29_11-18-13",
+                            "latents_over_trials": "/results/outputs/initialization/before_warmup/training/latents_over_trials_subject_700708_session_700708_2024-05-29_11-18-13.png"
+                        },
+                        {
+                            "subject_id": "705599",
+                            "session_id": "705599_2024-06-10_14-23-16",
+                            "latents_over_trials": "/results/outputs/initialization/before_warmup/training/latents_over_trials_subject_705599_session_705599_2024-06-10_14-23-16.png"
+                        },
+                        {
+                            "subject_id": "708026",
+                            "session_id": "708026_2024-08-07_08-56-02",
+                            "latents_over_trials": "/results/outputs/initialization/before_warmup/training/latents_over_trials_subject_708026_session_708026_2024-08-07_08-56-02.png"
+                        }
+                    ],
+                    "plots": {
+                        "latents_over_trials_examples": [],
+                        "latents_in_space_examples": []
+                    }
+                },
+                "eval": {
+                    "split": "eval",
+                    "num_sessions": 526,
+                    "num_trials": 261457,
+                    "example_sessions_per_subject": 1,
+                    "example_max_subjects": 3,
+                    "open_latent_threshold": 0.03,
+                    "open_latents": [
+                        0,
+                        1,
+                        2,
+                        3,
+                        4
+                    ],
+                    "example_session": "700708_2024-06-04_08-44-22",
+                    "example_subject": "700708",
+                    "example_sessions": [
+                        {
+                            "subject_id": "700708",
+                            "session_id": "700708_2024-06-04_08-44-22",
+                            "latents_over_trials": "/results/outputs/initialization/before_warmup/eval/latents_over_trials_subject_700708_session_700708_2024-06-04_08-44-22.png"
+                        },
+                        {
+                            "subject_id": "705599",
+                            "session_id": "705599_2024-06-11_13-24-28",
+                            "latents_over_trials": "/results/outputs/initialization/before_warmup/eval/latents_over_trials_subject_705599_session_705599_2024-06-11_13-24-28.png"
+                        },
+                        {
+                            "subject_id": "708026",
+                            "session_id": "708026_2024-08-14_09-16-18",
+                            "latents_over_trials": "/results/outputs/initialization/before_warmup/eval/latents_over_trials_subject_708026_session_708026_2024-08-14_09-16-18.png"
+                        }
+                    ],
+                    "plots": {
+                        "latents_over_trials_examples": [],
+                        "latents_in_space_examples": []
+                    }
+                }
+            },
+            "heldout": {
+                "enabled": true,
+                "params_path": "/results/outputs/initialization/before_warmup/params.json",
+                "test_subject_ids": [
+                    "823972",
+                    "818909",
+                    "781895",
+                    "791093",
+                    "758018",
+                    "781370"
+                ],
+                "num_test_trials": 93629,
+                "num_test_sessions": 212,
+                "test_likelihood": 0.3614189624786377,
+                "heldout_example_sessions_per_subject": 1,
+                "example_max_subjects": 3,
+                "heldout_open_latent_threshold": 0.03,
+                "open_latents": [
+                    0,
+                    1,
+                    2,
+                    3,
+                    4
+                ],
+                "example_session": "758018_2025-02-11_09-23-53",
+                "example_subject": "758018",
+                "example_sessions": [
+                    {
+                        "subject_id": "758018",
+                        "session_id": "758018_2025-02-11_09-23-53",
+                        "latents_over_trials": "/results/outputs/initialization/before_warmup/heldout_test/latents_over_trials_subject_758018_session_758018_2025-02-11_09-23-53.png"
+                    },
+                    {
+                        "subject_id": "781370",
+                        "session_id": "781370_2025-02-11_11-51-01",
+                        "latents_over_trials": "/results/outputs/initialization/before_warmup/heldout_test/latents_over_trials_subject_781370_session_781370_2025-02-11_11-51-01.png"
+                    },
+                    {
+                        "subject_id": "781895",
+                        "session_id": "781895_2025-03-28_09-22-10",
+                        "latents_over_trials": "/results/outputs/initialization/before_warmup/heldout_test/latents_over_trials_subject_781895_session_781895_2025-03-28_09-22-10.png"
+                    }
+                ],
+                "plots": {
+                    "latents_over_trials_examples": [],
+                    "latents_in_space_examples": []
+                }
+            },
+            "heldout_test_likelihood": 0.3614189624786377
+        },
+        "after_warmup": {
+            "stage": "after_warmup",
+            "params_path": "/results/outputs/initialization/after_warmup/params.json",
+            "train_likelihood": 0.7564237713813782,
+            "eval_likelihood": 0.7548601031303406,
+            "plot_paths": {
+                "bottlenecks": null,
+                "choice_rule": null,
+                "subject_embedding_state_space": null,
+                "update_rules": []
+            },
+            "split_examples": {
+                "training": {
+                    "split": "training",
+                    "num_sessions": 526,
+                    "num_trials": 263984,
+                    "example_sessions_per_subject": 1,
+                    "example_max_subjects": 3,
+                    "open_latent_threshold": 0.03,
+                    "open_latents": [
+                        0,
+                        1,
+                        2,
+                        3,
+                        4
+                    ],
+                    "example_session": "700708_2024-05-29_11-18-13",
+                    "example_subject": "700708",
+                    "example_sessions": [
+                        {
+                            "subject_id": "700708",
+                            "session_id": "700708_2024-05-29_11-18-13",
+                            "latents_over_trials": "/results/outputs/initialization/after_warmup/training/latents_over_trials_subject_700708_session_700708_2024-05-29_11-18-13.png"
+                        },
+                        {
+                            "subject_id": "705599",
+                            "session_id": "705599_2024-06-10_14-23-16",
+                            "latents_over_trials": "/results/outputs/initialization/after_warmup/training/latents_over_trials_subject_705599_session_705599_2024-06-10_14-23-16.png"
+                        },
+                        {
+                            "subject_id": "708026",
+                            "session_id": "708026_2024-08-07_08-56-02",
+                            "latents_over_trials": "/results/outputs/initialization/after_warmup/training/latents_over_trials_subject_708026_session_708026_2024-08-07_08-56-02.png"
+                        }
+                    ],
+                    "plots": {
+                        "latents_over_trials_examples": [],
+                        "latents_in_space_examples": []
+                    }
+                },
+                "eval": {
+                    "split": "eval",
+                    "num_sessions": 526,
+                    "num_trials": 261457,
+                    "example_sessions_per_subject": 1,
+                    "example_max_subjects": 3,
+                    "open_latent_threshold": 0.03,
+                    "open_latents": [
+                        0,
+                        1,
+                        2,
+                        3,
+                        4
+                    ],
+                    "example_session": "700708_2024-06-04_08-44-22",
+                    "example_subject": "700708",
+                    "example_sessions": [
+                        {
+                            "subject_id": "700708",
+                            "session_id": "700708_2024-06-04_08-44-22",
+                            "latents_over_trials": "/results/outputs/initialization/after_warmup/eval/latents_over_trials_subject_700708_session_700708_2024-06-04_08-44-22.png"
+                        },
+                        {
+                            "subject_id": "705599",
+                            "session_id": "705599_2024-06-11_13-24-28",
+                            "latents_over_trials": "/results/outputs/initialization/after_warmup/eval/latents_over_trials_subject_705599_session_705599_2024-06-11_13-24-28.png"
+                        },
+                        {
+                            "subject_id": "708026",
+                            "session_id": "708026_2024-08-14_09-16-18",
+                            "latents_over_trials": "/results/outputs/initialization/after_warmup/eval/latents_over_trials_subject_708026_session_708026_2024-08-14_09-16-18.png"
+                        }
+                    ],
+                    "plots": {
+                        "latents_over_trials_examples": [],
+                        "latents_in_space_examples": []
+                    }
+                }
+            },
+            "heldout": {
+                "enabled": true,
+                "params_path": "/results/outputs/initialization/after_warmup/params.json",
+                "test_subject_ids": [
+                    "823972",
+                    "818909",
+                    "781895",
+                    "791093",
+                    "758018",
+                    "781370"
+                ],
+                "num_test_trials": 93629,
+                "num_test_sessions": 212,
+                "test_likelihood": 0.7560505867004395,
+                "heldout_example_sessions_per_subject": 1,
+                "example_max_subjects": 3,
+                "heldout_open_latent_threshold": 0.03,
+                "open_latents": [
+                    0,
+                    1,
+                    2,
+                    3,
+                    4
+                ],
+                "example_session": "758018_2025-02-11_09-23-53",
+                "example_subject": "758018",
+                "example_sessions": [
+                    {
+                        "subject_id": "758018",
+                        "session_id": "758018_2025-02-11_09-23-53",
+                        "latents_over_trials": "/results/outputs/initialization/after_warmup/heldout_test/latents_over_trials_subject_758018_session_758018_2025-02-11_09-23-53.png"
+                    },
+                    {
+                        "subject_id": "781370",
+                        "session_id": "781370_2025-02-11_11-51-01",
+                        "latents_over_trials": "/results/outputs/initialization/after_warmup/heldout_test/latents_over_trials_subject_781370_session_781370_2025-02-11_11-51-01.png"
+                    },
+                    {
+                        "subject_id": "781895",
+                        "session_id": "781895_2025-03-28_09-22-10",
+                        "latents_over_trials": "/results/outputs/initialization/after_warmup/heldout_test/latents_over_trials_subject_781895_session_781895_2025-03-28_09-22-10.png"
+                    }
+                ],
+                "plots": {
+                    "latents_over_trials_examples": [],
+                    "latents_in_space_examples": []
+                }
+            },
+            "heldout_test_likelihood": 0.7560505867004395
+        }
+    },
+    "training_time": 219240.0368824005,
+    "checkpoint_every_n_steps": 3000,
+    "checkpoints": [
+        {
+            "step": 3000,
+            "params_path": "/results/outputs/checkpoints/step_3000/params.json",
+            "train_likelihood": 0.7534552812576294,
+            "eval_likelihood": 0.7543221712112427,
+            "plot_paths": {
+                "bottlenecks": null,
+                "choice_rule": null,
+                "subject_embedding_state_space": null,
+                "update_rules": []
+            },
+            "split_examples": {
+                "training": {
+                    "split": "training",
+                    "num_sessions": 526,
+                    "num_trials": 263984,
+                    "example_sessions_per_subject": 1,
+                    "example_max_subjects": 3,
+                    "open_latent_threshold": 0.03,
+                    "open_latents": [
+                        0,
+                        1,
+                        2,
+                        3,
+                        4
+                    ],
+                    "example_session": "700708_2024-05-29_11-18-13",
+                    "example_subject": "700708",
+                    "example_sessions": [
+                        {
+                            "subject_id": "700708",
+                            "session_id": "700708_2024-05-29_11-18-13",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_3000/training/latents_over_trials_subject_700708_session_700708_2024-05-29_11-18-13.png"
+                        },
+                        {
+                            "subject_id": "705599",
+                            "session_id": "705599_2024-06-10_14-23-16",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_3000/training/latents_over_trials_subject_705599_session_705599_2024-06-10_14-23-16.png"
+                        },
+                        {
+                            "subject_id": "708026",
+                            "session_id": "708026_2024-08-07_08-56-02",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_3000/training/latents_over_trials_subject_708026_session_708026_2024-08-07_08-56-02.png"
+                        }
+                    ],
+                    "plots": {
+                        "latents_over_trials_examples": [],
+                        "latents_in_space_examples": []
+                    }
+                },
+                "eval": {
+                    "split": "eval",
+                    "num_sessions": 526,
+                    "num_trials": 261457,
+                    "example_sessions_per_subject": 1,
+                    "example_max_subjects": 3,
+                    "open_latent_threshold": 0.03,
+                    "open_latents": [
+                        0,
+                        1,
+                        2,
+                        3,
+                        4
+                    ],
+                    "example_session": "700708_2024-06-04_08-44-22",
+                    "example_subject": "700708",
+                    "example_sessions": [
+                        {
+                            "subject_id": "700708",
+                            "session_id": "700708_2024-06-04_08-44-22",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_3000/eval/latents_over_trials_subject_700708_session_700708_2024-06-04_08-44-22.png"
+                        },
+                        {
+                            "subject_id": "705599",
+                            "session_id": "705599_2024-06-11_13-24-28",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_3000/eval/latents_over_trials_subject_705599_session_705599_2024-06-11_13-24-28.png"
+                        },
+                        {
+                            "subject_id": "708026",
+                            "session_id": "708026_2024-08-14_09-16-18",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_3000/eval/latents_over_trials_subject_708026_session_708026_2024-08-14_09-16-18.png"
+                        }
+                    ],
+                    "plots": {
+                        "latents_over_trials_examples": [],
+                        "latents_in_space_examples": []
+                    }
+                }
+            }
+        },
+        {
+            "step": 6000,
+            "params_path": "/results/outputs/checkpoints/step_6000/params.json",
+            "train_likelihood": 0.7543296813964844,
+            "eval_likelihood": 0.7549160718917847,
+            "plot_paths": {
+                "bottlenecks": null,
+                "choice_rule": null,
+                "subject_embedding_state_space": null,
+                "update_rules": []
+            },
+            "split_examples": {
+                "training": {
+                    "split": "training",
+                    "num_sessions": 526,
+                    "num_trials": 263984,
+                    "example_sessions_per_subject": 1,
+                    "example_max_subjects": 3,
+                    "open_latent_threshold": 0.03,
+                    "open_latents": [
+                        0,
+                        1,
+                        2,
+                        3,
+                        4
+                    ],
+                    "example_session": "700708_2024-05-29_11-18-13",
+                    "example_subject": "700708",
+                    "example_sessions": [
+                        {
+                            "subject_id": "700708",
+                            "session_id": "700708_2024-05-29_11-18-13",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_6000/training/latents_over_trials_subject_700708_session_700708_2024-05-29_11-18-13.png"
+                        },
+                        {
+                            "subject_id": "705599",
+                            "session_id": "705599_2024-06-10_14-23-16",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_6000/training/latents_over_trials_subject_705599_session_705599_2024-06-10_14-23-16.png"
+                        },
+                        {
+                            "subject_id": "708026",
+                            "session_id": "708026_2024-08-07_08-56-02",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_6000/training/latents_over_trials_subject_708026_session_708026_2024-08-07_08-56-02.png"
+                        }
+                    ],
+                    "plots": {
+                        "latents_over_trials_examples": [],
+                        "latents_in_space_examples": []
+                    }
+                },
+                "eval": {
+                    "split": "eval",
+                    "num_sessions": 526,
+                    "num_trials": 261457,
+                    "example_sessions_per_subject": 1,
+                    "example_max_subjects": 3,
+                    "open_latent_threshold": 0.03,
+                    "open_latents": [
+                        0,
+                        1,
+                        2,
+                        3,
+                        4
+                    ],
+                    "example_session": "700708_2024-06-04_08-44-22",
+                    "example_subject": "700708",
+                    "example_sessions": [
+                        {
+                            "subject_id": "700708",
+                            "session_id": "700708_2024-06-04_08-44-22",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_6000/eval/latents_over_trials_subject_700708_session_700708_2024-06-04_08-44-22.png"
+                        },
+                        {
+                            "subject_id": "705599",
+                            "session_id": "705599_2024-06-11_13-24-28",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_6000/eval/latents_over_trials_subject_705599_session_705599_2024-06-11_13-24-28.png"
+                        },
+                        {
+                            "subject_id": "708026",
+                            "session_id": "708026_2024-08-14_09-16-18",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_6000/eval/latents_over_trials_subject_708026_session_708026_2024-08-14_09-16-18.png"
+                        }
+                    ],
+                    "plots": {
+                        "latents_over_trials_examples": [],
+                        "latents_in_space_examples": []
+                    }
+                }
+            }
+        },
+        {
+            "step": 9000,
+            "params_path": "/results/outputs/checkpoints/step_9000/params.json",
+            "train_likelihood": 0.7546855211257935,
+            "eval_likelihood": 0.7549909949302673,
+            "plot_paths": {
+                "bottlenecks": null,
+                "choice_rule": null,
+                "subject_embedding_state_space": null,
+                "update_rules": []
+            },
+            "split_examples": {
+                "training": {
+                    "split": "training",
+                    "num_sessions": 526,
+                    "num_trials": 263984,
+                    "example_sessions_per_subject": 1,
+                    "example_max_subjects": 3,
+                    "open_latent_threshold": 0.03,
+                    "open_latents": [
+                        0,
+                        1,
+                        2,
+                        3,
+                        4
+                    ],
+                    "example_session": "700708_2024-05-29_11-18-13",
+                    "example_subject": "700708",
+                    "example_sessions": [
+                        {
+                            "subject_id": "700708",
+                            "session_id": "700708_2024-05-29_11-18-13",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_9000/training/latents_over_trials_subject_700708_session_700708_2024-05-29_11-18-13.png"
+                        },
+                        {
+                            "subject_id": "705599",
+                            "session_id": "705599_2024-06-10_14-23-16",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_9000/training/latents_over_trials_subject_705599_session_705599_2024-06-10_14-23-16.png"
+                        },
+                        {
+                            "subject_id": "708026",
+                            "session_id": "708026_2024-08-07_08-56-02",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_9000/training/latents_over_trials_subject_708026_session_708026_2024-08-07_08-56-02.png"
+                        }
+                    ],
+                    "plots": {
+                        "latents_over_trials_examples": [],
+                        "latents_in_space_examples": []
+                    }
+                },
+                "eval": {
+                    "split": "eval",
+                    "num_sessions": 526,
+                    "num_trials": 261457,
+                    "example_sessions_per_subject": 1,
+                    "example_max_subjects": 3,
+                    "open_latent_threshold": 0.03,
+                    "open_latents": [
+                        0,
+                        1,
+                        2,
+                        3,
+                        4
+                    ],
+                    "example_session": "700708_2024-06-04_08-44-22",
+                    "example_subject": "700708",
+                    "example_sessions": [
+                        {
+                            "subject_id": "700708",
+                            "session_id": "700708_2024-06-04_08-44-22",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_9000/eval/latents_over_trials_subject_700708_session_700708_2024-06-04_08-44-22.png"
+                        },
+                        {
+                            "subject_id": "705599",
+                            "session_id": "705599_2024-06-11_13-24-28",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_9000/eval/latents_over_trials_subject_705599_session_705599_2024-06-11_13-24-28.png"
+                        },
+                        {
+                            "subject_id": "708026",
+                            "session_id": "708026_2024-08-14_09-16-18",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_9000/eval/latents_over_trials_subject_708026_session_708026_2024-08-14_09-16-18.png"
+                        }
+                    ],
+                    "plots": {
+                        "latents_over_trials_examples": [],
+                        "latents_in_space_examples": []
+                    }
+                }
+            }
+        },
+        {
+            "step": 12000,
+            "params_path": "/results/outputs/checkpoints/step_12000/params.json",
+            "train_likelihood": 0.7547729015350342,
+            "eval_likelihood": 0.7550979852676392,
+            "plot_paths": {
+                "bottlenecks": null,
+                "choice_rule": null,
+                "subject_embedding_state_space": null,
+                "update_rules": []
+            },
+            "split_examples": {
+                "training": {
+                    "split": "training",
+                    "num_sessions": 526,
+                    "num_trials": 263984,
+                    "example_sessions_per_subject": 1,
+                    "example_max_subjects": 3,
+                    "open_latent_threshold": 0.03,
+                    "open_latents": [
+                        0,
+                        1,
+                        2,
+                        3,
+                        4
+                    ],
+                    "example_session": "700708_2024-05-29_11-18-13",
+                    "example_subject": "700708",
+                    "example_sessions": [
+                        {
+                            "subject_id": "700708",
+                            "session_id": "700708_2024-05-29_11-18-13",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_12000/training/latents_over_trials_subject_700708_session_700708_2024-05-29_11-18-13.png"
+                        },
+                        {
+                            "subject_id": "705599",
+                            "session_id": "705599_2024-06-10_14-23-16",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_12000/training/latents_over_trials_subject_705599_session_705599_2024-06-10_14-23-16.png"
+                        },
+                        {
+                            "subject_id": "708026",
+                            "session_id": "708026_2024-08-07_08-56-02",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_12000/training/latents_over_trials_subject_708026_session_708026_2024-08-07_08-56-02.png"
+                        }
+                    ],
+                    "plots": {
+                        "latents_over_trials_examples": [],
+                        "latents_in_space_examples": []
+                    }
+                },
+                "eval": {
+                    "split": "eval",
+                    "num_sessions": 526,
+                    "num_trials": 261457,
+                    "example_sessions_per_subject": 1,
+                    "example_max_subjects": 3,
+                    "open_latent_threshold": 0.03,
+                    "open_latents": [
+                        0,
+                        1,
+                        2,
+                        3,
+                        4
+                    ],
+                    "example_session": "700708_2024-06-04_08-44-22",
+                    "example_subject": "700708",
+                    "example_sessions": [
+                        {
+                            "subject_id": "700708",
+                            "session_id": "700708_2024-06-04_08-44-22",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_12000/eval/latents_over_trials_subject_700708_session_700708_2024-06-04_08-44-22.png"
+                        },
+                        {
+                            "subject_id": "705599",
+                            "session_id": "705599_2024-06-11_13-24-28",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_12000/eval/latents_over_trials_subject_705599_session_705599_2024-06-11_13-24-28.png"
+                        },
+                        {
+                            "subject_id": "708026",
+                            "session_id": "708026_2024-08-14_09-16-18",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_12000/eval/latents_over_trials_subject_708026_session_708026_2024-08-14_09-16-18.png"
+                        }
+                    ],
+                    "plots": {
+                        "latents_over_trials_examples": [],
+                        "latents_in_space_examples": []
+                    }
+                }
+            }
+        },
+        {
+            "step": 15000,
+            "params_path": "/results/outputs/checkpoints/step_15000/params.json",
+            "train_likelihood": 0.754429817199707,
+            "eval_likelihood": 0.7549110054969788,
+            "plot_paths": {
+                "bottlenecks": null,
+                "choice_rule": null,
+                "subject_embedding_state_space": null,
+                "update_rules": []
+            },
+            "split_examples": {
+                "training": {
+                    "split": "training",
+                    "num_sessions": 526,
+                    "num_trials": 263984,
+                    "example_sessions_per_subject": 1,
+                    "example_max_subjects": 3,
+                    "open_latent_threshold": 0.03,
+                    "open_latents": [
+                        0,
+                        1,
+                        2,
+                        3,
+                        4
+                    ],
+                    "example_session": "700708_2024-05-29_11-18-13",
+                    "example_subject": "700708",
+                    "example_sessions": [
+                        {
+                            "subject_id": "700708",
+                            "session_id": "700708_2024-05-29_11-18-13",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_15000/training/latents_over_trials_subject_700708_session_700708_2024-05-29_11-18-13.png"
+                        },
+                        {
+                            "subject_id": "705599",
+                            "session_id": "705599_2024-06-10_14-23-16",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_15000/training/latents_over_trials_subject_705599_session_705599_2024-06-10_14-23-16.png"
+                        },
+                        {
+                            "subject_id": "708026",
+                            "session_id": "708026_2024-08-07_08-56-02",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_15000/training/latents_over_trials_subject_708026_session_708026_2024-08-07_08-56-02.png"
+                        }
+                    ],
+                    "plots": {
+                        "latents_over_trials_examples": [],
+                        "latents_in_space_examples": []
+                    }
+                },
+                "eval": {
+                    "split": "eval",
+                    "num_sessions": 526,
+                    "num_trials": 261457,
+                    "example_sessions_per_subject": 1,
+                    "example_max_subjects": 3,
+                    "open_latent_threshold": 0.03,
+                    "open_latents": [
+                        0,
+                        1,
+                        2,
+                        3,
+                        4
+                    ],
+                    "example_session": "700708_2024-06-04_08-44-22",
+                    "example_subject": "700708",
+                    "example_sessions": [
+                        {
+                            "subject_id": "700708",
+                            "session_id": "700708_2024-06-04_08-44-22",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_15000/eval/latents_over_trials_subject_700708_session_700708_2024-06-04_08-44-22.png"
+                        },
+                        {
+                            "subject_id": "705599",
+                            "session_id": "705599_2024-06-11_13-24-28",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_15000/eval/latents_over_trials_subject_705599_session_705599_2024-06-11_13-24-28.png"
+                        },
+                        {
+                            "subject_id": "708026",
+                            "session_id": "708026_2024-08-14_09-16-18",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_15000/eval/latents_over_trials_subject_708026_session_708026_2024-08-14_09-16-18.png"
+                        }
+                    ],
+                    "plots": {
+                        "latents_over_trials_examples": [],
+                        "latents_in_space_examples": []
+                    }
+                }
+            }
+        },
+        {
+            "step": 18000,
+            "params_path": "/results/outputs/checkpoints/step_18000/params.json",
+            "train_likelihood": 0.7542900443077087,
+            "eval_likelihood": 0.7548248767852783,
+            "plot_paths": {
+                "bottlenecks": null,
+                "choice_rule": null,
+                "subject_embedding_state_space": null,
+                "update_rules": []
+            },
+            "split_examples": {
+                "training": {
+                    "split": "training",
+                    "num_sessions": 526,
+                    "num_trials": 263984,
+                    "example_sessions_per_subject": 1,
+                    "example_max_subjects": 3,
+                    "open_latent_threshold": 0.03,
+                    "open_latents": [
+                        0,
+                        1,
+                        2,
+                        3,
+                        4
+                    ],
+                    "example_session": "700708_2024-05-29_11-18-13",
+                    "example_subject": "700708",
+                    "example_sessions": [
+                        {
+                            "subject_id": "700708",
+                            "session_id": "700708_2024-05-29_11-18-13",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_18000/training/latents_over_trials_subject_700708_session_700708_2024-05-29_11-18-13.png"
+                        },
+                        {
+                            "subject_id": "705599",
+                            "session_id": "705599_2024-06-10_14-23-16",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_18000/training/latents_over_trials_subject_705599_session_705599_2024-06-10_14-23-16.png"
+                        },
+                        {
+                            "subject_id": "708026",
+                            "session_id": "708026_2024-08-07_08-56-02",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_18000/training/latents_over_trials_subject_708026_session_708026_2024-08-07_08-56-02.png"
+                        }
+                    ],
+                    "plots": {
+                        "latents_over_trials_examples": [],
+                        "latents_in_space_examples": []
+                    }
+                },
+                "eval": {
+                    "split": "eval",
+                    "num_sessions": 526,
+                    "num_trials": 261457,
+                    "example_sessions_per_subject": 1,
+                    "example_max_subjects": 3,
+                    "open_latent_threshold": 0.03,
+                    "open_latents": [
+                        0,
+                        1,
+                        2,
+                        3,
+                        4
+                    ],
+                    "example_session": "700708_2024-06-04_08-44-22",
+                    "example_subject": "700708",
+                    "example_sessions": [
+                        {
+                            "subject_id": "700708",
+                            "session_id": "700708_2024-06-04_08-44-22",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_18000/eval/latents_over_trials_subject_700708_session_700708_2024-06-04_08-44-22.png"
+                        },
+                        {
+                            "subject_id": "705599",
+                            "session_id": "705599_2024-06-11_13-24-28",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_18000/eval/latents_over_trials_subject_705599_session_705599_2024-06-11_13-24-28.png"
+                        },
+                        {
+                            "subject_id": "708026",
+                            "session_id": "708026_2024-08-14_09-16-18",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_18000/eval/latents_over_trials_subject_708026_session_708026_2024-08-14_09-16-18.png"
+                        }
+                    ],
+                    "plots": {
+                        "latents_over_trials_examples": [],
+                        "latents_in_space_examples": []
+                    }
+                }
+            }
+        },
+        {
+            "step": 21000,
+            "params_path": "/results/outputs/checkpoints/step_21000/params.json",
+            "train_likelihood": 0.7546188235282898,
+            "eval_likelihood": 0.7549561262130737,
+            "plot_paths": {
+                "bottlenecks": null,
+                "choice_rule": null,
+                "subject_embedding_state_space": null,
+                "update_rules": []
+            },
+            "split_examples": {
+                "training": {
+                    "split": "training",
+                    "num_sessions": 526,
+                    "num_trials": 263984,
+                    "example_sessions_per_subject": 1,
+                    "example_max_subjects": 3,
+                    "open_latent_threshold": 0.03,
+                    "open_latents": [
+                        0,
+                        1,
+                        2,
+                        3,
+                        4
+                    ],
+                    "example_session": "700708_2024-05-29_11-18-13",
+                    "example_subject": "700708",
+                    "example_sessions": [
+                        {
+                            "subject_id": "700708",
+                            "session_id": "700708_2024-05-29_11-18-13",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_21000/training/latents_over_trials_subject_700708_session_700708_2024-05-29_11-18-13.png"
+                        },
+                        {
+                            "subject_id": "705599",
+                            "session_id": "705599_2024-06-10_14-23-16",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_21000/training/latents_over_trials_subject_705599_session_705599_2024-06-10_14-23-16.png"
+                        },
+                        {
+                            "subject_id": "708026",
+                            "session_id": "708026_2024-08-07_08-56-02",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_21000/training/latents_over_trials_subject_708026_session_708026_2024-08-07_08-56-02.png"
+                        }
+                    ],
+                    "plots": {
+                        "latents_over_trials_examples": [],
+                        "latents_in_space_examples": []
+                    }
+                },
+                "eval": {
+                    "split": "eval",
+                    "num_sessions": 526,
+                    "num_trials": 261457,
+                    "example_sessions_per_subject": 1,
+                    "example_max_subjects": 3,
+                    "open_latent_threshold": 0.03,
+                    "open_latents": [
+                        0,
+                        1,
+                        2,
+                        3,
+                        4
+                    ],
+                    "example_session": "700708_2024-06-04_08-44-22",
+                    "example_subject": "700708",
+                    "example_sessions": [
+                        {
+                            "subject_id": "700708",
+                            "session_id": "700708_2024-06-04_08-44-22",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_21000/eval/latents_over_trials_subject_700708_session_700708_2024-06-04_08-44-22.png"
+                        },
+                        {
+                            "subject_id": "705599",
+                            "session_id": "705599_2024-06-11_13-24-28",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_21000/eval/latents_over_trials_subject_705599_session_705599_2024-06-11_13-24-28.png"
+                        },
+                        {
+                            "subject_id": "708026",
+                            "session_id": "708026_2024-08-14_09-16-18",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_21000/eval/latents_over_trials_subject_708026_session_708026_2024-08-14_09-16-18.png"
+                        }
+                    ],
+                    "plots": {
+                        "latents_over_trials_examples": [],
+                        "latents_in_space_examples": []
+                    }
+                }
+            }
+        },
+        {
+            "step": 24000,
+            "params_path": "/results/outputs/checkpoints/step_24000/params.json",
+            "train_likelihood": 0.7549829483032227,
+            "eval_likelihood": 0.7553520798683167,
+            "plot_paths": {
+                "bottlenecks": null,
+                "choice_rule": null,
+                "subject_embedding_state_space": null,
+                "update_rules": []
+            },
+            "split_examples": {
+                "training": {
+                    "split": "training",
+                    "num_sessions": 526,
+                    "num_trials": 263984,
+                    "example_sessions_per_subject": 1,
+                    "example_max_subjects": 3,
+                    "open_latent_threshold": 0.03,
+                    "open_latents": [
+                        0,
+                        1,
+                        2,
+                        3,
+                        4
+                    ],
+                    "example_session": "700708_2024-05-29_11-18-13",
+                    "example_subject": "700708",
+                    "example_sessions": [
+                        {
+                            "subject_id": "700708",
+                            "session_id": "700708_2024-05-29_11-18-13",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_24000/training/latents_over_trials_subject_700708_session_700708_2024-05-29_11-18-13.png"
+                        },
+                        {
+                            "subject_id": "705599",
+                            "session_id": "705599_2024-06-10_14-23-16",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_24000/training/latents_over_trials_subject_705599_session_705599_2024-06-10_14-23-16.png"
+                        },
+                        {
+                            "subject_id": "708026",
+                            "session_id": "708026_2024-08-07_08-56-02",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_24000/training/latents_over_trials_subject_708026_session_708026_2024-08-07_08-56-02.png"
+                        }
+                    ],
+                    "plots": {
+                        "latents_over_trials_examples": [],
+                        "latents_in_space_examples": []
+                    }
+                },
+                "eval": {
+                    "split": "eval",
+                    "num_sessions": 526,
+                    "num_trials": 261457,
+                    "example_sessions_per_subject": 1,
+                    "example_max_subjects": 3,
+                    "open_latent_threshold": 0.03,
+                    "open_latents": [
+                        0,
+                        1,
+                        2,
+                        3,
+                        4
+                    ],
+                    "example_session": "700708_2024-06-04_08-44-22",
+                    "example_subject": "700708",
+                    "example_sessions": [
+                        {
+                            "subject_id": "700708",
+                            "session_id": "700708_2024-06-04_08-44-22",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_24000/eval/latents_over_trials_subject_700708_session_700708_2024-06-04_08-44-22.png"
+                        },
+                        {
+                            "subject_id": "705599",
+                            "session_id": "705599_2024-06-11_13-24-28",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_24000/eval/latents_over_trials_subject_705599_session_705599_2024-06-11_13-24-28.png"
+                        },
+                        {
+                            "subject_id": "708026",
+                            "session_id": "708026_2024-08-14_09-16-18",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_24000/eval/latents_over_trials_subject_708026_session_708026_2024-08-14_09-16-18.png"
+                        }
+                    ],
+                    "plots": {
+                        "latents_over_trials_examples": [],
+                        "latents_in_space_examples": []
+                    }
+                }
+            }
+        },
+        {
+            "step": 27000,
+            "params_path": "/results/outputs/checkpoints/step_27000/params.json",
+            "train_likelihood": 0.7548463344573975,
+            "eval_likelihood": 0.754993736743927,
+            "plot_paths": {
+                "bottlenecks": null,
+                "choice_rule": null,
+                "subject_embedding_state_space": null,
+                "update_rules": []
+            },
+            "split_examples": {
+                "training": {
+                    "split": "training",
+                    "num_sessions": 526,
+                    "num_trials": 263984,
+                    "example_sessions_per_subject": 1,
+                    "example_max_subjects": 3,
+                    "open_latent_threshold": 0.03,
+                    "open_latents": [
+                        0,
+                        1,
+                        2,
+                        3,
+                        4
+                    ],
+                    "example_session": "700708_2024-05-29_11-18-13",
+                    "example_subject": "700708",
+                    "example_sessions": [
+                        {
+                            "subject_id": "700708",
+                            "session_id": "700708_2024-05-29_11-18-13",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_27000/training/latents_over_trials_subject_700708_session_700708_2024-05-29_11-18-13.png"
+                        },
+                        {
+                            "subject_id": "705599",
+                            "session_id": "705599_2024-06-10_14-23-16",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_27000/training/latents_over_trials_subject_705599_session_705599_2024-06-10_14-23-16.png"
+                        },
+                        {
+                            "subject_id": "708026",
+                            "session_id": "708026_2024-08-07_08-56-02",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_27000/training/latents_over_trials_subject_708026_session_708026_2024-08-07_08-56-02.png"
+                        }
+                    ],
+                    "plots": {
+                        "latents_over_trials_examples": [],
+                        "latents_in_space_examples": []
+                    }
+                },
+                "eval": {
+                    "split": "eval",
+                    "num_sessions": 526,
+                    "num_trials": 261457,
+                    "example_sessions_per_subject": 1,
+                    "example_max_subjects": 3,
+                    "open_latent_threshold": 0.03,
+                    "open_latents": [
+                        0,
+                        1,
+                        2,
+                        3,
+                        4
+                    ],
+                    "example_session": "700708_2024-06-04_08-44-22",
+                    "example_subject": "700708",
+                    "example_sessions": [
+                        {
+                            "subject_id": "700708",
+                            "session_id": "700708_2024-06-04_08-44-22",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_27000/eval/latents_over_trials_subject_700708_session_700708_2024-06-04_08-44-22.png"
+                        },
+                        {
+                            "subject_id": "705599",
+                            "session_id": "705599_2024-06-11_13-24-28",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_27000/eval/latents_over_trials_subject_705599_session_705599_2024-06-11_13-24-28.png"
+                        },
+                        {
+                            "subject_id": "708026",
+                            "session_id": "708026_2024-08-14_09-16-18",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_27000/eval/latents_over_trials_subject_708026_session_708026_2024-08-14_09-16-18.png"
+                        }
+                    ],
+                    "plots": {
+                        "latents_over_trials_examples": [],
+                        "latents_in_space_examples": []
+                    }
+                }
+            }
+        },
+        {
+            "step": 30000,
+            "params_path": "/results/outputs/checkpoints/step_30000/params.json",
+            "train_likelihood": 0.754995584487915,
+            "eval_likelihood": 0.7552493214607239,
+            "plot_paths": {
+                "bottlenecks": null,
+                "choice_rule": null,
+                "subject_embedding_state_space": null,
+                "update_rules": []
+            },
+            "split_examples": {
+                "training": {
+                    "split": "training",
+                    "num_sessions": 526,
+                    "num_trials": 263984,
+                    "example_sessions_per_subject": 1,
+                    "example_max_subjects": 3,
+                    "open_latent_threshold": 0.03,
+                    "open_latents": [
+                        0,
+                        1,
+                        2,
+                        3,
+                        4
+                    ],
+                    "example_session": "700708_2024-05-29_11-18-13",
+                    "example_subject": "700708",
+                    "example_sessions": [
+                        {
+                            "subject_id": "700708",
+                            "session_id": "700708_2024-05-29_11-18-13",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_30000/training/latents_over_trials_subject_700708_session_700708_2024-05-29_11-18-13.png"
+                        },
+                        {
+                            "subject_id": "705599",
+                            "session_id": "705599_2024-06-10_14-23-16",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_30000/training/latents_over_trials_subject_705599_session_705599_2024-06-10_14-23-16.png"
+                        },
+                        {
+                            "subject_id": "708026",
+                            "session_id": "708026_2024-08-07_08-56-02",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_30000/training/latents_over_trials_subject_708026_session_708026_2024-08-07_08-56-02.png"
+                        }
+                    ],
+                    "plots": {
+                        "latents_over_trials_examples": [],
+                        "latents_in_space_examples": []
+                    }
+                },
+                "eval": {
+                    "split": "eval",
+                    "num_sessions": 526,
+                    "num_trials": 261457,
+                    "example_sessions_per_subject": 1,
+                    "example_max_subjects": 3,
+                    "open_latent_threshold": 0.03,
+                    "open_latents": [
+                        0,
+                        1,
+                        2,
+                        3,
+                        4
+                    ],
+                    "example_session": "700708_2024-06-04_08-44-22",
+                    "example_subject": "700708",
+                    "example_sessions": [
+                        {
+                            "subject_id": "700708",
+                            "session_id": "700708_2024-06-04_08-44-22",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_30000/eval/latents_over_trials_subject_700708_session_700708_2024-06-04_08-44-22.png"
+                        },
+                        {
+                            "subject_id": "705599",
+                            "session_id": "705599_2024-06-11_13-24-28",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_30000/eval/latents_over_trials_subject_705599_session_705599_2024-06-11_13-24-28.png"
+                        },
+                        {
+                            "subject_id": "708026",
+                            "session_id": "708026_2024-08-14_09-16-18",
+                            "latents_over_trials": "/results/outputs/checkpoints/step_30000/eval/latents_over_trials_subject_708026_session_708026_2024-08-14_09-16-18.png"
+                        }
+                    ],
+                    "plots": {
+                        "latents_over_trials_examples": [],
+                        "latents_in_space_examples": []
+                    }
+                }
+            }
+        }
+    ],
+    "heldout_test_checkpoints": [
+        {
+            "step": 3000,
+            "params_path": "/results/outputs/checkpoints/step_3000/params.json",
+            "heldout_test_likelihood": 0.7563146948814392
+        },
+        {
+            "step": 6000,
+            "params_path": "/results/outputs/checkpoints/step_6000/params.json",
+            "heldout_test_likelihood": 0.7567731738090515
+        },
+        {
+            "step": 9000,
+            "params_path": "/results/outputs/checkpoints/step_9000/params.json",
+            "heldout_test_likelihood": 0.756605327129364
+        },
+        {
+            "step": 12000,
+            "params_path": "/results/outputs/checkpoints/step_12000/params.json",
+            "heldout_test_likelihood": 0.756687343120575
+        },
+        {
+            "step": 15000,
+            "params_path": "/results/outputs/checkpoints/step_15000/params.json",
+            "heldout_test_likelihood": 0.7564946413040161
+        },
+        {
+            "step": 18000,
+            "params_path": "/results/outputs/checkpoints/step_18000/params.json",
+            "heldout_test_likelihood": 0.7563425302505493
+        },
+        {
+            "step": 21000,
+            "params_path": "/results/outputs/checkpoints/step_21000/params.json",
+            "heldout_test_likelihood": 0.7563126087188721
+        },
+        {
+            "step": 24000,
+            "params_path": "/results/outputs/checkpoints/step_24000/params.json",
+            "heldout_test_likelihood": 0.7565279603004456
+        },
+        {
+            "step": 27000,
+            "params_path": "/results/outputs/checkpoints/step_27000/params.json",
+            "heldout_test_likelihood": 0.7563862800598145
+        },
+        {
+            "step": 30000,
+            "params_path": "/results/outputs/checkpoints/step_30000/params.json",
+            "heldout_test_likelihood": 0.7565299272537231
+        }
+    ],
+    "likelihood_train": 0.754995584487915,
+    "likelihood": 0.7552493214607239,
+    "split_examples": {
+        "training": {
+            "split": "training",
+            "num_sessions": 526,
+            "num_trials": 263984,
+            "example_sessions_per_subject": 1,
+            "example_max_subjects": 3,
+            "open_latent_threshold": 0.03,
+            "open_latents": [
+                0,
+                1,
+                2,
+                3,
+                4
+            ],
+            "example_session": "700708_2024-05-29_11-18-13",
+            "example_subject": "700708",
+            "example_sessions": [
+                {
+                    "subject_id": "700708",
+                    "session_id": "700708_2024-05-29_11-18-13",
+                    "latents_over_trials": "/results/outputs/checkpoints/step_30000/training/latents_over_trials_subject_700708_session_700708_2024-05-29_11-18-13.png"
+                },
+                {
+                    "subject_id": "705599",
+                    "session_id": "705599_2024-06-10_14-23-16",
+                    "latents_over_trials": "/results/outputs/checkpoints/step_30000/training/latents_over_trials_subject_705599_session_705599_2024-06-10_14-23-16.png"
+                },
+                {
+                    "subject_id": "708026",
+                    "session_id": "708026_2024-08-07_08-56-02",
+                    "latents_over_trials": "/results/outputs/checkpoints/step_30000/training/latents_over_trials_subject_708026_session_708026_2024-08-07_08-56-02.png"
+                }
+            ],
+            "plots": {
+                "latents_over_trials_examples": [],
+                "latents_in_space_examples": []
+            }
+        },
+        "eval": {
+            "split": "eval",
+            "num_sessions": 526,
+            "num_trials": 261457,
+            "example_sessions_per_subject": 1,
+            "example_max_subjects": 3,
+            "open_latent_threshold": 0.03,
+            "open_latents": [
+                0,
+                1,
+                2,
+                3,
+                4
+            ],
+            "example_session": "700708_2024-06-04_08-44-22",
+            "example_subject": "700708",
+            "example_sessions": [
+                {
+                    "subject_id": "700708",
+                    "session_id": "700708_2024-06-04_08-44-22",
+                    "latents_over_trials": "/results/outputs/checkpoints/step_30000/eval/latents_over_trials_subject_700708_session_700708_2024-06-04_08-44-22.png"
+                },
+                {
+                    "subject_id": "705599",
+                    "session_id": "705599_2024-06-11_13-24-28",
+                    "latents_over_trials": "/results/outputs/checkpoints/step_30000/eval/latents_over_trials_subject_705599_session_705599_2024-06-11_13-24-28.png"
+                },
+                {
+                    "subject_id": "708026",
+                    "session_id": "708026_2024-08-14_09-16-18",
+                    "latents_over_trials": "/results/outputs/checkpoints/step_30000/eval/latents_over_trials_subject_708026_session_708026_2024-08-14_09-16-18.png"
+                }
+            ],
+            "plots": {
+                "latents_over_trials_examples": [],
+                "latents_in_space_examples": []
+            }
+        }
+    }
+}
