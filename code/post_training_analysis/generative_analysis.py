@@ -452,19 +452,35 @@ def run_post_training_analysis(
     n_rollouts_per_session: int = 1,
     window_size: int = _DEFAULT_WINDOW_SIZE,
     output_dir: str | Path | None = None,
+    save_animal_session_history: bool = False,
 ) -> dict[str, Any]:
-    """Run the end-to-end standalone post-training generative analysis."""
+    """Run the end-to-end standalone post-training generative analysis.
+
+    Parameters
+    ----------
+    output_dir:
+        Optional override for where analysis outputs are written. If omitted,
+        outputs are saved under ``<model_dir>/outputs/post_training_analysis/``
+        with a run-specific subdirectory.
+    save_animal_session_history:
+        If ``True``, also save ``animal_session_history.pkl``. This defaults to
+        ``False`` because the animal history is reproducible from the resolved
+        run configuration and snapshot data.
+    """
 
     started_at = time.perf_counter()
     logger.info(
         "Starting post-training analysis: model_dir=%s split=%s checkpoint_policy=%s "
-        "rollout_mode=%s n_rollouts_per_session=%d window_size=%d",
+        "rollout_mode=%s n_rollouts_per_session=%d window_size=%d "
+        "save_animal_session_history=%s output_dir=%s",
         model_dir,
         split,
         checkpoint_policy,
         rollout_mode,
         int(n_rollouts_per_session),
         int(window_size),
+        save_animal_session_history,
+        output_dir,
     )
 
     stage_started_at = time.perf_counter()
@@ -521,8 +537,9 @@ def run_post_training_analysis(
     switch_stats_path = analysis_output_dir / "switch_stats.json"
 
     resolved_run_path.write_text(json.dumps(resolved_run.to_dict(), indent=2))
-    with animal_history_path.open("wb") as f:
-        pickle.dump(animal_sessions, f)
+    if save_animal_session_history:
+        with animal_history_path.open("wb") as f:
+            pickle.dump(animal_sessions, f)
     with simulated_history_path.open("wb") as f:
         pickle.dump(simulated_sessions, f)
 
@@ -545,14 +562,16 @@ def run_post_training_analysis(
         time.perf_counter() - started_at,
     )
 
-    return {
+    result = {
         "resolved_run": str(resolved_run_path),
-        "animal_session_history": str(animal_history_path),
         "simulated_session_history": str(simulated_history_path),
         "switch_stats": str(switch_stats_path),
         "figure_paths": {name: str(path) for name, path in figure_paths.items()},
         "output_dir": str(analysis_output_dir),
     }
+    if save_animal_session_history:
+        result["animal_session_history"] = str(animal_history_path)
+    return result
 
 
 def extract_switches_and_run_lengths(choices: Sequence[Any]) -> tuple[list[int], list[int]]:
