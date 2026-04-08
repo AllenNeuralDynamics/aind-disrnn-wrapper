@@ -61,10 +61,12 @@ class ResolvedModelRun:
     selection: dict[str, Any]
     output_summary_path: str | None = None
     checkpoint_index_path: str | None = None
+    subject_index_map_path: str | None = None
     checkpoint_selection_reason: str | None = None
     fallback_reason: str | None = None
     model_config: dict[str, Any] = field(default_factory=dict)
     run_config: dict[str, Any] = field(default_factory=dict)
+    trained_subject_ids: list[Any] | None = None
     resolved_subject_ids: list[Any] | None = None
     resolved_session_ids: list[str] | None = None
 
@@ -106,6 +108,10 @@ def resolve_model_run(
             "Only GRU and disRNN runs are supported."
         )
 
+    is_multisubject = bool(
+        architecture_cfg.get("multisubject", False)
+        or data_cfg.get("multisubject", False)
+    )
     selection = _resolve_split_selection(data_cfg, normalized_split)
     config_name = "disrnn_config.json" if model_type == "disrnn" else "gru_config.json"
     config_path = outputs_dir / config_name
@@ -142,6 +148,28 @@ def resolve_model_run(
         )
     )
 
+    subject_index_map_path = None
+    trained_subject_ids = None
+    if is_multisubject:
+        if normalized_split != _TRAIN_SPLIT:
+            raise NotImplementedError(
+                "Held-out post-training analysis is not supported for multisubject "
+                "GRU/disRNN runs. V1 supports seen-subject personalization only."
+            )
+        subject_index_map_path = outputs_dir / "subject_index_map.json"
+        if not subject_index_map_path.exists():
+            raise FileNotFoundError(
+                f"Could not find saved subject index map at {subject_index_map_path}"
+            )
+        trained_subject_ids = _load_trained_subject_ids_from_subject_index_map(
+            subject_index_map_path
+        )
+        if not trained_subject_ids:
+            raise ValueError(
+                "Resolved multisubject run does not contain any trained subjects in "
+                f"{subject_index_map_path}."
+            )
+
     resolved = ResolvedModelRun(
         model_dir=str(model_dir_path),
         inputs_path=str(inputs_path),
@@ -154,10 +182,7 @@ def resolve_model_run(
         params_path=str(params_path),
         config_path=str(config_path),
         seed=_coerce_optional_int(run_config.get("seed", model_cfg.get("seed"))),
-        multisubject=bool(
-            architecture_cfg.get("multisubject", False)
-            or data_cfg.get("multisubject", False)
-        ),
+        multisubject=is_multisubject,
         mature_only=bool(data_cfg.get("mature_only", True)),
         ignore_policy=str(data_cfg.get("ignore_policy", "exclude")),
         curricula=[str(v) for v in data_cfg.get("curricula") or []],
@@ -167,10 +192,14 @@ def resolve_model_run(
         checkpoint_index_path=str(checkpoint_index_path)
         if checkpoint_index_path.exists()
         else None,
+        subject_index_map_path=(
+            str(subject_index_map_path) if subject_index_map_path is not None else None
+        ),
         checkpoint_selection_reason=reason,
         fallback_reason=fallback_reason,
         model_config=_to_serializable(model_config),
         run_config=_to_serializable(run_config),
+        trained_subject_ids=trained_subject_ids,
     )
     logger.info(
         "Resolved model run in %.2fs: model_type=%s split=%s checkpoint=%s step=%s",
@@ -198,11 +227,7 @@ def load_animal_session_history(
 
     started_at = time.perf_counter()
     resolved_run = _coerce_resolved_run(model_dir, split=split)
-    if resolved_run.multisubject:
-        raise NotImplementedError(
-            "V1 post-training generative analysis currently supports "
-            "single-subject GRU/disRNN runs only."
-        )
+    _validate_multisubject_analysis_split(resolved_run)
 
     load_mice_snapshot_mod = importlib.import_module("utils.load_mice_snapshot")
 
@@ -221,10 +246,19 @@ def load_animal_session_history(
         resolved_run.split,
     )
     snapshot_started_at = time.perf_counter()
+    selection_subject_ids = (
+        resolved_run.trained_subject_ids
+        if resolved_run.multisubject
+        else resolved_run.selection.get("subject_ids")
+    )
     snapshot_df, selected_subject_ids = load_mice_snapshot_mod.load_mice_snapshot(
-        subject_ids=resolved_run.selection.get("subject_ids"),
-        subject_start=resolved_run.selection.get("subject_start"),
-        subject_end=resolved_run.selection.get("subject_end"),
+        subject_ids=selection_subject_ids,
+        subject_start=(
+            None if resolved_run.multisubject else resolved_run.selection.get("subject_start")
+        ),
+        subject_end=(
+            None if resolved_run.multisubject else resolved_run.selection.get("subject_end")
+        ),
         mature_only=resolved_run.mature_only,
         curricula=resolved_run.curricula or None,
         cols_to_retain=snapshot_cols,
@@ -243,6 +277,17 @@ def load_animal_session_history(
             f"{resolved_run.model_dir} split={resolved_run.split}."
         )
 
+    snapshot_df = _align_snapshot_df_with_ignore_policy(
+        snapshot_df,
+        ignore_policy=resolved_run.ignore_policy,
+    )
+    if len(snapshot_df) == 0:
+        raise ValueError(
+            "Snapshot selection resolved to an empty dataset after applying "
+            f"ignore_policy={resolved_run.ignore_policy!r} for {resolved_run.model_dir} "
+            f"split={resolved_run.split}."
+        )
+
     snapshot_df = snapshot_df.copy()
     snapshot_df["subject_id"] = snapshot_df["subject_id"].map(_normalize_identifier)
     snapshot_df["ses_idx"] = snapshot_df["ses_idx"].map(str)
@@ -258,11 +303,17 @@ def load_animal_session_history(
         len(session_history),
         "" if len(session_history) == 1 else "s",
     )
-    selected_subject_ids = _unique_preserve_order(selected_subject_ids)
-    resolved_run.resolved_subject_ids = [
-        _normalize_identifier(value) for value in selected_subject_ids
-    ]
-    resolved_run.resolved_session_ids = sorted(session_history["ses_idx"].tolist())
+    session_subject_ids = _series_like_to_list(session_history, "subject_id")
+    session_ids = _series_like_to_list(session_history, "ses_idx")
+    if session_subject_ids is not None:
+        resolved_run.resolved_subject_ids = _unique_preserve_order(session_subject_ids)
+    else:
+        selected_subject_ids = _unique_preserve_order(selected_subject_ids)
+        resolved_run.resolved_subject_ids = [
+            _normalize_identifier(value) for value in selected_subject_ids
+        ]
+    if session_ids is not None:
+        resolved_run.resolved_session_ids = sorted(str(value) for value in session_ids)
     logger.info(
         "Finished loading animal session history in %.2fs",
         time.perf_counter() - started_at,
@@ -288,10 +339,7 @@ def simulate_model_sessions(
         raise ValueError("n_rollouts_per_session must be >= 1.")
 
     run = _coerce_resolved_run(resolved_run)
-    if run.multisubject:
-        raise NotImplementedError(
-            "V1 post-training simulation currently supports only single-subject runs."
-        )
+    _validate_multisubject_analysis_split(run)
     if run.ignore_policy != "exclude":
         raise NotImplementedError(
             "V1 post-training simulation expects ignore_policy='exclude'. "
@@ -302,6 +350,8 @@ def simulate_model_sessions(
     pd = _import_dependency("pandas")
     runner = _restore_model_runner(run)
     animal_rows = list(_iter_session_records(animal_sessions))
+    if hasattr(runner, "validate_subject_ids"):
+        runner.validate_subject_ids([row.get("subject_id") for row in animal_rows])
     total_source_sessions = len(animal_rows)
     total_requested_rollouts = total_source_sessions * int(n_rollouts_per_session)
 
@@ -372,7 +422,12 @@ def simulate_model_sessions(
             reward_history: list[float] = []
 
             for _ in range(n_trials):
-                logits, state = runner.step([prev_choice, prev_reward], state)
+                model_inputs = (
+                    runner.encode_inputs(subject_id, [prev_choice, prev_reward])
+                    if hasattr(runner, "encode_inputs")
+                    else [prev_choice, prev_reward]
+                )
+                logits, state = runner.step(model_inputs, state)
                 probs = _softmax(logits)
                 choice = int(rng.choice(runner.n_actions, p=probs))
                 reward = _step_task_reward(task, choice)
@@ -2514,18 +2569,22 @@ def _restore_model_runner(resolved_run: ResolvedModelRun):
     jax = _import_dependency("jax")
     jnp = importlib.import_module("jax.numpy")
     hk = _import_dependency("haiku")
-
-    if resolved_run.multisubject:
-        raise NotImplementedError(
-            "V1 post-training generative analysis does not yet restore "
-            "multisubject models for simulation."
-        )
+    _validate_multisubject_analysis_split(resolved_run)
 
     params = _json_tree_to_arrays(json.loads(Path(resolved_run.params_path).read_text()))
     model_type = resolved_run.model_type
+    subject_id_to_index: dict[Any, int] = {}
+    index_to_subject_id: dict[int, Any] = {}
+    if resolved_run.multisubject:
+        subject_id_to_index, index_to_subject_id = _load_subject_index_maps_for_run(
+            resolved_run
+        )
+        _validate_multisubject_params_against_subject_map(
+            params,
+            n_subjects=len(index_to_subject_id),
+        )
 
     if model_type == "disrnn":
-        disrnn_mod = importlib.import_module("disentangled_rnns.library.disrnn")
         config_dict = copy.deepcopy(_as_dict(resolved_run.model_config))
         config_dict["noiseless_mode"] = True
         config_dict["latent_penalty"] = 0.0
@@ -2533,15 +2592,32 @@ def _restore_model_runner(resolved_run: ResolvedModelRun):
         config_dict["update_net_obs_penalty"] = 0.0
         config_dict["update_net_latent_penalty"] = 0.0
         config_dict["l2_scale"] = 0.0
-        config = disrnn_mod.DisRnnConfig(**config_dict)
+        if resolved_run.multisubject:
+            multisubject_disrnn_mod = importlib.import_module("models.multisubject_disrnn")
+            config_dict["subj_penalty"] = 0.0
+            config_dict["update_net_subj_penalty"] = 0.0
+            config_dict["choice_net_subj_penalty"] = 0.0
+            config_dict["max_n_subjects"] = int(
+                config_dict.get("max_n_subjects", len(index_to_subject_id))
+            )
+            if int(config_dict["max_n_subjects"]) < int(len(index_to_subject_id)):
+                raise ValueError(
+                    "Saved disRNN config max_n_subjects is smaller than the resolved "
+                    "subject_index_map.json roster."
+                )
+            config = multisubject_disrnn_mod.MultisubjectDisRnnConfig(**config_dict)
 
-        def make_network():
-            return disrnn_mod.HkDisentangledRNN(config)
+            def make_network():
+                return multisubject_disrnn_mod.MultisubjectDisRnn(config)
+        else:
+            disrnn_mod = importlib.import_module("disentangled_rnns.library.disrnn")
+            config = disrnn_mod.DisRnnConfig(**config_dict)
+
+            def make_network():
+                return disrnn_mod.HkDisentangledRNN(config)
 
         n_actions = int(config.output_size)
     elif model_type == "gru":
-        if resolved_run.multisubject:
-            raise NotImplementedError("V1 GRU simulation does not support multisubject runs.")
         make_gru_network = importlib.import_module("models.gru_network").make_gru_network
         config_dict = copy.deepcopy(_as_dict(resolved_run.model_config))
         architecture = _as_dict(config_dict.get("architecture", {}))
@@ -2549,7 +2625,16 @@ def _restore_model_runner(resolved_run: ResolvedModelRun):
         make_network = make_gru_network(
             hidden_size=int(architecture["hidden_size"]),
             output_size=output_size,
-            multisubject=False,
+            multisubject=bool(resolved_run.multisubject),
+            max_n_subjects=(
+                int(len(subject_id_to_index)) if resolved_run.multisubject else None
+            ),
+            subject_embedding_size=(
+                int(architecture["subject_embedding_size"])
+                if resolved_run.multisubject
+                else None
+            ),
+            subject_embedding_init=str(architecture.get("subject_embedding_init", "zeros")),
         )
         n_actions = int(output_size)
     else:
@@ -2576,9 +2661,52 @@ def _restore_model_runner(resolved_run: ResolvedModelRun):
     initial_state = initial_state_transform.apply(initial_state_params)
 
     class _ModelRunner:
-        def __init__(self, initial_state, n_actions: int) -> None:
+        def __init__(
+            self,
+            initial_state,
+            n_actions: int,
+            *,
+            subject_id_to_index: Mapping[Any, int] | None = None,
+        ) -> None:
             self.initial_state = initial_state
             self.n_actions = int(n_actions)
+            self.subject_id_to_index = {
+                _normalize_identifier(subject_id): int(subject_index)
+                for subject_id, subject_index in (subject_id_to_index or {}).items()
+            }
+
+        def validate_subject_ids(self, subject_ids: Sequence[Any]) -> None:
+            if not self.subject_id_to_index:
+                return
+            missing_subject_ids = [
+                normalized
+                for normalized in _unique_preserve_order(
+                    [_normalize_identifier(subject_id) for subject_id in subject_ids]
+                )
+                if normalized not in self.subject_id_to_index
+            ]
+            if missing_subject_ids:
+                raise ValueError(
+                    "Multisubject post-training analysis encountered subject ids "
+                    "that are not present in subject_index_map.json: "
+                    f"{missing_subject_ids}"
+                )
+
+        def encode_inputs(self, subject_id: Any, inputs: Sequence[float]) -> list[float]:
+            encoded_inputs = [float(value) for value in inputs]
+            if not self.subject_id_to_index:
+                return encoded_inputs
+            normalized_subject_id = _normalize_identifier(subject_id)
+            if normalized_subject_id not in self.subject_id_to_index:
+                raise ValueError(
+                    "Multisubject post-training analysis encountered subject_id="
+                    f"{normalized_subject_id!r}, which is not present in "
+                    "subject_index_map.json."
+                )
+            return [
+                float(self.subject_id_to_index[normalized_subject_id]),
+                *encoded_inputs,
+            ]
 
         def step(self, inputs: Sequence[float], prev_state):
             input_array = jnp.asarray([list(inputs)], dtype=jnp.float32)
@@ -2591,7 +2719,11 @@ def _restore_model_runner(resolved_run: ResolvedModelRun):
                 )
             return action_logits, next_state
 
-    return _ModelRunner(initial_state=initial_state, n_actions=n_actions)
+    return _ModelRunner(
+        initial_state=initial_state,
+        n_actions=n_actions,
+        subject_id_to_index=subject_id_to_index,
+    )
 
 
 def _build_curriculum_matched_task(
@@ -3511,6 +3643,108 @@ def _first_non_null(series_like: Any) -> Any:
             continue
         return value
     return None
+
+
+def _series_like_to_list(rows: Any, column_name: str) -> list[Any] | None:
+    try:
+        column = rows[column_name]
+    except (KeyError, TypeError, AttributeError):
+        return None
+    if hasattr(column, "tolist"):
+        return list(column.tolist())
+    try:
+        return list(column)
+    except TypeError:
+        return None
+
+
+def _validate_multisubject_analysis_split(resolved_run: ResolvedModelRun) -> None:
+    if resolved_run.multisubject and resolved_run.split != _TRAIN_SPLIT:
+        raise NotImplementedError(
+            "Held-out post-training analysis is not supported for multisubject "
+            "GRU/disRNN runs. V1 supports seen-subject personalization only."
+        )
+
+
+def _load_trained_subject_ids_from_subject_index_map(path: str | Path) -> list[Any]:
+    with Path(path).open("r") as f:
+        payload = json.load(f)
+
+    index_to_subject_id_raw = payload.get("index_to_subject_id", {})
+    if index_to_subject_id_raw:
+        ordered_pairs = sorted(
+            (
+                (int(index), _normalize_identifier(subject_id))
+                for index, subject_id in index_to_subject_id_raw.items()
+            ),
+            key=lambda item: item[0],
+        )
+        return [subject_id for _, subject_id in ordered_pairs]
+
+    subject_id_to_index_raw = payload.get("subject_id_to_index", {})
+    if subject_id_to_index_raw:
+        ordered_pairs = sorted(
+            (
+                (int(index), _normalize_identifier(subject_id))
+                for subject_id, index in subject_id_to_index_raw.items()
+            ),
+            key=lambda item: item[0],
+        )
+        return [subject_id for _, subject_id in ordered_pairs]
+
+    return []
+
+
+def _load_subject_index_maps_for_run(
+    resolved_run: ResolvedModelRun,
+) -> tuple[dict[Any, int], dict[int, Any]]:
+    if not resolved_run.subject_index_map_path:
+        raise FileNotFoundError(
+            "Multisubject post-training analysis requires outputs/subject_index_map.json."
+        )
+
+    multisubject_mod = importlib.import_module("utils.multisubject")
+    subject_id_to_index_raw, index_to_subject_id_raw = multisubject_mod.load_subject_index_map(
+        resolved_run.subject_index_map_path
+    )
+    subject_id_to_index = {
+        _normalize_identifier(subject_id): int(subject_index)
+        for subject_id, subject_index in subject_id_to_index_raw.items()
+    }
+    index_to_subject_id = {
+        int(subject_index): _normalize_identifier(subject_id)
+        for subject_index, subject_id in index_to_subject_id_raw.items()
+    }
+    if not subject_id_to_index or not index_to_subject_id:
+        raise ValueError(
+            "Saved subject_index_map.json is empty or malformed for multisubject "
+            f"run {resolved_run.model_dir}."
+        )
+    return subject_id_to_index, index_to_subject_id
+
+
+def _validate_multisubject_params_against_subject_map(
+    params: Mapping[str, Any],
+    *,
+    n_subjects: int,
+) -> None:
+    multisubject_mod = importlib.import_module("utils.multisubject")
+    subject_embeddings = multisubject_mod.extract_subject_embeddings_from_params(dict(params))
+    if int(subject_embeddings.shape[0]) < int(n_subjects):
+        raise ValueError(
+            "Saved multisubject params do not have enough subject-embedding rows for "
+            f"the resolved subject_index_map.json roster: "
+            f"rows={int(subject_embeddings.shape[0])}, subjects={int(n_subjects)}."
+        )
+
+
+def _align_snapshot_df_with_ignore_policy(snapshot_df: Any, *, ignore_policy: str):
+    if str(ignore_policy).strip().lower() != "exclude":
+        return snapshot_df
+    if not hasattr(snapshot_df, "columns") or "animal_response" not in snapshot_df.columns:
+        return snapshot_df
+    valid_sessions = snapshot_df.loc[snapshot_df["animal_response"] != 2, "ses_idx"].unique()
+    return snapshot_df[snapshot_df["ses_idx"].isin(valid_sessions)].copy()
 
 
 def _unique_preserve_order(values: Sequence[Any]) -> list[Any]:
