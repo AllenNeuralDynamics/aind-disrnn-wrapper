@@ -29,9 +29,13 @@ _CHECKPOINT_POLICY_BEST_HELDOUT = "best_heldout"
 _CHECKPOINT_POLICY_FINAL = "final"
 _ROLLOUT_MODE_CURRICULUM_MATCHED = "curriculum_matched"
 _DEFAULT_WINDOW_SIZE = 10
+_DEFAULT_HISTORY_MAX_TRIALS_BACK = 3
+_DEFAULT_HISTORY_AGGREGATE_MIN_TRIALS = 10
+_DEFAULT_HISTORY_SUBJECT_MIN_TRIALS = 5
 _SUBJECT_LEVEL_MIN_ANIMAL_N = 5
 _REWARD_CONDITIONS = ("rewarded", "unrewarded")
 _RUN_LENGTH_CONDITIONS = ("run_length_1", "run_length_gt1")
+_HISTORY_PATTERN_TYPES = ("detailed", "abstract")
 
 
 @dataclass
@@ -450,6 +454,86 @@ def compute_switch_stats(
     }
 
 
+def compute_history_dependent_switch_stats(
+    animal_sessions,
+    simulated_sessions,
+    *,
+    max_trials_back: int = _DEFAULT_HISTORY_MAX_TRIALS_BACK,
+    aggregate_min_trials: int = _DEFAULT_HISTORY_AGGREGATE_MIN_TRIALS,
+    subject_min_trials: int = _DEFAULT_HISTORY_SUBJECT_MIN_TRIALS,
+    default_pattern_type: str = "abstract",
+) -> dict[str, Any]:
+    """Compute history-dependent switch probabilities for animal and simulated sessions."""
+
+    max_trials_back = int(max_trials_back)
+    aggregate_min_trials = int(aggregate_min_trials)
+    subject_min_trials = int(subject_min_trials)
+    if max_trials_back <= 0:
+        raise ValueError("max_trials_back must be a positive integer.")
+    if aggregate_min_trials < 0:
+        raise ValueError("aggregate_min_trials must be >= 0.")
+    if subject_min_trials < 0:
+        raise ValueError("subject_min_trials must be >= 0.")
+
+    normalized_pattern_type = _normalize_history_pattern_type(default_pattern_type)
+    animal_records = _build_history_pattern_count_records(
+        animal_sessions,
+        max_trials_back=max_trials_back,
+    )
+    simulated_records = _build_history_pattern_count_records(
+        simulated_sessions,
+        max_trials_back=max_trials_back,
+    )
+
+    animal_summary = _finalize_history_pattern_count_tree(
+        _aggregate_history_pattern_count_records(
+            animal_records,
+            max_trials_back=max_trials_back,
+            average_rollouts_by_source=False,
+        ),
+    )
+    simulated_summary = _finalize_history_pattern_count_tree(
+        _aggregate_history_pattern_count_records(
+            simulated_records,
+            max_trials_back=max_trials_back,
+            average_rollouts_by_source=True,
+        ),
+    )
+    animal_subject_stats = _build_subject_history_pattern_summary(
+        animal_records,
+        max_trials_back=max_trials_back,
+        average_rollouts_by_source=False,
+    )
+    simulated_subject_stats = _build_subject_history_pattern_summary(
+        simulated_records,
+        max_trials_back=max_trials_back,
+        average_rollouts_by_source=True,
+    )
+
+    return {
+        "config": {
+            "max_trials_back": max_trials_back,
+            "aggregate_min_trials": aggregate_min_trials,
+            "subject_min_trials": subject_min_trials,
+            "default_pattern_type": normalized_pattern_type,
+        },
+        "animal": animal_summary,
+        "simulated": simulated_summary,
+        "comparison": _build_history_pattern_comparison(
+            animal_summary,
+            simulated_summary,
+            max_trials_back=max_trials_back,
+            aggregate_min_trials=aggregate_min_trials,
+        ),
+        "subject_level": _build_subject_history_pattern_comparison(
+            animal_subject_stats,
+            simulated_subject_stats,
+            max_trials_back=max_trials_back,
+            subject_min_trials=subject_min_trials,
+        ),
+    }
+
+
 def run_post_training_analysis(
     model_dir: str | Path,
     *,
@@ -532,6 +616,16 @@ def run_post_training_analysis(
     )
 
     stage_started_at = time.perf_counter()
+    history_dependent_switch_stats = compute_history_dependent_switch_stats(
+        animal_sessions=animal_sessions,
+        simulated_sessions=simulated_sessions,
+    )
+    logger.info(
+        "Completed compute_history_dependent_switch_stats in %.2fs",
+        time.perf_counter() - stage_started_at,
+    )
+
+    stage_started_at = time.perf_counter()
     analysis_output_dir = _resolve_analysis_output_dir(
         resolved_run=resolved_run,
         output_dir=output_dir,
@@ -542,6 +636,9 @@ def run_post_training_analysis(
     animal_history_path = analysis_output_dir / "animal_session_history.pkl"
     simulated_history_path = analysis_output_dir / "simulated_session_history.pkl"
     switch_stats_path = analysis_output_dir / "switch_stats.json"
+    history_dependent_switch_stats_path = (
+        analysis_output_dir / "history_dependent_switch_stats.json"
+    )
 
     resolved_run_path.write_text(json.dumps(resolved_run.to_dict(), indent=2))
     if save_animal_session_history:
@@ -559,6 +656,17 @@ def run_post_training_analysis(
         name: str(path) for name, path in figure_paths.items()
     }
     switch_stats_path.write_text(json.dumps(_to_serializable(switch_stats_with_figures), indent=2))
+    history_figure_paths = _save_history_dependent_switch_figures(
+        history_stats=history_dependent_switch_stats,
+        output_dir=analysis_output_dir / "figures",
+    )
+    history_stats_with_figures = dict(history_dependent_switch_stats)
+    history_stats_with_figures["figure_paths"] = {
+        name: str(path) for name, path in history_figure_paths.items()
+    }
+    history_dependent_switch_stats_path.write_text(
+        json.dumps(_to_serializable(history_stats_with_figures), indent=2)
+    )
     logger.info(
         "Saved analysis outputs in %.2fs to %s",
         time.perf_counter() - stage_started_at,
@@ -573,7 +681,11 @@ def run_post_training_analysis(
         "resolved_run": str(resolved_run_path),
         "simulated_session_history": str(simulated_history_path),
         "switch_stats": str(switch_stats_path),
-        "figure_paths": {name: str(path) for name, path in figure_paths.items()},
+        "history_dependent_switch_stats": str(history_dependent_switch_stats_path),
+        "figure_paths": {
+            name: str(path)
+            for name, path in {**figure_paths, **history_figure_paths}.items()
+        },
         "output_dir": str(analysis_output_dir),
     }
     if save_animal_session_history:
@@ -806,6 +918,705 @@ def analyze_post_switch_probability_by_reward_and_run_length(
                 events
             )
     return results
+
+
+def _normalize_history_pattern_type(pattern_type: str) -> str:
+    normalized = str(pattern_type).strip().lower()
+    if normalized not in _HISTORY_PATTERN_TYPES:
+        raise ValueError(
+            f"Unsupported default_pattern_type={pattern_type!r}. "
+            "Use 'detailed' or 'abstract'."
+        )
+    return normalized
+
+
+def _build_history_pattern_count_records(
+    session_rows,
+    *,
+    max_trials_back: int,
+) -> list[dict[str, Any]]:
+    return [
+        _extract_history_pattern_count_record(row, max_trials_back=max_trials_back)
+        for row in _iter_session_records(session_rows)
+    ]
+
+
+def _extract_history_pattern_count_record(
+    row: Mapping[str, Any],
+    *,
+    max_trials_back: int,
+) -> dict[str, Any]:
+    counts = _new_history_pattern_count_tree(max_trials_back)
+    choices, rewards = _aligned_choice_reward_histories_for_history_patterns(
+        row.get("choice_history", []),
+        row.get("reward_history", []),
+    )
+
+    if len(choices) > 1:
+        encoded_trials = [
+            _encode_history_trial(choice, reward)
+            for choice, reward in zip(choices, rewards)
+        ]
+        for n_back in range(1, int(max_trials_back) + 1):
+            if len(encoded_trials) <= n_back:
+                continue
+            for trial_idx in range(n_back, len(encoded_trials)):
+                history_pattern = "".join(encoded_trials[trial_idx - n_back : trial_idx])
+                is_switch = choices[trial_idx] != choices[trial_idx - 1]
+                _increment_history_pattern_counts(
+                    counts["detailed"][n_back],
+                    history_pattern,
+                    is_switch=is_switch,
+                )
+                _increment_history_pattern_counts(
+                    counts["abstract"][n_back],
+                    _history_pattern_to_abstract(history_pattern),
+                    is_switch=is_switch,
+                )
+
+    return {
+        "subject_id": _normalize_identifier(row.get("subject_id")),
+        "ses_idx": str(row.get("ses_idx")),
+        "source_ses_idx": row.get("source_ses_idx"),
+        "counts": counts,
+    }
+
+
+def _aligned_choice_reward_histories_for_history_patterns(
+    choices: Sequence[Any],
+    rewards: Sequence[Any],
+) -> tuple[list[int], list[float]]:
+    cleaned_choices: list[int] = []
+    cleaned_rewards: list[float] = []
+    max_len = min(len(choices), len(rewards))
+    for idx in range(max_len):
+        choice = _normalize_choice_value(choices[idx])
+        if _is_nan(choice):
+            continue
+
+        raw_reward = rewards[idx]
+        if raw_reward is None or _is_nan(raw_reward):
+            continue
+
+        cleaned_choices.append(int(choice))
+        cleaned_rewards.append(float(_normalize_reward_value(raw_reward)))
+    return cleaned_choices, cleaned_rewards
+
+
+def _encode_history_trial(choice: int, reward: float) -> str:
+    if int(choice) == 0:
+        return "L" if float(reward) > 0 else "l"
+    return "R" if float(reward) > 0 else "r"
+
+
+def _history_pattern_to_abstract(pattern: str) -> str:
+    if not pattern:
+        return ""
+    first_side = pattern[0].upper()
+    if first_side == "L":
+        mapping = {"L": "A", "l": "a", "R": "B", "r": "b"}
+    else:
+        mapping = {"L": "B", "l": "b", "R": "A", "r": "a"}
+    return "".join(mapping[char] for char in pattern)
+
+
+def _new_history_pattern_count_tree(
+    max_trials_back: int,
+) -> dict[str, dict[int, dict[str, dict[str, float]]]]:
+    return {
+        pattern_type: {
+            n_back: {}
+            for n_back in range(1, int(max_trials_back) + 1)
+        }
+        for pattern_type in _HISTORY_PATTERN_TYPES
+    }
+
+
+def _increment_history_pattern_counts(
+    target: dict[str, dict[str, float]],
+    pattern: str,
+    *,
+    is_switch: bool,
+) -> None:
+    leaf = target.setdefault(
+        pattern,
+        {"switches": 0.0, "stays": 0.0, "total": 0.0},
+    )
+    leaf["total"] += 1.0
+    if is_switch:
+        leaf["switches"] += 1.0
+    else:
+        leaf["stays"] += 1.0
+
+
+def _aggregate_history_pattern_count_records(
+    records: Sequence[Mapping[str, Any]],
+    *,
+    max_trials_back: int,
+    average_rollouts_by_source: bool,
+) -> dict[str, dict[int, dict[str, dict[str, float]]]]:
+    aggregated = _new_history_pattern_count_tree(max_trials_back)
+    if average_rollouts_by_source and all(
+        record.get("source_ses_idx") not in (None, "")
+        for record in records
+    ):
+        averaged_records, _ = _average_history_pattern_records_by_source(
+            records,
+            max_trials_back=max_trials_back,
+        )
+        for record in averaged_records:
+            _accumulate_history_pattern_count_tree(
+                aggregated,
+                _as_dict(record.get("counts", {})),
+                max_trials_back=max_trials_back,
+            )
+        return aggregated
+
+    for record in records:
+        _accumulate_history_pattern_count_tree(
+            aggregated,
+            _as_dict(record.get("counts", {})),
+            max_trials_back=max_trials_back,
+        )
+    return aggregated
+
+
+def _average_history_pattern_records_by_source(
+    records: Sequence[Mapping[str, Any]],
+    *,
+    max_trials_back: int,
+) -> tuple[list[dict[str, Any]], dict[Any, int]]:
+    grouped: dict[tuple[Any, str], list[Mapping[str, Any]]] = {}
+    for record in records:
+        grouped.setdefault(
+            (record.get("subject_id"), str(record.get("source_ses_idx"))),
+            [],
+        ).append(record)
+
+    averaged_records: list[dict[str, Any]] = []
+    subject_session_counts: dict[Any, int] = {}
+    for (subject_id, source_ses_idx), group_records in grouped.items():
+        averaged_records.append(
+            {
+                "subject_id": subject_id,
+                "source_ses_idx": source_ses_idx,
+                "counts": _average_history_pattern_count_trees(
+                    [
+                        _as_dict(record.get("counts", {}))
+                        for record in group_records
+                    ],
+                    max_trials_back=max_trials_back,
+                ),
+            }
+        )
+        subject_session_counts[subject_id] = subject_session_counts.get(subject_id, 0) + 1
+
+    return averaged_records, subject_session_counts
+
+
+def _average_history_pattern_count_trees(
+    trees: Sequence[Mapping[str, Any]],
+    *,
+    max_trials_back: int,
+) -> dict[str, dict[int, dict[str, dict[str, float]]]]:
+    averaged = _new_history_pattern_count_tree(max_trials_back)
+    if not trees:
+        return averaged
+
+    n_trees = float(len(trees))
+    for pattern_type in _HISTORY_PATTERN_TYPES:
+        for n_back in range(1, int(max_trials_back) + 1):
+            all_patterns = set()
+            for tree in trees:
+                all_patterns.update(
+                    _as_dict(_as_dict(tree.get(pattern_type, {})).get(n_back, {})).keys()
+                )
+            for pattern in all_patterns:
+                leaf = averaged[pattern_type][n_back].setdefault(
+                    pattern,
+                    {"switches": 0.0, "stays": 0.0, "total": 0.0},
+                )
+                leaf["switches"] = (
+                    sum(
+                        float(
+                            _as_dict(
+                                _as_dict(_as_dict(tree.get(pattern_type, {})).get(n_back, {})).get(
+                                    pattern,
+                                    {},
+                                )
+                            ).get("switches", 0.0)
+                        )
+                        for tree in trees
+                    )
+                    / n_trees
+                )
+                leaf["stays"] = (
+                    sum(
+                        float(
+                            _as_dict(
+                                _as_dict(_as_dict(tree.get(pattern_type, {})).get(n_back, {})).get(
+                                    pattern,
+                                    {},
+                                )
+                            ).get("stays", 0.0)
+                        )
+                        for tree in trees
+                    )
+                    / n_trees
+                )
+                leaf["total"] = (
+                    sum(
+                        float(
+                            _as_dict(
+                                _as_dict(_as_dict(tree.get(pattern_type, {})).get(n_back, {})).get(
+                                    pattern,
+                                    {},
+                                )
+                            ).get("total", 0.0)
+                        )
+                        for tree in trees
+                    )
+                    / n_trees
+                )
+    return averaged
+
+
+def _accumulate_history_pattern_count_tree(
+    target: dict[str, dict[int, dict[str, dict[str, float]]]],
+    source: Mapping[str, Any],
+    *,
+    max_trials_back: int,
+) -> None:
+    for pattern_type in _HISTORY_PATTERN_TYPES:
+        source_pattern_group = _as_dict(source.get(pattern_type, {}))
+        for n_back in range(1, int(max_trials_back) + 1):
+            source_bucket = _as_dict(source_pattern_group.get(n_back, {}))
+            for pattern, counts in source_bucket.items():
+                leaf = target[pattern_type][n_back].setdefault(
+                    pattern,
+                    {"switches": 0.0, "stays": 0.0, "total": 0.0},
+                )
+                count_leaf = _as_dict(counts)
+                leaf["switches"] += float(count_leaf.get("switches", 0.0))
+                leaf["stays"] += float(count_leaf.get("stays", 0.0))
+                leaf["total"] += float(count_leaf.get("total", 0.0))
+
+
+def _copy_history_pattern_count_tree(
+    counts: Mapping[str, Any],
+    *,
+    max_trials_back: int,
+) -> dict[str, dict[int, dict[str, dict[str, float]]]]:
+    copied = _new_history_pattern_count_tree(max_trials_back)
+    _accumulate_history_pattern_count_tree(
+        copied,
+        counts,
+        max_trials_back=max_trials_back,
+    )
+    return copied
+
+
+def _finalize_history_pattern_count_tree(
+    raw_tree: Mapping[str, Any],
+) -> dict[str, dict[int, dict[str, dict[str, Any]]]]:
+    finalized: dict[str, dict[int, dict[str, dict[str, Any]]]] = {}
+    for pattern_type in _HISTORY_PATTERN_TYPES:
+        finalized[pattern_type] = {}
+        pattern_group = _as_dict(raw_tree.get(pattern_type, {}))
+        for n_back, bucket in pattern_group.items():
+            finalized[pattern_type][int(n_back)] = {}
+            for pattern, counts in sorted(_as_dict(bucket).items()):
+                finalized[pattern_type][int(n_back)][str(pattern)] = _finalize_history_pattern_leaf(
+                    _as_dict(counts)
+                )
+    return finalized
+
+
+def _finalize_history_pattern_leaf(counts: Mapping[str, Any]) -> dict[str, Any]:
+    probability = _history_probability_from_counts(counts)
+    total = float(counts.get("total", 0.0))
+    return {
+        "switches": _normalize_count_output(counts.get("switches", 0.0)),
+        "stays": _normalize_count_output(counts.get("stays", 0.0)),
+        "total": _normalize_count_output(total),
+        "switch_probability": probability,
+        "switch_probability_sem": _history_switch_probability_sem(probability, total),
+    }
+
+
+def _history_probability_from_counts(counts: Mapping[str, Any]) -> float:
+    total = float(counts.get("total", 0.0))
+    if total <= 0:
+        return math.nan
+    return float(float(counts.get("switches", 0.0)) / total)
+
+
+def _history_switch_probability_sem(probability: float, total: float) -> float:
+    if total <= 0 or _is_nan(probability):
+        return math.nan
+    return float(math.sqrt(probability * (1.0 - probability) / total))
+
+
+def _build_history_pattern_comparison(
+    animal_summary: Mapping[str, Any],
+    simulated_summary: Mapping[str, Any],
+    *,
+    max_trials_back: int,
+    aggregate_min_trials: int,
+) -> dict[str, dict[int, dict[str, Any]]]:
+    comparison: dict[str, dict[int, dict[str, Any]]] = {}
+    for pattern_type in _HISTORY_PATTERN_TYPES:
+        comparison[pattern_type] = {}
+        animal_group = _as_dict(animal_summary.get(pattern_type, {}))
+        simulated_group = _as_dict(simulated_summary.get(pattern_type, {}))
+        for n_back in range(1, int(max_trials_back) + 1):
+            animal_bucket = _as_dict(animal_group.get(n_back, {}))
+            simulated_bucket = _as_dict(simulated_group.get(n_back, {}))
+            rows = []
+            for pattern in sorted(set(animal_bucket) & set(simulated_bucket)):
+                animal_leaf = _as_dict(animal_bucket.get(pattern, {}))
+                simulated_leaf = _as_dict(simulated_bucket.get(pattern, {}))
+                rows.append(
+                    {
+                        "pattern": str(pattern),
+                        "animal_probability": _coerce_probability(
+                            animal_leaf.get("switch_probability")
+                        ),
+                        "animal_sem": _coerce_probability(
+                            animal_leaf.get("switch_probability_sem")
+                        ),
+                        "animal_total": _normalize_count_output(
+                            animal_leaf.get("total", 0.0)
+                        ),
+                        "simulated_probability": _coerce_probability(
+                            simulated_leaf.get("switch_probability")
+                        ),
+                        "simulated_sem": _coerce_probability(
+                            simulated_leaf.get("switch_probability_sem")
+                        ),
+                        "simulated_total_effective": _normalize_count_output(
+                            simulated_leaf.get("total", 0.0)
+                        ),
+                        "delta_probability": _finite_difference(
+                            _coerce_probability(simulated_leaf.get("switch_probability")),
+                            _coerce_probability(animal_leaf.get("switch_probability")),
+                        ),
+                    }
+                )
+            comparison[pattern_type][n_back] = {
+                "rows": rows,
+                "summary": _summarize_history_pattern_comparison_rows(
+                    rows,
+                    min_trials=aggregate_min_trials,
+                ),
+            }
+    return comparison
+
+
+def _summarize_history_pattern_comparison_rows(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    min_trials: int,
+) -> dict[str, Any]:
+    valid_rows = _select_valid_history_pattern_rows(rows, min_trials=min_trials)
+    xs = [float(row["animal_probability"]) for row in valid_rows]
+    ys = [float(row["simulated_probability"]) for row in valid_rows]
+    return {
+        "n_patterns": len(valid_rows),
+        "correlation": _pearson_correlation(xs, ys),
+        "rmse": _rmse(xs, ys),
+    }
+
+
+def _select_valid_history_pattern_rows(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    min_trials: int,
+) -> list[dict[str, Any]]:
+    valid_rows = []
+    for row in rows:
+        animal_probability = _coerce_probability(row.get("animal_probability"))
+        simulated_probability = _coerce_probability(row.get("simulated_probability"))
+        animal_total = row.get("animal_total")
+        simulated_total = row.get("simulated_total_effective")
+        if animal_probability is None or simulated_probability is None:
+            continue
+        if animal_total is None or simulated_total is None:
+            continue
+        if float(animal_total) < float(min_trials) or float(simulated_total) < float(min_trials):
+            continue
+        valid_rows.append(dict(row))
+    return valid_rows
+
+
+def _build_subject_history_pattern_summary(
+    records: Sequence[Mapping[str, Any]],
+    *,
+    max_trials_back: int,
+    average_rollouts_by_source: bool,
+) -> dict[Any, dict[str, Any]]:
+    if not records:
+        return {}
+
+    subject_order = _unique_preserve_order([record.get("subject_id") for record in records])
+    if average_rollouts_by_source and all(
+        record.get("source_ses_idx") not in (None, "")
+        for record in records
+    ):
+        per_subject_records, subject_session_counts = _average_history_records_for_subjects(
+            records,
+            max_trials_back=max_trials_back,
+        )
+    else:
+        per_subject_records, subject_session_counts = _collect_direct_history_records_for_subjects(
+            records,
+            max_trials_back=max_trials_back,
+        )
+
+    summaries: dict[Any, dict[str, Any]] = {}
+    for subject_id in subject_order:
+        subject_records = per_subject_records.get(subject_id, [])
+        if not subject_records:
+            continue
+
+        aggregated = _new_history_pattern_count_tree(max_trials_back)
+        for count_tree in subject_records:
+            _accumulate_history_pattern_count_tree(
+                aggregated,
+                count_tree,
+                max_trials_back=max_trials_back,
+            )
+
+        summaries[subject_id] = {
+            "patterns": _finalize_history_pattern_count_tree(aggregated),
+            "n_source_sessions": int(subject_session_counts.get(subject_id, 0)),
+        }
+
+    return summaries
+
+
+def _average_history_records_for_subjects(
+    records: Sequence[Mapping[str, Any]],
+    *,
+    max_trials_back: int,
+) -> tuple[dict[Any, list[dict[str, Any]]], dict[Any, int]]:
+    averaged_records, subject_session_counts = _average_history_pattern_records_by_source(
+        records,
+        max_trials_back=max_trials_back,
+    )
+    per_subject_records: dict[Any, list[dict[str, Any]]] = {}
+    for record in averaged_records:
+        per_subject_records.setdefault(record.get("subject_id"), []).append(
+            _copy_history_pattern_count_tree(
+                _as_dict(record.get("counts", {})),
+                max_trials_back=max_trials_back,
+            )
+        )
+    return per_subject_records, subject_session_counts
+
+
+def _collect_direct_history_records_for_subjects(
+    records: Sequence[Mapping[str, Any]],
+    *,
+    max_trials_back: int,
+) -> tuple[dict[Any, list[dict[str, Any]]], dict[Any, int]]:
+    per_subject_records: dict[Any, list[dict[str, Any]]] = {}
+    session_keys_by_subject: dict[Any, list[str]] = {}
+    for record in records:
+        subject_id = record.get("subject_id")
+        per_subject_records.setdefault(subject_id, []).append(
+            _copy_history_pattern_count_tree(
+                _as_dict(record.get("counts", {})),
+                max_trials_back=max_trials_back,
+            )
+        )
+        session_key = (
+            record.get("source_ses_idx")
+            if record.get("source_ses_idx") not in (None, "")
+            else record.get("ses_idx")
+        )
+        session_keys_by_subject.setdefault(subject_id, []).append(str(session_key))
+    return (
+        per_subject_records,
+        {
+            subject_id: len(_unique_preserve_order(session_keys))
+            for subject_id, session_keys in session_keys_by_subject.items()
+        },
+    )
+
+
+def _build_subject_history_pattern_comparison(
+    animal_subject_stats: Mapping[Any, Mapping[str, Any]],
+    simulated_subject_stats: Mapping[Any, Mapping[str, Any]],
+    *,
+    max_trials_back: int,
+    subject_min_trials: int,
+) -> dict[str, dict[int, dict[str, dict[str, Any]]]]:
+    subject_level: dict[str, dict[int, dict[str, dict[str, Any]]]] = {
+        pattern_type: {
+            n_back: {}
+            for n_back in range(1, int(max_trials_back) + 1)
+        }
+        for pattern_type in _HISTORY_PATTERN_TYPES
+    }
+    matched_subject_ids = [
+        subject_id
+        for subject_id in _unique_preserve_order(list(animal_subject_stats.keys()))
+        if subject_id in simulated_subject_stats
+    ]
+
+    for pattern_type in _HISTORY_PATTERN_TYPES:
+        for n_back in range(1, int(max_trials_back) + 1):
+            patterns = _collect_subject_history_patterns(
+                animal_subject_stats,
+                simulated_subject_stats,
+                matched_subject_ids=matched_subject_ids,
+                pattern_type=pattern_type,
+                n_back=n_back,
+            )
+            for pattern in patterns:
+                points = _build_subject_history_pattern_points(
+                    animal_subject_stats,
+                    simulated_subject_stats,
+                    matched_subject_ids=matched_subject_ids,
+                    pattern_type=pattern_type,
+                    n_back=n_back,
+                    pattern=pattern,
+                )
+                subject_level[pattern_type][n_back][pattern] = {
+                    "points": points,
+                    "summary": _summarize_subject_history_pattern_points(
+                        points,
+                        min_trials=subject_min_trials,
+                    ),
+                }
+    return subject_level
+
+
+def _collect_subject_history_patterns(
+    animal_subject_stats: Mapping[Any, Mapping[str, Any]],
+    simulated_subject_stats: Mapping[Any, Mapping[str, Any]],
+    *,
+    matched_subject_ids: Sequence[Any],
+    pattern_type: str,
+    n_back: int,
+) -> list[str]:
+    patterns = set()
+    for subject_id in matched_subject_ids:
+        animal_bucket = _as_dict(
+            _as_dict(
+                _as_dict(animal_subject_stats.get(subject_id, {})).get("patterns", {})
+            ).get(pattern_type, {})
+        )
+        simulated_bucket = _as_dict(
+            _as_dict(
+                _as_dict(simulated_subject_stats.get(subject_id, {})).get("patterns", {})
+            ).get(pattern_type, {})
+        )
+        patterns.update(_as_dict(animal_bucket.get(n_back, {})).keys())
+        patterns.update(_as_dict(simulated_bucket.get(n_back, {})).keys())
+    return sorted(str(pattern) for pattern in patterns)
+
+
+def _build_subject_history_pattern_points(
+    animal_subject_stats: Mapping[Any, Mapping[str, Any]],
+    simulated_subject_stats: Mapping[Any, Mapping[str, Any]],
+    *,
+    matched_subject_ids: Sequence[Any],
+    pattern_type: str,
+    n_back: int,
+    pattern: str,
+) -> list[dict[str, Any]]:
+    points = []
+    for subject_id in matched_subject_ids:
+        animal_leaf = _as_dict(
+            _as_dict(
+                _as_dict(
+                    _as_dict(
+                        _as_dict(animal_subject_stats.get(subject_id, {})).get("patterns", {})
+                    ).get(pattern_type, {})
+                ).get(n_back, {})
+            ).get(pattern, {})
+        )
+        simulated_leaf = _as_dict(
+            _as_dict(
+                _as_dict(
+                    _as_dict(
+                        _as_dict(simulated_subject_stats.get(subject_id, {})).get(
+                            "patterns",
+                            {},
+                        )
+                    ).get(pattern_type, {})
+                ).get(n_back, {})
+            ).get(pattern, {})
+        )
+        points.append(
+            {
+                "subject_id": subject_id,
+                "animal_probability": _coerce_probability(
+                    animal_leaf.get("switch_probability")
+                ),
+                "animal_total": _normalize_count_output(animal_leaf.get("total", 0.0)),
+                "animal_n_sessions": int(
+                    _as_dict(animal_subject_stats.get(subject_id, {})).get(
+                        "n_source_sessions",
+                        0,
+                    )
+                ),
+                "simulated_probability": _coerce_probability(
+                    simulated_leaf.get("switch_probability")
+                ),
+                "simulated_total_effective": _normalize_count_output(
+                    simulated_leaf.get("total", 0.0)
+                ),
+                "simulated_n_source_sessions": int(
+                    _as_dict(simulated_subject_stats.get(subject_id, {})).get(
+                        "n_source_sessions",
+                        0,
+                    )
+                ),
+            }
+        )
+    return points
+
+
+def _summarize_subject_history_pattern_points(
+    points: Sequence[Mapping[str, Any]],
+    *,
+    min_trials: int,
+) -> dict[str, Any]:
+    valid_points = _select_valid_subject_history_pattern_points(
+        points,
+        min_trials=min_trials,
+    )
+    xs = [float(point["animal_probability"]) for point in valid_points]
+    ys = [float(point["simulated_probability"]) for point in valid_points]
+    return {
+        "n_subjects": len(valid_points),
+        "correlation": _pearson_correlation(xs, ys),
+        "rmse": _rmse(xs, ys),
+    }
+
+
+def _select_valid_subject_history_pattern_points(
+    points: Sequence[Mapping[str, Any]],
+    *,
+    min_trials: int,
+) -> list[dict[str, Any]]:
+    valid_points = []
+    for point in points:
+        animal_probability = _coerce_probability(point.get("animal_probability"))
+        simulated_probability = _coerce_probability(point.get("simulated_probability"))
+        animal_total = point.get("animal_total")
+        simulated_total = point.get("simulated_total_effective")
+        if animal_probability is None or simulated_probability is None:
+            continue
+        if animal_total is None or simulated_total is None:
+            continue
+        if float(animal_total) < float(min_trials) or float(simulated_total) < float(min_trials):
+            continue
+        valid_points.append(dict(point))
+    return valid_points
 
 
 def _compute_subject_level_comparison(
@@ -1919,6 +2730,56 @@ def _save_switch_figures(
     return figure_paths
 
 
+def _save_history_dependent_switch_figures(
+    *,
+    history_stats: Mapping[str, Any],
+    output_dir: Path,
+) -> dict[str, Path]:
+    try:
+        plt = importlib.import_module("matplotlib.pyplot")
+    except ModuleNotFoundError:
+        logger.warning(
+            "matplotlib is unavailable; skipping history-dependent figure generation."
+        )
+        return {}
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    figure_paths: dict[str, Path] = {}
+    config = _as_dict(history_stats.get("config", {}))
+    pattern_type = _normalize_history_pattern_type(
+        str(config.get("default_pattern_type", "abstract"))
+    )
+    max_trials_back = int(
+        config.get("max_trials_back", _DEFAULT_HISTORY_MAX_TRIALS_BACK)
+    )
+
+    aggregate_path = output_dir / f"history_pattern_comparison_{pattern_type}.png"
+    _plot_history_pattern_comparison_figure(
+        plt,
+        history_stats,
+        aggregate_path,
+        pattern_type=pattern_type,
+    )
+    figure_paths[f"history_pattern_comparison_{pattern_type}"] = aggregate_path
+
+    for n_back in range(1, max_trials_back + 1):
+        subject_path = (
+            output_dir / f"history_pattern_subject_level_{pattern_type}_nback_{n_back}.png"
+        )
+        _plot_history_pattern_subject_level_figure(
+            plt,
+            history_stats,
+            subject_path,
+            pattern_type=pattern_type,
+            n_back=n_back,
+        )
+        figure_paths[
+            f"history_pattern_subject_level_{pattern_type}_nback_{n_back}"
+        ] = subject_path
+
+    return figure_paths
+
+
 def _plot_pooled_switch_probability(plt, switch_stats: Mapping[str, Any], output_path: Path) -> None:
     fig, ax = plt.subplots(figsize=(10, 6))
     for label, color in (("animal", "black"), ("simulated", "tab:blue")):
@@ -2154,6 +3015,283 @@ def _plot_subject_level_scatter_panel(
             fontsize=10,
             bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.8},
         )
+
+
+def _plot_history_pattern_comparison_figure(
+    plt,
+    history_stats: Mapping[str, Any],
+    output_path: Path,
+    *,
+    pattern_type: str,
+) -> None:
+    config = _as_dict(history_stats.get("config", {}))
+    aggregate_min_trials = int(
+        config.get("aggregate_min_trials", _DEFAULT_HISTORY_AGGREGATE_MIN_TRIALS)
+    )
+    max_trials_back = int(
+        config.get("max_trials_back", _DEFAULT_HISTORY_MAX_TRIALS_BACK)
+    )
+    comparison = _as_dict(
+        _as_dict(history_stats.get("comparison", {})).get(pattern_type, {})
+    )
+    fig, axes = plt.subplots(1, max_trials_back, figsize=(6 * max_trials_back, 6))
+    if max_trials_back == 1:
+        axes = [axes]
+
+    all_patterns = sorted(
+        {
+            str(row.get("pattern"))
+            for n_back in range(1, max_trials_back + 1)
+            for row in _select_valid_history_pattern_rows(
+                list(_as_dict(comparison.get(n_back, {})).get("rows", [])),
+                min_trials=aggregate_min_trials,
+            )
+        }
+    )
+    pattern_colors = _build_history_pattern_color_map(all_patterns, plt)
+    legend_handles: dict[str, Any] = {}
+
+    for axis, n_back in zip(axes, range(1, max_trials_back + 1), strict=False):
+        panel = _as_dict(comparison.get(n_back, {}))
+        rows = list(panel.get("rows", []))
+        valid_rows = _select_valid_history_pattern_rows(rows, min_trials=aggregate_min_trials)
+
+        if not valid_rows:
+            axis.text(
+                0.5,
+                0.5,
+                "No common patterns\nwith sufficient data",
+                transform=axis.transAxes,
+                ha="center",
+                va="center",
+                fontsize=11,
+            )
+        else:
+            for row in valid_rows:
+                pattern = str(row.get("pattern"))
+                handle = axis.errorbar(
+                    float(row["animal_probability"]),
+                    float(row["simulated_probability"]),
+                    xerr=row.get("animal_sem"),
+                    yerr=row.get("simulated_sem"),
+                    marker="o",
+                    markersize=7,
+                    color=pattern_colors.get(pattern, "tab:blue"),
+                    capsize=3,
+                    alpha=0.85,
+                    linewidth=1.5,
+                )
+                legend_handles.setdefault(pattern, handle)
+
+        axis.plot([0.0, 1.0], [0.0, 1.0], "k--", alpha=0.5, linewidth=1.25)
+        axis.set_xlim(0.0, 1.0)
+        axis.set_ylim(0.0, 1.0)
+        axis.set_aspect("equal", adjustable="box")
+        axis.set_xlabel("Animal Switch Probability")
+        axis.set_ylabel("Simulation Switch Probability")
+        axis.set_title(f"{n_back} Trial{'s' if n_back > 1 else ''} Back")
+        axis.grid(True, alpha=0.3)
+
+        summary = _as_dict(panel.get("summary", {}))
+        annotation_lines = [
+            f"r={float(summary['correlation']):.3f}"
+            if summary.get("correlation") is not None
+            else "r=None",
+            f"RMSE={float(summary['rmse']):.3f}"
+            if summary.get("rmse") is not None
+            else "RMSE=None",
+            f"n={int(summary.get('n_patterns', 0))}",
+        ]
+        axis.text(
+            0.05,
+            0.95,
+            "\n".join(annotation_lines),
+            transform=axis.transAxes,
+            va="top",
+            fontsize=10,
+            bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.8},
+        )
+
+    fig.suptitle(
+        f"History-Dependent Switch Comparison ({pattern_type.capitalize()} Patterns)",
+        fontsize=14,
+    )
+    if legend_handles:
+        sorted_patterns = sorted(legend_handles)
+        fig.legend(
+            [legend_handles[pattern] for pattern in sorted_patterns],
+            sorted_patterns,
+            loc="lower center",
+            bbox_to_anchor=(0.5, 0.0),
+            ncol=min(max(1, len(sorted_patterns)), 8),
+            fontsize=9,
+            frameon=True,
+        )
+        fig.tight_layout(rect=(0.0, 0.08, 1.0, 0.96))
+    else:
+        fig.tight_layout(rect=(0.0, 0.02, 1.0, 0.96))
+    fig.savefig(output_path)
+    plt.close(fig)
+
+
+def _plot_history_pattern_subject_level_figure(
+    plt,
+    history_stats: Mapping[str, Any],
+    output_path: Path,
+    *,
+    pattern_type: str,
+    n_back: int,
+) -> None:
+    config = _as_dict(history_stats.get("config", {}))
+    subject_min_trials = int(
+        config.get("subject_min_trials", _DEFAULT_HISTORY_SUBJECT_MIN_TRIALS)
+    )
+    subject_level = _as_dict(
+        _as_dict(history_stats.get("subject_level", {})).get(pattern_type, {})
+    )
+    panel_data = _as_dict(subject_level.get(n_back, {}))
+    patterns = sorted(panel_data)
+
+    if not patterns:
+        fig, ax = plt.subplots(1, 1, figsize=(6, 6))
+        ax.text(
+            0.5,
+            0.5,
+            "No matched patterns",
+            transform=ax.transAxes,
+            ha="center",
+            va="center",
+            fontsize=12,
+        )
+        ax.set_axis_off()
+        fig.suptitle(
+            f"Subject-Level History Patterns ({pattern_type.capitalize()}, n_back={n_back})",
+            fontsize=14,
+        )
+        fig.tight_layout(rect=(0.0, 0.02, 1.0, 0.96))
+        fig.savefig(output_path)
+        plt.close(fig)
+        return
+
+    n_cols = min(4, len(patterns))
+    n_rows = int(math.ceil(len(patterns) / n_cols))
+    fig, axes = plt.subplots(
+        n_rows,
+        n_cols,
+        figsize=(4.5 * n_cols, 4.5 * n_rows),
+    )
+    if n_rows == 1 and n_cols == 1:
+        axes_flat = [axes]
+    elif n_rows == 1 or n_cols == 1:
+        axes_flat = list(axes)
+    else:
+        axes_flat = list(axes.flatten())
+
+    for axis, pattern in zip(axes_flat, patterns, strict=False):
+        panel = _as_dict(panel_data.get(pattern, {}))
+        _plot_history_subject_pattern_scatter_panel(
+            ax=axis,
+            points=list(panel.get("points", [])),
+            summary=_as_dict(panel.get("summary", {})),
+            title=str(pattern),
+            min_trials=subject_min_trials,
+        )
+
+    for axis in axes_flat[len(patterns) :]:
+        axis.set_visible(False)
+
+    fig.suptitle(
+        f"Subject-Level History Patterns ({pattern_type.capitalize()}, n_back={n_back})",
+        fontsize=14,
+    )
+    fig.tight_layout(rect=(0.0, 0.02, 1.0, 0.96))
+    fig.savefig(output_path)
+    plt.close(fig)
+
+
+def _plot_history_subject_pattern_scatter_panel(
+    *,
+    ax,
+    points: Sequence[Mapping[str, Any]],
+    summary: Mapping[str, Any],
+    title: str,
+    min_trials: int,
+) -> None:
+    valid_points = _select_valid_subject_history_pattern_points(
+        points,
+        min_trials=min_trials,
+    )
+    if valid_points:
+        ax.scatter(
+            [float(point["animal_probability"]) for point in valid_points],
+            [float(point["simulated_probability"]) for point in valid_points],
+            alpha=0.7,
+            s=40,
+            color="tab:blue",
+            edgecolors="black",
+            linewidths=0.7,
+        )
+    else:
+        ax.text(
+            0.5,
+            0.5,
+            "No valid subjects",
+            transform=ax.transAxes,
+            ha="center",
+            va="center",
+            fontsize=10,
+        )
+
+    ax.plot([0.0, 1.0], [0.0, 1.0], "k--", alpha=0.5, linewidth=1.25)
+    ax.set_xlim(0.0, 1.0)
+    ax.set_ylim(0.0, 1.0)
+    ax.set_aspect("equal", adjustable="box")
+    ax.set_xlabel("Animal Switch Probability")
+    ax.set_ylabel("Simulation Switch Probability")
+    ax.set_title(title)
+    ax.grid(True, alpha=0.3)
+
+    if int(summary.get("n_subjects", 0)) >= 2:
+        annotation_lines = [
+            f"r={float(summary['correlation']):.3f}"
+            if summary.get("correlation") is not None
+            else "r=None",
+            f"RMSE={float(summary['rmse']):.3f}"
+            if summary.get("rmse") is not None
+            else "RMSE=None",
+            f"n={int(summary.get('n_subjects', 0))}",
+        ]
+        ax.text(
+            0.05,
+            0.95,
+            "\n".join(annotation_lines),
+            transform=ax.transAxes,
+            va="top",
+            fontsize=9,
+            bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.8},
+        )
+
+
+def _build_history_pattern_color_map(
+    patterns: Sequence[str],
+    plt,
+) -> dict[str, Any]:
+    if not patterns:
+        return {}
+    np = _import_dependency("numpy")
+    colors = list(plt.cm.tab20(np.linspace(0, 1, min(20, len(patterns)))))
+    if len(patterns) > len(colors):
+        colors.extend(
+            plt.cm.tab20b(np.linspace(0, 1, min(20, len(patterns) - len(colors))))
+        )
+    if len(patterns) > len(colors):
+        colors.extend(
+            plt.cm.tab20c(np.linspace(0, 1, len(patterns) - len(colors)))
+        )
+    return {
+        pattern: colors[index % len(colors)]
+        for index, pattern in enumerate(patterns)
+    }
 
 
 def _derive_session_seed(seed: int | None, session_id: str, *, rollout_index: int) -> int:

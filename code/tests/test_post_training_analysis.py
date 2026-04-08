@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 import tempfile
 import unittest
@@ -11,6 +12,7 @@ from unittest import mock
 from post_training_analysis import generative_analysis
 from post_training_analysis.generative_analysis import (
     _parse_simple_yaml,
+    compute_history_dependent_switch_stats,
     compute_switch_stats,
     load_animal_session_history,
     resolve_model_run,
@@ -487,6 +489,422 @@ model:
                 figure_paths[
                     "post_switch_by_reward_and_run_length_subject_scatter"
                 ].exists()
+            )
+
+    def test_compute_history_dependent_switch_stats_encodes_detailed_and_abstract_patterns(self):
+        stats = compute_history_dependent_switch_stats(
+            animal_sessions=[
+                self._session(
+                    subject_id="m1",
+                    ses_idx="m1_s1",
+                    choice_history=[0, 0, 1, 1, 0],
+                    reward_history=[1, 0, 1, 0, 1],
+                )
+            ],
+            simulated_sessions=[],
+        )
+
+        animal_detailed = stats["animal"]["detailed"]
+        animal_abstract = stats["animal"]["abstract"]
+
+        self.assertEqual(animal_detailed[1]["L"]["total"], 1)
+        self.assertEqual(animal_detailed[1]["L"]["switch_probability"], 0.0)
+        self.assertEqual(animal_detailed[1]["l"]["total"], 1)
+        self.assertEqual(animal_detailed[1]["l"]["switch_probability"], 1.0)
+        self.assertEqual(animal_detailed[1]["R"]["total"], 1)
+        self.assertEqual(animal_detailed[1]["R"]["switch_probability"], 0.0)
+        self.assertEqual(animal_detailed[1]["r"]["total"], 1)
+        self.assertEqual(animal_detailed[1]["r"]["switch_probability"], 1.0)
+
+        self.assertEqual(animal_abstract[1]["A"]["total"], 2)
+        self.assertEqual(animal_abstract[1]["A"]["switch_probability"], 0.0)
+        self.assertEqual(animal_abstract[1]["a"]["total"], 2)
+        self.assertEqual(animal_abstract[1]["a"]["switch_probability"], 1.0)
+        self.assertEqual(animal_abstract[2]["Aa"]["total"], 2)
+        self.assertEqual(animal_abstract[2]["Aa"]["switch_probability"], 1.0)
+        self.assertEqual(animal_abstract[2]["aB"]["total"], 1)
+        self.assertEqual(animal_abstract[2]["aB"]["switch_probability"], 0.0)
+        self.assertEqual(animal_abstract[3]["AaB"]["total"], 1)
+        self.assertEqual(animal_abstract[3]["AaB"]["switch_probability"], 0.0)
+        self.assertEqual(animal_abstract[3]["aBb"]["total"], 1)
+        self.assertEqual(animal_abstract[3]["aBb"]["switch_probability"], 1.0)
+
+    def test_compute_history_dependent_switch_stats_builds_aggregate_comparison_rows(self):
+        stats = compute_history_dependent_switch_stats(
+            animal_sessions=[
+                self._session(
+                    subject_id="m1",
+                    ses_idx="m1_s1",
+                    choice_history=[0, 0, 1, 1, 0],
+                    reward_history=[1, 0, 1, 0, 1],
+                )
+            ],
+            simulated_sessions=[
+                self._session(
+                    subject_id="m1",
+                    ses_idx="m1_sim_s1",
+                    source_ses_idx="m1_s1",
+                    choice_history=[0, 0, 1, 0, 0],
+                    reward_history=[1, 0, 1, 0, 1],
+                )
+            ],
+            aggregate_min_trials=2,
+        )
+
+        rows = {
+            row["pattern"]: row
+            for row in stats["comparison"]["abstract"][1]["rows"]
+        }
+        self.assertEqual(set(rows), {"A", "a"})
+        self.assertEqual(rows["A"]["animal_total"], 2)
+        self.assertEqual(rows["A"]["simulated_total_effective"], 2)
+        self.assertEqual(rows["A"]["animal_probability"], 0.0)
+        self.assertEqual(rows["A"]["simulated_probability"], 0.5)
+        self.assertEqual(rows["A"]["delta_probability"], 0.5)
+        self.assertEqual(rows["a"]["animal_probability"], 1.0)
+        self.assertEqual(rows["a"]["simulated_probability"], 0.5)
+        self.assertEqual(
+            stats["comparison"]["abstract"][1]["summary"]["n_patterns"],
+            2,
+        )
+
+        filtered = compute_history_dependent_switch_stats(
+            animal_sessions=[
+                self._session(
+                    subject_id="m1",
+                    ses_idx="m1_s1",
+                    choice_history=[0, 0, 1, 1, 0],
+                    reward_history=[1, 0, 1, 0, 1],
+                )
+            ],
+            simulated_sessions=[
+                self._session(
+                    subject_id="m1",
+                    ses_idx="m1_sim_s1",
+                    source_ses_idx="m1_s1",
+                    choice_history=[0, 0, 1, 0, 0],
+                    reward_history=[1, 0, 1, 0, 1],
+                )
+            ],
+            aggregate_min_trials=3,
+        )
+        self.assertEqual(
+            filtered["comparison"]["abstract"][1]["summary"]["n_patterns"],
+            0,
+        )
+        self.assertIsNone(
+            filtered["comparison"]["abstract"][1]["summary"]["correlation"]
+        )
+
+    def test_compute_history_dependent_switch_stats_normalizes_rollouts_by_source_session(self):
+        stats = compute_history_dependent_switch_stats(
+            animal_sessions=[],
+            simulated_sessions=[
+                self._session(
+                    subject_id="m1",
+                    ses_idx="m1_s1__rollout_0",
+                    source_ses_idx="m1_s1",
+                    choice_history=[0, 0, 1],
+                    reward_history=[1, 0, 0],
+                ),
+                self._session(
+                    subject_id="m1",
+                    ses_idx="m1_s1__rollout_1",
+                    source_ses_idx="m1_s1",
+                    choice_history=[0, 0, 0],
+                    reward_history=[1, 0, 0],
+                ),
+                self._session(
+                    subject_id="m1",
+                    ses_idx="m1_s2__rollout_0",
+                    source_ses_idx="m1_s2",
+                    choice_history=[0, 0, 1],
+                    reward_history=[1, 0, 0],
+                ),
+            ],
+        )
+
+        abstract_a = stats["simulated"]["abstract"][1]["a"]
+        self.assertEqual(abstract_a["total"], 2)
+        self.assertEqual(abstract_a["switches"], 1.5)
+        self.assertEqual(abstract_a["stays"], 0.5)
+        self.assertAlmostEqual(abstract_a["switch_probability"], 0.75)
+        self.assertAlmostEqual(
+            abstract_a["switch_probability_sem"],
+            math.sqrt(0.75 * 0.25 / 2.0),
+        )
+
+    def test_compute_history_dependent_switch_stats_builds_subject_level_points(self):
+        stats = compute_history_dependent_switch_stats(
+            animal_sessions=[
+                self._session(
+                    subject_id="m1",
+                    ses_idx="m1_s1",
+                    choice_history=[0, 0, 1],
+                    reward_history=[1, 0, 0],
+                ),
+                self._session(
+                    subject_id="m1",
+                    ses_idx="m1_s2",
+                    choice_history=[0, 0, 1],
+                    reward_history=[1, 0, 0],
+                ),
+                self._session(
+                    subject_id="m2",
+                    ses_idx="m2_s1",
+                    choice_history=[0, 0, 0],
+                    reward_history=[1, 0, 0],
+                ),
+                self._session(
+                    subject_id="m2",
+                    ses_idx="m2_s2",
+                    choice_history=[0, 0, 0],
+                    reward_history=[1, 0, 0],
+                ),
+                self._session(
+                    subject_id="m3",
+                    ses_idx="m3_s1",
+                    choice_history=[0, 0, 1],
+                    reward_history=[1, 0, 0],
+                ),
+                self._session(
+                    subject_id="m3",
+                    ses_idx="m3_s2",
+                    choice_history=[0, 0, 1],
+                    reward_history=[1, 0, 0],
+                ),
+            ],
+            simulated_sessions=[
+                self._session(
+                    subject_id="m1",
+                    ses_idx="m1_s1__rollout_0",
+                    source_ses_idx="m1_s1",
+                    choice_history=[0, 0, 1],
+                    reward_history=[1, 0, 0],
+                ),
+                self._session(
+                    subject_id="m1",
+                    ses_idx="m1_s1__rollout_1",
+                    source_ses_idx="m1_s1",
+                    choice_history=[0, 0, 0],
+                    reward_history=[1, 0, 0],
+                ),
+                self._session(
+                    subject_id="m1",
+                    ses_idx="m1_s2__rollout_0",
+                    source_ses_idx="m1_s2",
+                    choice_history=[0, 0, 1],
+                    reward_history=[1, 0, 0],
+                ),
+                self._session(
+                    subject_id="m2",
+                    ses_idx="m2_s1__rollout_0",
+                    source_ses_idx="m2_s1",
+                    choice_history=[0, 0, 0],
+                    reward_history=[1, 0, 0],
+                ),
+                self._session(
+                    subject_id="m2",
+                    ses_idx="m2_s2__rollout_0",
+                    source_ses_idx="m2_s2",
+                    choice_history=[0, 0, 0],
+                    reward_history=[1, 0, 0],
+                ),
+            ],
+            subject_min_trials=2,
+        )
+
+        points = {
+            point["subject_id"]: point
+            for point in stats["subject_level"]["abstract"][1]["a"]["points"]
+        }
+        self.assertEqual(set(points), {"m1", "m2"})
+        self.assertEqual(points["m1"]["animal_probability"], 1.0)
+        self.assertEqual(points["m1"]["animal_total"], 2)
+        self.assertEqual(points["m1"]["animal_n_sessions"], 2)
+        self.assertAlmostEqual(points["m1"]["simulated_probability"], 0.75)
+        self.assertEqual(points["m1"]["simulated_total_effective"], 2)
+        self.assertEqual(points["m1"]["simulated_n_source_sessions"], 2)
+        self.assertEqual(points["m2"]["animal_probability"], 0.0)
+        self.assertEqual(points["m2"]["simulated_probability"], 0.0)
+
+        summary = stats["subject_level"]["abstract"][1]["a"]["summary"]
+        self.assertEqual(summary["n_subjects"], 2)
+        self.assertAlmostEqual(summary["correlation"], 1.0)
+        self.assertAlmostEqual(summary["rmse"], math.sqrt(0.03125))
+
+    def test_save_history_dependent_switch_figures_creates_expected_outputs(self):
+        try:
+            import matplotlib.pyplot  # noqa: F401
+        except ModuleNotFoundError:
+            self.skipTest("matplotlib is not installed")
+
+        stats = compute_history_dependent_switch_stats(
+            animal_sessions=[
+                self._session(
+                    subject_id="m1",
+                    ses_idx="m1_s1",
+                    choice_history=[0, 0, 1],
+                    reward_history=[1, 0, 0],
+                ),
+                self._session(
+                    subject_id="m1",
+                    ses_idx="m1_s2",
+                    choice_history=[0, 0, 1],
+                    reward_history=[1, 0, 0],
+                ),
+                self._session(
+                    subject_id="m2",
+                    ses_idx="m2_s1",
+                    choice_history=[0, 0, 0],
+                    reward_history=[1, 0, 0],
+                ),
+                self._session(
+                    subject_id="m2",
+                    ses_idx="m2_s2",
+                    choice_history=[0, 0, 0],
+                    reward_history=[1, 0, 0],
+                ),
+            ],
+            simulated_sessions=[
+                self._session(
+                    subject_id="m1",
+                    ses_idx="m1_s1__rollout_0",
+                    source_ses_idx="m1_s1",
+                    choice_history=[0, 0, 1],
+                    reward_history=[1, 0, 0],
+                ),
+                self._session(
+                    subject_id="m1",
+                    ses_idx="m1_s1__rollout_1",
+                    source_ses_idx="m1_s1",
+                    choice_history=[0, 0, 0],
+                    reward_history=[1, 0, 0],
+                ),
+                self._session(
+                    subject_id="m1",
+                    ses_idx="m1_s2__rollout_0",
+                    source_ses_idx="m1_s2",
+                    choice_history=[0, 0, 1],
+                    reward_history=[1, 0, 0],
+                ),
+                self._session(
+                    subject_id="m2",
+                    ses_idx="m2_s1__rollout_0",
+                    source_ses_idx="m2_s1",
+                    choice_history=[0, 0, 0],
+                    reward_history=[1, 0, 0],
+                ),
+                self._session(
+                    subject_id="m2",
+                    ses_idx="m2_s2__rollout_0",
+                    source_ses_idx="m2_s2",
+                    choice_history=[0, 0, 0],
+                    reward_history=[1, 0, 0],
+                ),
+            ],
+            aggregate_min_trials=2,
+            subject_min_trials=2,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            figure_paths = generative_analysis._save_history_dependent_switch_figures(
+                history_stats=stats,
+                output_dir=Path(tmpdir),
+            )
+            self.assertIn("history_pattern_comparison_abstract", figure_paths)
+            self.assertIn("history_pattern_subject_level_abstract_nback_1", figure_paths)
+            self.assertIn("history_pattern_subject_level_abstract_nback_2", figure_paths)
+            self.assertIn("history_pattern_subject_level_abstract_nback_3", figure_paths)
+            for path in figure_paths.values():
+                self.assertTrue(path.name.endswith(".png"))
+                self.assertTrue(path.exists())
+
+    def test_run_post_training_analysis_saves_history_outputs(self):
+        resolved_run = generative_analysis.ResolvedModelRun(
+            model_dir="/tmp/model",
+            inputs_path="/tmp/model/inputs.yaml",
+            outputs_dir="/tmp/model/outputs",
+            model_type="disrnn",
+            split="train",
+            checkpoint_policy="best_eval",
+            checkpoint_step=100,
+            checkpoint_label="step_100",
+            params_path="/tmp/model/outputs/checkpoints/step_100/params.json",
+            config_path="/tmp/model/outputs/disrnn_config.json",
+            seed=123,
+            multisubject=True,
+            mature_only=True,
+            ignore_policy="none",
+            curricula=["Uncoupled Baiting"],
+            features=None,
+            selection={"subject_start": 0, "subject_end": 1},
+        )
+        animal_sessions = [
+            self._session(
+                subject_id="m1",
+                ses_idx="m1_s1",
+                choice_history=[0, 0, 1],
+                reward_history=[1, 0, 0],
+            )
+        ]
+        simulated_sessions = [
+            self._session(
+                subject_id="m1",
+                ses_idx="m1_s1__rollout_0",
+                source_ses_idx="m1_s1",
+                choice_history=[0, 0, 1],
+                reward_history=[1, 0, 0],
+            )
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            switch_figure = Path(tmpdir) / "switch.png"
+            history_figure = Path(tmpdir) / "history.png"
+            switch_figure.write_text("switch")
+            history_figure.write_text("history")
+
+            with mock.patch.object(
+                generative_analysis,
+                "resolve_model_run",
+                return_value=resolved_run,
+            ), mock.patch.object(
+                generative_analysis,
+                "load_animal_session_history",
+                return_value=animal_sessions,
+            ), mock.patch.object(
+                generative_analysis,
+                "simulate_model_sessions",
+                return_value=simulated_sessions,
+            ), mock.patch.object(
+                generative_analysis,
+                "_save_switch_figures",
+                return_value={"pooled_switch_probability": switch_figure},
+            ), mock.patch.object(
+                generative_analysis,
+                "_save_history_dependent_switch_figures",
+                return_value={"history_pattern_comparison_abstract": history_figure},
+            ):
+                result = generative_analysis.run_post_training_analysis(
+                    model_dir="/tmp/model",
+                    output_dir=Path(tmpdir) / "analysis",
+                )
+
+            self.assertIn("history_dependent_switch_stats", result)
+            self.assertIn(
+                "history_pattern_comparison_abstract",
+                result["figure_paths"],
+            )
+            self.assertTrue(Path(result["history_dependent_switch_stats"]).exists())
+            self.assertTrue(Path(result["switch_stats"]).exists())
+
+            history_payload = json.loads(
+                Path(result["history_dependent_switch_stats"]).read_text()
+            )
+            self.assertIn("figure_paths", history_payload)
+            self.assertEqual(
+                history_payload["figure_paths"]["history_pattern_comparison_abstract"],
+                str(history_figure),
             )
 
 
