@@ -22,8 +22,8 @@ result = run_post_training_analysis(
     split="train",
     checkpoint_policy="best_eval",
     rollout_mode="curriculum_matched",
-    n_rollouts_per_session=1,
+    n_rollouts_per_session=5,
     window_size=10,
-    save_animal_session_history=True,
+    save_animal_session_history=False,
     output_dir="/results",
 )
