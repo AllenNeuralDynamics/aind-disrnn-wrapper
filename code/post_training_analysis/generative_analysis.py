@@ -2811,6 +2811,47 @@ def _resolve_analysis_output_dir(
     )
 
 
+def build_curriculum_matched_task(
+    *,
+    curriculum_name: Any,
+    n_trials: int,
+    seed: int,
+):
+    """Public wrapper for building curriculum-matched simulation tasks."""
+
+    return _build_curriculum_matched_task(
+        curriculum_name=curriculum_name,
+        n_trials=n_trials,
+        seed=seed,
+    )
+
+
+def save_switch_figures(
+    *,
+    switch_stats: Mapping[str, Any],
+    output_dir: Path,
+) -> dict[str, Path]:
+    """Public wrapper for saving switch-analysis figures."""
+
+    return _save_switch_figures(
+        switch_stats=switch_stats,
+        output_dir=output_dir,
+    )
+
+
+def save_history_dependent_switch_figures(
+    *,
+    history_stats: Mapping[str, Any],
+    output_dir: Path,
+) -> dict[str, Path]:
+    """Public wrapper for saving history-dependent switch-analysis figures."""
+
+    return _save_history_dependent_switch_figures(
+        history_stats=history_stats,
+        output_dir=output_dir,
+    )
+
+
 def _save_switch_figures(
     *,
     switch_stats: Mapping[str, Any],
@@ -3433,6 +3474,21 @@ def _derive_session_seed(seed: int | None, session_id: str, *, rollout_index: in
     return int(digest[:8], 16)
 
 
+def derive_session_seed(
+    seed: int | None,
+    session_id: str,
+    *,
+    rollout_index: int,
+) -> int:
+    """Public wrapper for deterministic per-session rollout seeds."""
+
+    return _derive_session_seed(
+        seed,
+        session_id,
+        rollout_index=rollout_index,
+    )
+
+
 def _softmax(logits: Sequence[float]) -> list[float]:
     values = [float(v) for v in logits]
     max_value = max(values)
@@ -3895,3 +3951,9 @@ def _to_serializable(value: Any) -> Any:
     except ModuleNotFoundError:
         pass
     return value
+
+
+def to_serializable(value: Any) -> Any:
+    """Public wrapper for JSON-safe conversion of analysis payloads."""
+
+    return _to_serializable(value)
