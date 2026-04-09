@@ -17,6 +17,43 @@ import wandb
 logger = logging.getLogger(__name__)
 
 
+def resolve_disrnn_penalties(penalties_cfg: Any) -> dict[str, Any]:
+    """Resolve optional per-penalty multiplier fields for disRNN configs.
+
+    Any ``<penalty_name>_multiplier`` entry scales the corresponding base
+    penalty. If the base penalty is omitted, ``beta`` is used as the default.
+    Multiplier keys are removed from the returned dictionary so repeated calls
+    are idempotent.
+    """
+    penalties = (
+        OmegaConf.to_container(penalties_cfg, resolve=True)
+        if isinstance(penalties_cfg, DictConfig)
+        else dict(penalties_cfg)
+    )
+    resolved = dict(penalties or {})
+    beta = resolved.get("beta")
+    multiplier_suffix = "_multiplier"
+
+    for key in list(resolved.keys()):
+        if not key.endswith(multiplier_suffix):
+            continue
+
+        base_key = key[: -len(multiplier_suffix)]
+        if base_key == "beta":
+            continue
+
+        multiplier = float(resolved.pop(key))
+        base_value = resolved.get(base_key, beta)
+        if base_value is None:
+            raise ValueError(
+                f"Cannot resolve {base_key}: set either {base_key} or beta before "
+                f"using {key}."
+            )
+        resolved[base_key] = float(base_value) * multiplier
+
+    return resolved
+
+
 def _append_multisubject_suffix(component: Any, *, enabled: bool) -> Any:
     """Append a multisubject suffix to a run-name component when needed."""
     if not enabled or component is None:
@@ -48,6 +85,19 @@ def apply_dynamic_run_name_components(hydra_config: DictConfig) -> None:
             model_cfg.run_name_component,
             enabled=bool(getattr(architecture_cfg, "multisubject", False)),
         )
+
+
+def apply_model_penalty_multipliers(hydra_config: DictConfig) -> None:
+    """Resolve disRNN penalty multipliers into effective numeric penalties."""
+    model_cfg = getattr(hydra_config, "model", None)
+    if model_cfg is None or getattr(model_cfg, "type", None) != "disrnn":
+        return
+
+    penalties_cfg = getattr(model_cfg, "penalties", None)
+    if penalties_cfg is None:
+        return
+
+    model_cfg.penalties = OmegaConf.create(resolve_disrnn_penalties(penalties_cfg))
 
 
 def find_hydra_config() -> Path | None:

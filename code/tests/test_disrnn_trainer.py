@@ -86,6 +86,31 @@ class TestDisrnnTrainer(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.output_dir, ignore_errors=True)
 
+    def test_constructor_resolves_penalty_multiplier(self):
+        trainer = DisrnnTrainer(
+            architecture={
+                "latent_size": 4,
+                "update_net_n_units_per_layer": 8,
+                "update_net_n_layers": 2,
+                "choice_net_n_units_per_layer": 4,
+                "choice_net_n_layers": 1,
+                "activation": "leaky_relu",
+            },
+            penalties={
+                "beta": 1e-3,
+                "latent_penalty": 1e-3,
+                "choice_net_latent_penalty": 1e-3,
+                "update_net_obs_penalty": 1e-3,
+                "update_net_latent_penalty_multiplier": 10,
+            },
+            training={},
+            output_dir=str(self.output_dir),
+            seed=42,
+        )
+
+        self.assertEqual(trainer.penalties["update_net_latent_penalty"], 1e-2)
+        self.assertNotIn("update_net_latent_penalty_multiplier", trainer.penalties)
+
     def test_checkpoint_training(self):
         trainer = DisrnnTrainer(
             architecture={

@@ -38,6 +38,7 @@ from utils.multisubject import (
     save_subject_index_map,
     subject_embeddings_to_dataframe,
 )
+from utils.run_helpers import resolve_disrnn_penalties
 
 logger = logging.getLogger(__name__)
 
@@ -129,7 +130,7 @@ class DisrnnTrainer(ModelTrainer):
     ) -> None:
         super().__init__(seed=seed)
         self.architecture = _to_dict(architecture)
-        self.penalties = _to_dict(penalties)
+        self.penalties = resolve_disrnn_penalties(penalties)
         self.training = _to_dict(training)
         self.heldout_data = heldout_data
         self.output_dir = Path(output_dir)

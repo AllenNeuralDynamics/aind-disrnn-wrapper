@@ -121,6 +121,7 @@ data:
 #     latent_penalty: ${.beta}
 #     choice_net_latent_penalty: ${.beta}
 #     update_net_obs_penalty: ${.beta}
+#     update_net_latent_penalty_multiplier: 1.0
 #     update_net_latent_penalty: ${.beta}
 #   training:
 #     n_steps: 20
@@ -171,6 +172,7 @@ model:
     latent_penalty: ${.beta}
     choice_net_latent_penalty: ${.beta}
     update_net_obs_penalty: ${.beta}
+    update_net_latent_penalty_multiplier: 1.0
     update_net_latent_penalty: ${.beta}
     subject_penalty: ${.beta}
     update_net_subject_penalty: ${.beta}

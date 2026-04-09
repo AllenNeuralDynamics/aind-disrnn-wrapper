@@ -25,6 +25,7 @@ from utils.gru_evaluation import (
     load_gru_heldout_subject_data,
 )
 from utils.run_helpers import (
+    apply_model_penalty_multipliers,
     apply_dynamic_run_name_components,
     configure_sys_logger,
     copy_input_folder,
@@ -57,6 +58,7 @@ def main() -> None:
 
     logger.info("Loading Hydra config from %s", config_path)
     hydra_config = OmegaConf.load(config_path)
+    apply_model_penalty_multipliers(hydra_config)
     apply_dynamic_run_name_components(hydra_config)
     
     # Backup inputs

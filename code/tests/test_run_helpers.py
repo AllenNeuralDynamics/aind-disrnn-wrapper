@@ -7,7 +7,11 @@ import unittest
 try:
     from omegaconf import OmegaConf
 
-    from utils.run_helpers import apply_dynamic_run_name_components
+    from utils.run_helpers import (
+        apply_dynamic_run_name_components,
+        apply_model_penalty_multipliers,
+        resolve_disrnn_penalties,
+    )
 
     RUN_HELPERS_DEPS_AVAILABLE = True
     RUN_HELPERS_IMPORT_ERROR = None
@@ -21,6 +25,38 @@ except ModuleNotFoundError as exc:
     f"run helper dependencies unavailable: {RUN_HELPERS_IMPORT_ERROR}",
 )
 class TestRunHelpers(unittest.TestCase):
+    def test_resolve_disrnn_penalties_uses_beta_as_default_base(self):
+        resolved = resolve_disrnn_penalties(
+            {
+                "beta": 1e-3,
+                "latent_penalty": 1e-3,
+                "update_net_latent_penalty_multiplier": 10,
+            }
+        )
+
+        self.assertEqual(resolved["update_net_latent_penalty"], 1e-2)
+        self.assertEqual(resolved["latent_penalty"], 1e-3)
+        self.assertNotIn("update_net_latent_penalty_multiplier", resolved)
+
+    def test_apply_model_penalty_multipliers_updates_disrnn_config(self):
+        cfg = OmegaConf.create(
+            {
+                "model": {
+                    "type": "disrnn",
+                    "penalties": {
+                        "beta": 1e-3,
+                        "update_net_latent_penalty": "${.beta}",
+                        "update_net_latent_penalty_multiplier": 10,
+                    },
+                }
+            }
+        )
+
+        apply_model_penalty_multipliers(cfg)
+
+        self.assertEqual(cfg.model.penalties.update_net_latent_penalty, 1e-2)
+        self.assertFalse("update_net_latent_penalty_multiplier" in cfg.model.penalties)
+
     def test_apply_dynamic_run_name_components_appends_multisubject_once(self):
         cfg = OmegaConf.create(
             {
