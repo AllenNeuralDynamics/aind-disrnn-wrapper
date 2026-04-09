@@ -46,6 +46,10 @@
 			"mount": "mice_snapshot_1"
 		},
 		{
+			"id": "ecf50edc-9090-4ade-bd90-7486b38de2ca",
+			"mount": "df_baseline_rl_fitting_260408"
+		},
+		{
 			"id": "f908dd4d-d7ed-4d52-97cf-ccd0e167c659",
 			"mount": "foraging_nwb_bonsai"
 		}
