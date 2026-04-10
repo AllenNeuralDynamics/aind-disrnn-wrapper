@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Literal, Mapping
@@ -25,6 +26,23 @@ from utils.multisubject import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _candidate_parent(depth: int) -> Path | None:
+    parents = Path(__file__).resolve().parents
+    return parents[depth] / "data" if depth < len(parents) else None
+
+
+_CANDIDATE_DATA_DIRS: tuple[Path, ...] = tuple(
+    path
+    for path in (
+        Path("/data"),
+        _candidate_parent(2),
+        _candidate_parent(3),
+        Path(os.environ["DATA_PATH"]) if "DATA_PATH" in os.environ else None,
+    )
+    if path is not None
+)
 
 DistillationProgressMode = Literal["print", "log", "wandb", "none"]
 
@@ -489,20 +507,113 @@ def _load_json(path: Path) -> dict[str, Any]:
         return json.load(f)
 
 
+def _dedupe_paths(paths: list[Path]) -> list[Path]:
+    deduped: list[Path] = []
+    seen: set[str] = set()
+    for path in paths:
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(path)
+    return deduped
+
+
+def _iter_teacher_dir_candidates(teacher_dir: Path) -> list[Path]:
+    candidates: list[Path] = [teacher_dir.expanduser()]
+
+    if not teacher_dir.is_absolute():
+        candidates.append((Path.cwd() / teacher_dir).expanduser())
+
+    for data_dir in _CANDIDATE_DATA_DIRS:
+        if teacher_dir.is_absolute():
+            candidates.append(data_dir / teacher_dir.name)
+        else:
+            candidates.append((data_dir / teacher_dir).expanduser())
+            candidates.append((data_dir / teacher_dir.name).expanduser())
+
+        if not data_dir.exists():
+            continue
+
+        recursive_matches = sorted(
+            path
+            for path in data_dir.rglob(teacher_dir.name)
+            if path.is_dir()
+        )
+        if recursive_matches:
+            candidates.append(recursive_matches[0])
+
+    return _dedupe_paths(candidates)
+
+
+def _find_upward(start_dir: Path, filename: str, max_depth: int = 6) -> Path | None:
+    current = start_dir
+    for _ in range(max_depth + 1):
+        candidate = current / filename
+        if candidate.exists():
+            return candidate
+        if current.parent == current:
+            break
+        current = current.parent
+    return None
+
+
+def _resolve_teacher_artifacts(teacher_dir: Path) -> tuple[Path, Path, Path | None] | None:
+    if teacher_dir.is_file():
+        if teacher_dir.name != "params.json":
+            return None
+        params_candidates = [teacher_dir]
+    elif teacher_dir.is_dir():
+        params_candidates: list[Path] = []
+        direct_params = teacher_dir / "params.json"
+        if direct_params.exists():
+            params_candidates.append(direct_params)
+        if not params_candidates:
+            params_candidates.extend(sorted(teacher_dir.rglob("params.json")))
+    else:
+        return None
+
+    for params_path in params_candidates:
+        config_path = _find_upward(params_path.parent, "gru_config.json")
+        if config_path is None:
+            continue
+        subject_index_map_path = _find_upward(params_path.parent, "subject_index_map.json")
+        return params_path, config_path, subject_index_map_path
+
+    return None
+
+
 def _load_teacher_summary(
     teacher_dir: Path,
     *,
     student_is_multisubject: bool,
     expected_output_size: int,
 ) -> tuple[TeacherModelSummary, dict[str, Any], Any]:
-    params_path = teacher_dir / "params.json"
-    config_path = teacher_dir.parents[1] / "gru_config.json"
-    subject_index_map_path = teacher_dir.parents[1] / "subject_index_map.json"
+    artifact_paths: tuple[Path, Path, Path | None] | None = None
+    resolved_teacher_dir: Path | None = None
+    searched_candidates: list[Path] = []
+    for candidate in _iter_teacher_dir_candidates(teacher_dir):
+        searched_candidates.append(candidate)
+        resolved = _resolve_teacher_artifacts(candidate)
+        if resolved is not None:
+            artifact_paths = resolved
+            resolved_teacher_dir = candidate
+            break
 
-    if not params_path.exists():
-        raise FileNotFoundError(f"Teacher params.json not found: {params_path}")
-    if not config_path.exists():
-        raise FileNotFoundError(f"Teacher gru_config.json not found: {config_path}")
+    if artifact_paths is None:
+        searched = ", ".join(str(path) for path in searched_candidates)
+        raise FileNotFoundError(
+            "Teacher artifacts could not be resolved from teacher_dir="
+            f"{teacher_dir}. Tried candidates: {searched}"
+        )
+
+    params_path, config_path, subject_index_map_path = artifact_paths
+    logger.info(
+        "Resolved teacher artifacts for %s -> params=%s config=%s",
+        teacher_dir,
+        params_path,
+        config_path,
+    )
 
     config_payload = _load_json(config_path)
     architecture = dict(config_payload.get("architecture", {}))
@@ -531,11 +642,13 @@ def _load_teacher_summary(
         subject_embeddings = extract_subject_embeddings_from_params(params)
         subject_count = int(subject_embeddings.shape[0])
     summary = TeacherModelSummary(
-        model_dir=str(teacher_dir),
+        model_dir=str(resolved_teacher_dir or teacher_dir),
         params_path=str(params_path),
         config_path=str(config_path),
         subject_index_map_path=(
-            str(subject_index_map_path) if subject_index_map_path.exists() else None
+            str(subject_index_map_path)
+            if subject_index_map_path is not None and subject_index_map_path.exists()
+            else None
         ),
         multisubject=teacher_is_multisubject,
         output_size=output_size,

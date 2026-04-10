@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 try:
     import aind_disrnn_utils.data_loader as dl
@@ -19,6 +21,7 @@ try:
     from model_trainers.disrnn_trainer import DisrnnTrainer
     from model_trainers.gru_trainer import GruTrainer
     from utils.disrnn_distillation import (
+        _load_teacher_summary,
         aggregate_teacher_probabilities,
         build_teacher_ensemble,
         remap_multisubject_teacher_inputs,
@@ -464,6 +467,32 @@ class TestDisrnnDistillation(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "multisubject mode mismatch"):
             trainer.fit(self.bundle)
+
+    def test_load_teacher_summary_resolves_relative_dir_from_data_path(self):
+        data_root = self.root_dir / "mounted_data"
+        teacher_dir = data_root / "jobs" / "job_a" / "teacher_model_a"
+        teacher_dir.mkdir(parents=True, exist_ok=True)
+        (teacher_dir / "params.json").write_text("{}")
+        (teacher_dir / "gru_config.json").write_text(
+            json.dumps(
+                {
+                    "architecture": {"hidden_size": 8, "num_layers": 1, "multisubject": False},
+                    "output_size": 2,
+                }
+            )
+        )
+
+        with patch.dict(os.environ, {"DATA_PATH": str(data_root)}, clear=False):
+            summary, architecture, _ = _load_teacher_summary(
+                Path("teacher_model_a"),
+                student_is_multisubject=False,
+                expected_output_size=2,
+            )
+
+        self.assertEqual(summary.output_size, 2)
+        self.assertEqual(summary.multisubject, False)
+        self.assertEqual(summary.model_dir, str(teacher_dir))
+        self.assertEqual(architecture["hidden_size"], 8)
 
 
 if __name__ == "__main__":
