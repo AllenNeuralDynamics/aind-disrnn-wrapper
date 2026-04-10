@@ -496,8 +496,8 @@ def _load_teacher_summary(
     expected_output_size: int,
 ) -> tuple[TeacherModelSummary, dict[str, Any], Any]:
     params_path = teacher_dir / "params.json"
-    config_path = teacher_dir / "gru_config.json"
-    subject_index_map_path = teacher_dir / "subject_index_map.json"
+    config_path = teacher_dir.parents[1] / "gru_config.json"
+    subject_index_map_path = teacher_dir.parents[1] / "subject_index_map.json"
 
     if not params_path.exists():
         raise FileNotFoundError(f"Teacher params.json not found: {params_path}")
