@@ -519,28 +519,65 @@ def _dedupe_paths(paths: list[Path]) -> list[Path]:
     return deduped
 
 
+def _path_tail_after_data_segment(path: Path) -> Path | None:
+    parts = path.parts
+    for index, part in enumerate(parts):
+        if part == "data" and index + 1 < len(parts):
+            return Path(*parts[index + 1 :])
+    return None
+
+
+def _candidate_layout_keys(teacher_dir: Path) -> list[Path]:
+    if not teacher_dir.is_absolute():
+        return [teacher_dir, Path(teacher_dir.name)]
+
+    keys: list[Path] = [Path(teacher_dir.name)]
+    tail_after_data = _path_tail_after_data_segment(teacher_dir)
+    if tail_after_data is not None:
+        keys.insert(0, tail_after_data)
+    return keys
+
+
 def _iter_teacher_dir_candidates(teacher_dir: Path) -> list[Path]:
-    candidates: list[Path] = [teacher_dir.expanduser()]
+    teacher_dir = teacher_dir.expanduser()
+    candidates: list[Path] = [teacher_dir]
 
     if not teacher_dir.is_absolute():
         candidates.append((Path.cwd() / teacher_dir).expanduser())
 
+    layout_keys = _candidate_layout_keys(teacher_dir)
+
     for data_dir in _CANDIDATE_DATA_DIRS:
-        if teacher_dir.is_absolute():
-            candidates.append(data_dir / teacher_dir.name)
-        else:
-            candidates.append((data_dir / teacher_dir).expanduser())
-            candidates.append((data_dir / teacher_dir.name).expanduser())
+        # Layout-style lookup under each data root (similar to load_mice_snapshot):
+        # 1) full relative tail if available (e.g. jobs/x/y/step_100000)
+        # 2) basename fallback (e.g. step_100000)
+        for key in layout_keys:
+            candidates.append((data_dir / key).expanduser())
 
         if not data_dir.exists():
             continue
 
-        recursive_matches = sorted(
-            path
-            for path in data_dir.rglob(teacher_dir.name)
-            if path.is_dir()
-        )
-        if recursive_matches:
+        # Recursive lookup fallback for unknown nesting depth.
+        for key in layout_keys:
+            recursive_matches = sorted(
+                path
+                for path in data_dir.rglob(key.name)
+                if path.is_dir()
+            )
+            if not recursive_matches:
+                continue
+
+            if len(key.parts) > 1:
+                key_suffix = key.as_posix()
+                suffix_matches = [
+                    match
+                    for match in recursive_matches
+                    if match.as_posix().endswith(key_suffix)
+                ]
+                if suffix_matches:
+                    candidates.append(suffix_matches[0])
+                    continue
+
             candidates.append(recursive_matches[0])
 
     return _dedupe_paths(candidates)
