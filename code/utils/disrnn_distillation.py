@@ -546,6 +546,17 @@ def _iter_teacher_dir_candidates(teacher_dir: Path) -> list[Path]:
     teacher_dir = teacher_dir.expanduser()
     candidates: list[Path] = [teacher_dir]
 
+    # Also try nearby ancestors in case checkpoint leaf folders are not staged,
+    # but artifacts exist at parent levels (e.g. .../outputs/params.json).
+    for levels_up in range(1, 5):
+        ancestor = teacher_dir
+        for _ in range(levels_up):
+            if ancestor.parent == ancestor:
+                break
+            ancestor = ancestor.parent
+        if ancestor != teacher_dir:
+            candidates.append(ancestor)
+
     if not teacher_dir.is_absolute():
         candidates.append((Path.cwd() / teacher_dir).expanduser())
 
@@ -563,7 +574,16 @@ def _iter_teacher_dir_candidates(teacher_dir: Path) -> list[Path]:
         # 1) full relative tail if available (e.g. jobs/x/y/step_100000)
         # 2) basename fallback (e.g. step_100000)
         for key in layout_keys:
-            candidates.append((data_dir / key).expanduser())
+            mapped = (data_dir / key).expanduser()
+            candidates.append(mapped)
+            # Include mapped ancestors for staged layouts where only higher-level
+            # directories are materialized.
+            ancestor = mapped
+            for _ in range(1, 5):
+                if ancestor.parent == ancestor:
+                    break
+                ancestor = ancestor.parent
+                candidates.append(ancestor)
 
         if not data_dir.exists():
             continue
