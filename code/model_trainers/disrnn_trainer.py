@@ -31,6 +31,13 @@ from utils.disrnn_evaluation import (
     evaluate_disrnn_on_heldout_subjects,
     load_disrnn_heldout_subject_data,
 )
+from utils.disrnn_distillation import (
+    build_teacher_ensemble,
+    evaluate_distillation_loss,
+    resolve_distillation_config,
+    resolve_penalty_scale,
+    train_network_with_distillation,
+)
 from utils.multisubject import (
     convert_local_params_to_upstream_multisubject,
     extract_subject_embeddings_from_params,
@@ -123,6 +130,7 @@ class DisrnnTrainer(ModelTrainer):
         architecture: Mapping[str, Any] | DictConfig,
         penalties: Mapping[str, Any] | DictConfig,
         training: Mapping[str, Any] | DictConfig,
+        distillation: Mapping[str, Any] | DictConfig | None = None,
         heldout_data: dict[str, Any] | None = None,
         output_dir: str = "/results/outputs",
         seed: int | None = None,
@@ -132,6 +140,9 @@ class DisrnnTrainer(ModelTrainer):
         self.architecture = _to_dict(architecture)
         self.penalties = resolve_disrnn_penalties(penalties)
         self.training = _to_dict(training)
+        self.distillation = resolve_distillation_config(
+            _to_dict(distillation) if distillation is not None else None
+        )
         self.heldout_data = heldout_data
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -926,6 +937,55 @@ class DisrnnTrainer(ModelTrainer):
             noiseless_network,
             multisubject=is_multisubject,
         )
+        expected_n_action_logits = int(getattr(dataset, "n_classes", 0))
+        if expected_n_action_logits <= 0:
+            expected_n_action_logits = 2 if ignore_policy == "exclude" else 3
+        xs_train_all, ys_train_all = dataset_train.get_all()
+        xs_eval_all, ys_eval_all = dataset_eval.get_all()
+        distillation_penalty_scale = resolve_penalty_scale(args.loss_param)
+        distillation_ensemble = None
+        if self.distillation.enabled:
+            logger.info(
+                "Building GRU teacher ensemble for distillation from %d run(s).",
+                len(self.distillation.teacher_model_dirs),
+            )
+            distillation_ensemble = build_teacher_ensemble(
+                distillation=self.distillation,
+                dataset=dataset,
+                dataset_train=dataset_train,
+                dataset_eval=dataset_eval,
+                metadata=metadata,
+                output_dir=self.output_dir,
+                expected_output_size=expected_n_action_logits,
+            )
+            output["distillation"] = dict(distillation_ensemble.manifest)
+
+        def _compute_distillation_metrics(current_params: Any) -> tuple[float, float] | None:
+            if distillation_ensemble is None:
+                return None
+            train_metric = evaluate_distillation_loss(
+                make_network=make_noiseless_network,
+                params=current_params,
+                xs=xs_train_all,
+                ys=ys_train_all,
+                teacher_probs=distillation_ensemble.train_probs,
+                temperature=distillation_ensemble.config.temperature,
+                n_action_logits=expected_n_action_logits,
+                include_penalty=False,
+                penalty_scale=distillation_penalty_scale,
+            )
+            eval_metric = evaluate_distillation_loss(
+                make_network=make_noiseless_network,
+                params=current_params,
+                xs=xs_eval_all,
+                ys=ys_eval_all,
+                teacher_probs=distillation_ensemble.eval_probs,
+                temperature=distillation_ensemble.config.temperature,
+                n_action_logits=expected_n_action_logits,
+                include_penalty=False,
+                penalty_scale=distillation_penalty_scale,
+            )
+            return float(train_metric), float(eval_metric)
 
         heldout_eval_cfg = None
         heldout_test_data = self.heldout_data
@@ -990,26 +1050,53 @@ class DisrnnTrainer(ModelTrainer):
                 wandb_step=0,
                 keep_media_files=args.checkpoint_keep_media_files,
             )
+            distillation_metrics = _compute_distillation_metrics(params)
+            if distillation_metrics is not None:
+                (
+                    initial_evaluations["before_warmup"]["train_distillation_loss"],
+                    initial_evaluations["before_warmup"]["eval_distillation_loss"],
+                ) = distillation_metrics
         if initial_evaluations:
             output["initial_evaluations"] = initial_evaluations
 
         logger.info("Running warmup training phase")
         warmup_start = time.time()
-        params, warmup_opt_state, warmup_losses = rnn_utils.train_network(
-            make_noiseless_network,
-            dataset_train,
-            dataset_eval,
-            opt=optax.adam(args.learning_rate),
-            loss=args.loss,
-            loss_param=args.loss_param,
-            params=params,
-            opt_state=warmup_opt_state,
-            n_steps=args.n_warmup_steps,
-            max_grad_norm=args.max_grad_norm,
-            random_key=warmup_key,
-            report_progress_by="wandb",
-            wandb_run=wandb_run,
-        )
+        if distillation_ensemble is None:
+            params, warmup_opt_state, warmup_losses = rnn_utils.train_network(
+                make_noiseless_network,
+                dataset_train,
+                dataset_eval,
+                opt=optax.adam(args.learning_rate),
+                loss=args.loss,
+                loss_param=args.loss_param,
+                params=params,
+                opt_state=warmup_opt_state,
+                n_steps=args.n_warmup_steps,
+                max_grad_norm=args.max_grad_norm,
+                random_key=warmup_key,
+                report_progress_by="wandb",
+                wandb_run=wandb_run,
+            )
+        else:
+            params, warmup_opt_state, warmup_losses = train_network_with_distillation(
+                make_noiseless_network,
+                dataset_train,
+                dataset_eval,
+                training_teacher_probs=distillation_ensemble.train_probs,
+                validation_teacher_probs=distillation_ensemble.eval_probs,
+                opt=optax.adam(args.learning_rate),
+                params=params,
+                opt_state=warmup_opt_state,
+                n_steps=args.n_warmup_steps,
+                max_grad_norm=args.max_grad_norm,
+                random_key=warmup_key,
+                temperature=distillation_ensemble.config.temperature,
+                n_action_logits=expected_n_action_logits,
+                include_penalty=False,
+                penalty_scale=distillation_penalty_scale,
+                report_progress_by="wandb",
+                wandb_run=wandb_run,
+            )
         warmup_duration = time.time() - warmup_start
         warmup_path = self._plot_losses(
             warmup_losses,
@@ -1038,6 +1125,12 @@ class DisrnnTrainer(ModelTrainer):
                 wandb_step=int(args.n_warmup_steps),
                 keep_media_files=args.checkpoint_keep_media_files,
             )
+            distillation_metrics = _compute_distillation_metrics(params)
+            if distillation_metrics is not None:
+                (
+                    initial_evaluations["after_warmup"]["train_distillation_loss"],
+                    initial_evaluations["after_warmup"]["eval_distillation_loss"],
+                ) = distillation_metrics
 
         logger.info("Running full training phase")
         start = time.time()
@@ -1052,23 +1145,45 @@ class DisrnnTrainer(ModelTrainer):
         checkpoint_records: list[dict[str, Any]] = []
         checkpoint_heldout_summaries: list[dict[str, Any]] = []
         if args.checkpoint_every_n_steps == 0:
-            params, opt_state, losses = rnn_utils.train_network(
-                make_train_network,
-                dataset_train,
-                dataset_eval,
-                loss=args.loss,
-                loss_param=args.loss_param,
-                params=params,
-                opt_state=None,
-                opt=optax.adam(args.learning_rate),
-                n_steps=args.n_steps,
-                max_grad_norm=args.max_grad_norm,
-                do_plot=True,
-                random_key=training_key,
-                report_progress_by="wandb",
-                wandb_run=wandb_run,
-                wandb_step_offset=args.n_warmup_steps,
-            )
+            if distillation_ensemble is None:
+                params, opt_state, losses = rnn_utils.train_network(
+                    make_train_network,
+                    dataset_train,
+                    dataset_eval,
+                    loss=args.loss,
+                    loss_param=args.loss_param,
+                    params=params,
+                    opt_state=None,
+                    opt=optax.adam(args.learning_rate),
+                    n_steps=args.n_steps,
+                    max_grad_norm=args.max_grad_norm,
+                    do_plot=True,
+                    random_key=training_key,
+                    report_progress_by="wandb",
+                    wandb_run=wandb_run,
+                    wandb_step_offset=args.n_warmup_steps,
+                )
+            else:
+                params, opt_state, losses = train_network_with_distillation(
+                    make_train_network,
+                    dataset_train,
+                    dataset_eval,
+                    training_teacher_probs=distillation_ensemble.train_probs,
+                    validation_teacher_probs=distillation_ensemble.eval_probs,
+                    params=params,
+                    opt_state=None,
+                    opt=optax.adam(args.learning_rate),
+                    n_steps=args.n_steps,
+                    max_grad_norm=args.max_grad_norm,
+                    random_key=training_key,
+                    temperature=distillation_ensemble.config.temperature,
+                    n_action_logits=expected_n_action_logits,
+                    include_penalty=True,
+                    penalty_scale=distillation_penalty_scale,
+                    report_progress_by="wandb",
+                    wandb_run=wandb_run,
+                    wandb_step_offset=args.n_warmup_steps,
+                )
         else:
             optimizer = optax.adam(args.learning_rate)
             checkpoint_root = self.output_dir / "checkpoints"
@@ -1078,8 +1193,6 @@ class DisrnnTrainer(ModelTrainer):
             all_validation_losses: list[float] = []
             steps_completed = 0
             opt_state = None
-            xs_train_all, ys_train_all = dataset_train.get_all()
-            xs_eval_all, ys_eval_all = dataset_eval.get_all()
             xs_full_for_checkpoint, _ = dataset.get_all()
             df_for_checkpoint = bundle.raw
             random_key = training_key
@@ -1089,23 +1202,45 @@ class DisrnnTrainer(ModelTrainer):
                     args.checkpoint_every_n_steps,
                     args.n_steps - steps_completed,
                 )
-                params, opt_state, chunk_losses = rnn_utils.train_network(
-                    make_train_network,
-                    dataset_train,
-                    dataset_eval,
-                    loss=args.loss,
-                    loss_param=args.loss_param,
-                    params=params,
-                    opt_state=opt_state,
-                    opt=optimizer,
-                    n_steps=chunk_steps,
-                    max_grad_norm=args.max_grad_norm,
-                    do_plot=False,
-                    random_key=random_key,
-                    report_progress_by="wandb",
-                    wandb_run=wandb_run,
-                    wandb_step_offset=args.n_warmup_steps + steps_completed,
-                )
+                if distillation_ensemble is None:
+                    params, opt_state, chunk_losses = rnn_utils.train_network(
+                        make_train_network,
+                        dataset_train,
+                        dataset_eval,
+                        loss=args.loss,
+                        loss_param=args.loss_param,
+                        params=params,
+                        opt_state=opt_state,
+                        opt=optimizer,
+                        n_steps=chunk_steps,
+                        max_grad_norm=args.max_grad_norm,
+                        do_plot=False,
+                        random_key=random_key,
+                        report_progress_by="wandb",
+                        wandb_run=wandb_run,
+                        wandb_step_offset=args.n_warmup_steps + steps_completed,
+                    )
+                else:
+                    params, opt_state, chunk_losses = train_network_with_distillation(
+                        make_train_network,
+                        dataset_train,
+                        dataset_eval,
+                        training_teacher_probs=distillation_ensemble.train_probs,
+                        validation_teacher_probs=distillation_ensemble.eval_probs,
+                        params=params,
+                        opt_state=opt_state,
+                        opt=optimizer,
+                        n_steps=chunk_steps,
+                        max_grad_norm=args.max_grad_norm,
+                        random_key=random_key,
+                        temperature=distillation_ensemble.config.temperature,
+                        n_action_logits=expected_n_action_logits,
+                        include_penalty=True,
+                        penalty_scale=distillation_penalty_scale,
+                        report_progress_by="wandb",
+                        wandb_run=wandb_run,
+                        wandb_step_offset=args.n_warmup_steps + steps_completed,
+                    )
 
                 all_training_losses.extend(np.asarray(chunk_losses["training_loss"]).tolist())
                 all_validation_losses.extend(np.asarray(chunk_losses["validation_loss"]).tolist())
@@ -1163,6 +1298,32 @@ class DisrnnTrainer(ModelTrainer):
                         )
                     )
 
+                train_distillation_loss_ckpt: float | None = None
+                eval_distillation_loss_ckpt: float | None = None
+                if distillation_ensemble is not None:
+                    train_distillation_loss_ckpt = evaluate_distillation_loss(
+                        make_network=make_noiseless_network,
+                        params=params,
+                        xs=xs_train_all,
+                        ys=ys_train_all,
+                        teacher_probs=distillation_ensemble.train_probs,
+                        temperature=distillation_ensemble.config.temperature,
+                        n_action_logits=expected_n_action_logits,
+                        include_penalty=False,
+                        penalty_scale=distillation_penalty_scale,
+                    )
+                    eval_distillation_loss_ckpt = evaluate_distillation_loss(
+                        make_network=make_noiseless_network,
+                        params=params,
+                        xs=xs_eval_all,
+                        ys=ys_eval_all,
+                        teacher_probs=distillation_ensemble.eval_probs,
+                        temperature=distillation_ensemble.config.temperature,
+                        n_action_logits=expected_n_action_logits,
+                        include_penalty=False,
+                        penalty_scale=distillation_penalty_scale,
+                    )
+
                 checkpoint_record = {
                     "step": int(steps_completed),
                     "params_path": str(checkpoint_params_path),
@@ -1180,6 +1341,24 @@ class DisrnnTrainer(ModelTrainer):
                         "Checkpoint step %s, eval likelihood: %.4f",
                         steps_completed,
                         eval_likelihood_ckpt,
+                    )
+                if train_distillation_loss_ckpt is not None:
+                    checkpoint_record["train_distillation_loss"] = float(
+                        train_distillation_loss_ckpt
+                    )
+                    logger.info(
+                        "Checkpoint step %s, train distillation loss: %.4f",
+                        steps_completed,
+                        train_distillation_loss_ckpt,
+                    )
+                if eval_distillation_loss_ckpt is not None:
+                    checkpoint_record["eval_distillation_loss"] = float(
+                        eval_distillation_loss_ckpt
+                    )
+                    logger.info(
+                        "Checkpoint step %s, eval distillation loss: %.4f",
+                        steps_completed,
+                        eval_distillation_loss_ckpt,
                     )
 
                 checkpoint_plot_paths: dict[str, Any] = {
@@ -1336,6 +1515,20 @@ class DisrnnTrainer(ModelTrainer):
                         },
                         step=args.n_warmup_steps + int(steps_completed),
                     )
+                if (
+                    wandb_run is not None
+                    and args.checkpoint_log_train_to_wandb
+                    and train_distillation_loss_ckpt is not None
+                ):
+                    wandb_run.log(
+                        {
+                            "checkpoint/train_distillation_loss": float(
+                                train_distillation_loss_ckpt
+                            ),
+                            "checkpoint/step": int(steps_completed),
+                        },
+                        step=args.n_warmup_steps + int(steps_completed),
+                    )
 
                 if (
                     wandb_run is not None
@@ -1345,6 +1538,20 @@ class DisrnnTrainer(ModelTrainer):
                     wandb_run.log(
                         {
                             "checkpoint/eval_likelihood": eval_likelihood_ckpt,
+                            "checkpoint/step": int(steps_completed),
+                        },
+                        step=args.n_warmup_steps + int(steps_completed),
+                    )
+                if (
+                    wandb_run is not None
+                    and eval_distillation_loss_ckpt is not None
+                    and args.checkpoint_log_eval_to_wandb
+                ):
+                    wandb_run.log(
+                        {
+                            "checkpoint/eval_distillation_loss": float(
+                                eval_distillation_loss_ckpt
+                            ),
                             "checkpoint/step": int(steps_completed),
                         },
                         step=args.n_warmup_steps + int(steps_completed),
@@ -1674,6 +1881,43 @@ class DisrnnTrainer(ModelTrainer):
         )
         output["likelihood"] = float(likelihood)
         logger.info("Final eval likelihood: %.4f", float(likelihood))
+        if distillation_ensemble is not None:
+            final_train_distillation_loss = evaluate_distillation_loss(
+                make_network=make_noiseless_network,
+                params=params,
+                xs=xs_train,
+                ys=ys_train,
+                teacher_probs=distillation_ensemble.train_probs,
+                temperature=distillation_ensemble.config.temperature,
+                n_action_logits=expected_n_action_logits,
+                include_penalty=False,
+                penalty_scale=distillation_penalty_scale,
+            )
+            final_eval_distillation_loss = evaluate_distillation_loss(
+                make_network=make_noiseless_network,
+                params=params,
+                xs=xs_eval,
+                ys=ys_eval,
+                teacher_probs=distillation_ensemble.eval_probs,
+                temperature=distillation_ensemble.config.temperature,
+                n_action_logits=expected_n_action_logits,
+                include_penalty=False,
+                penalty_scale=distillation_penalty_scale,
+            )
+            output.setdefault("distillation", {})
+            output["distillation"]["train_distillation_loss"] = float(
+                final_train_distillation_loss
+            )
+            output["distillation"]["eval_distillation_loss"] = float(
+                final_eval_distillation_loss
+            )
+            output["distillation"]["teacher_count"] = int(
+                len(distillation_ensemble.config.teacher_model_dirs)
+            )
+            output["distillation"]["temperature"] = float(
+                distillation_ensemble.config.temperature
+            )
+            output["distillation"]["aggregation"] = distillation_ensemble.config.aggregation
 
         final_output_dir = self.output_dir
         if args.checkpoint_every_n_steps > 0:
@@ -1745,7 +1989,20 @@ class DisrnnTrainer(ModelTrainer):
             wandb_run.summary["final/train_loss"] = float(losses["training_loss"][-1])
             wandb_run.summary["likelihood"] = float(likelihood)
             wandb_run.summary["likelihood_train"] = float(likelihood_train)
-            
+            if distillation_ensemble is not None:
+                wandb_run.summary["distillation/train_loss"] = float(
+                    output["distillation"]["train_distillation_loss"]
+                )
+                wandb_run.summary["distillation/eval_loss"] = float(
+                    output["distillation"]["eval_distillation_loss"]
+                )
+                wandb_run.summary["distillation/teacher_count"] = int(
+                    output["distillation"]["teacher_count"]
+                )
+                wandb_run.summary["distillation/temperature"] = float(
+                    output["distillation"]["temperature"]
+                )
+
             if gt_likelihood is not None:
                 wandb_run.summary["groundtruth_likelihood"] = float(gt_likelihood)
                 wandb_run.summary["likelihood_relative_to_groundtruth"] = float(likelihood) / float(gt_likelihood)

@@ -177,6 +177,15 @@ model:
     subject_penalty: ${.beta}
     update_net_subject_penalty: ${.beta}
     choice_net_subject_penalty: ${.beta}
+  distillation:
+    enabled: false
+    teacher_model_dirs: []
+    temperature: 2.0
+    aggregation: mean_probs
+    loss: kl
+    use_hard_labels: false
+    evaluate_against_hard_labels: true
+    save_manifest: true
   training:
     n_steps: 20
     n_warmup_steps: 10
