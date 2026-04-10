@@ -530,6 +530,55 @@ class TestDisrnnDistillation(unittest.TestCase):
         self.assertEqual(summary.model_dir, str(teacher_dir))
         self.assertEqual(architecture["hidden_size"], 8)
 
+    def test_load_teacher_summary_resolves_prefixed_dataset_segment_in_staged_path(self):
+        data_root = self.root_dir / "mounted_data"
+        teacher_dir = (
+            data_root
+            / "14"
+            / "outputs"
+            / "checkpoints"
+            / "step_100000"
+        )
+        teacher_dir.mkdir(parents=True, exist_ok=True)
+        (teacher_dir / "params.json").write_text("{}")
+        (teacher_dir.parent.parent / "gru_config.json").write_text(
+            json.dumps(
+                {
+                    "architecture": {
+                        "hidden_size": 8,
+                        "num_layers": 1,
+                        "multisubject": False,
+                    },
+                    "output_size": 2,
+                }
+            )
+        )
+
+        staged_teacher_dir = (
+            self.root_dir
+            / "tmp"
+            / "nxf.zIVPQIe7nb"
+            / "capsule"
+            / "data"
+            / "mice_multisubject_train10-gru-260323"
+            / "14"
+            / "outputs"
+            / "checkpoints"
+            / "step_100000"
+        )
+
+        with patch("utils.disrnn_distillation._CANDIDATE_DATA_DIRS", (data_root,)):
+            summary, architecture, _ = _load_teacher_summary(
+                staged_teacher_dir,
+                student_is_multisubject=False,
+                expected_output_size=2,
+            )
+
+        self.assertEqual(summary.output_size, 2)
+        self.assertEqual(summary.multisubject, False)
+        self.assertEqual(summary.model_dir, str(teacher_dir))
+        self.assertEqual(architecture["hidden_size"], 8)
+
 
 if __name__ == "__main__":
     unittest.main()

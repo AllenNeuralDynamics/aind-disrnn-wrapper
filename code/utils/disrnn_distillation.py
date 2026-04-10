@@ -535,7 +535,11 @@ def _candidate_layout_keys(teacher_dir: Path) -> list[Path]:
     tail_after_data = _path_tail_after_data_segment(teacher_dir)
     if tail_after_data is not None:
         keys.insert(0, tail_after_data)
-    return keys
+        # Support staged data mounts where the top-level dataset root segment
+        # is dropped (e.g. /data/dataset_name/<id>/... -> /data/<id>/...).
+        if len(tail_after_data.parts) > 1:
+            keys.append(Path(*tail_after_data.parts[1:]))
+    return _dedupe_paths(keys)
 
 
 def _iter_teacher_dir_candidates(teacher_dir: Path) -> list[Path]:
@@ -547,7 +551,14 @@ def _iter_teacher_dir_candidates(teacher_dir: Path) -> list[Path]:
 
     layout_keys = _candidate_layout_keys(teacher_dir)
 
-    for data_dir in _CANDIDATE_DATA_DIRS:
+    search_roots = _dedupe_paths([*list(_CANDIDATE_DATA_DIRS), Path.cwd()])
+    logger.debug(
+        "Teacher candidate search for %s across roots: %s",
+        teacher_dir,
+        [str(root) for root in search_roots],
+    )
+
+    for data_dir in search_roots:
         # Layout-style lookup under each data root (similar to load_mice_snapshot):
         # 1) full relative tail if available (e.g. jobs/x/y/step_100000)
         # 2) basename fallback (e.g. step_100000)
@@ -558,27 +569,40 @@ def _iter_teacher_dir_candidates(teacher_dir: Path) -> list[Path]:
             continue
 
         # Recursive lookup fallback for unknown nesting depth.
-        for key in layout_keys:
-            recursive_matches = sorted(
-                path
-                for path in data_dir.rglob(key.name)
-                if path.is_dir()
-            )
-            if not recursive_matches:
-                continue
+        # Match on params.json (artifact anchor), not only directory names,
+        # because names like "step_100000" are common across many runs.
+        params_files = sorted(
+            path
+            for path in data_dir.rglob("params.json")
+            if path.is_file()
+        )
+        if not params_files:
+            continue
 
-            if len(key.parts) > 1:
-                key_suffix = key.as_posix()
-                suffix_matches = [
-                    match
-                    for match in recursive_matches
-                    if match.as_posix().endswith(key_suffix)
-                ]
-                if suffix_matches:
-                    candidates.append(suffix_matches[0])
+        for key in layout_keys:
+            key_suffix = key.as_posix()
+            matched = False
+            for params_path in params_files:
+                parent = params_path.parent
+                if len(key.parts) > 1:
+                    if not parent.as_posix().endswith(key_suffix):
+                        continue
+                elif parent.name != key.name:
                     continue
 
-            candidates.append(recursive_matches[0])
+                candidates.append(parent)
+                candidates.append(params_path)
+                logger.debug(
+                    "Matched teacher candidate via params anchor: key=%s parent=%s params=%s",
+                    key,
+                    parent,
+                    params_path,
+                )
+                matched = True
+                break
+
+            if matched:
+                continue
 
     return _dedupe_paths(candidates)
 
@@ -614,7 +638,7 @@ def _resolve_teacher_artifacts(teacher_dir: Path) -> tuple[Path, Path, Path | No
         config_path = _find_upward(params_path.parent, "gru_config.json")
         if config_path is None:
             continue
-        subject_index_map_path = _find_upward(params_path.parent, "subject_index_map.json")
+        subject_index_map_path = _find_upward(config_path.parent, "subject_index_map.json")
         return params_path, config_path, subject_index_map_path
 
     return None
@@ -635,6 +659,11 @@ def _load_teacher_summary(
         if resolved is not None:
             artifact_paths = resolved
             resolved_teacher_dir = candidate
+            logger.info(
+                "Resolved teacher candidate %s from input %s",
+                candidate,
+                teacher_dir,
+            )
             break
 
     if artifact_paths is None:
@@ -671,7 +700,7 @@ def _load_teacher_summary(
     params = rnn_utils.to_np(_load_json(params_path))
     subject_count: int | None = None
     if teacher_is_multisubject:
-        if not subject_index_map_path.exists():
+        if subject_index_map_path is None or not subject_index_map_path.exists():
             raise FileNotFoundError(
                 "Multisubject GRU teacher requires subject_index_map.json: "
                 f"{subject_index_map_path}"
