@@ -687,14 +687,35 @@ class TestBaselineRLTrainer(unittest.TestCase):
             subject_index_map_path = Path(subject_artifacts["subject_index_map"])
             subject_metrics_csv_path = Path(subject_artifacts["subject_fit_metrics_csv"])
             subject_metrics_pickle_path = Path(subject_artifacts["subject_fit_metrics_pickle"])
+            subject_fit_summaries_path = Path(subject_artifacts["subject_fit_summaries_json"])
             parameter_space_path = Path(output["subject_parameter_state_space_path"])
             likelihood_scatter_path = Path(output["subject_likelihood_scatter_path"])
 
             self.assertTrue(subject_index_map_path.exists())
             self.assertTrue(subject_metrics_csv_path.exists())
             self.assertTrue(subject_metrics_pickle_path.exists())
+            self.assertTrue(subject_fit_summaries_path.exists())
             self.assertTrue(parameter_space_path.exists())
             self.assertTrue(likelihood_scatter_path.exists())
+            self.assertIn("fitted_params_per_subject", output)
+            self.assertCountEqual(
+                output["fitted_params_per_subject"].keys(),
+                ["101", "202"],
+            )
+            for subject_summary in output["fitted_params_per_subject"].values():
+                self.assertIn("fitted_params", subject_summary)
+                self.assertIn("train_likelihood", subject_summary)
+                self.assertIn("eval_likelihood", subject_summary)
+                self.assertIn("train_session_ids", subject_summary)
+                self.assertIn("eval_session_ids", subject_summary)
+
+            with subject_fit_summaries_path.open("r") as f:
+                subject_fit_summaries = json.load(f)
+            self.assertEqual(
+                subject_fit_summaries["subjects"],
+                output["fitted_params_per_subject"],
+            )
+            self.assertEqual(subject_fit_summaries["num_subjects"], 2)
 
             subject_metrics_df = pd.read_csv(subject_metrics_csv_path)
             self.assertEqual(len(subject_metrics_df), 2)
@@ -703,6 +724,26 @@ class TestBaselineRLTrainer(unittest.TestCase):
                 subject_metrics_df["curriculum_name"].tolist(),
                 ["Curriculum A", "Curriculum B"],
             )
+            self.assertIn("train_q_value_examples", output)
+            self.assertIn("eval_q_value_examples", output)
+            self.assertIn("train_choice_reward_fitted_prob_plot_path", output)
+            self.assertIn("eval_choice_reward_fitted_prob_plot_path", output)
+            self.assertEqual(
+                output["train_q_value_examples"]["example_sessions_per_subject"],
+                1,
+            )
+            self.assertEqual(
+                output["eval_q_value_examples"]["example_sessions_per_subject"],
+                1,
+            )
+            self.assertEqual(len(output["train_q_value_examples"]["example_sessions"]), 2)
+            self.assertEqual(len(output["eval_q_value_examples"]["example_sessions"]), 2)
+            self.assertTrue(Path(output["train_choice_reward_fitted_prob_plot_path"]).exists())
+            self.assertTrue(Path(output["eval_choice_reward_fitted_prob_plot_path"]).exists())
+            for example in output["train_q_value_examples"]["example_sessions"]:
+                self.assertTrue(Path(example["q_values_over_trials"]).exists())
+            for example in output["eval_q_value_examples"]["example_sessions"]:
+                self.assertTrue(Path(example["q_values_over_trials"]).exists())
 
             pooled_train_choices = []
             pooled_train_probs = []
@@ -769,6 +810,43 @@ class TestBaselineRLTrainer(unittest.TestCase):
                 trainer._compute_normalized_likelihood(pooled_eval_choices, pooled_eval_probs),
                 places=6,
             )
+
+    def test_multisubject_fit_example_plots_fallback_to_probabilities_when_q_histories_missing(self):
+        """Test that multisubject example plots still export when Q histories are unavailable."""
+        with tempfile.TemporaryDirectory(prefix="baseline_rl_multisubject_fallback_") as tmpdir:
+            trainer = BaselineRLTrainer(
+                architecture={"multisubject": True},
+                multisubject_subject_workers=1,
+                agent_class="ForagerQLearning",
+                agent_kwargs={
+                    "number_of_learning_rate": 1,
+                    "number_of_forget_rate": 0,
+                    "choice_kernel": "none",
+                    "action_selection": "softmax",
+                },
+                DE_kwargs={"workers": 1, "maxiter": 2, "popsize": 4, "polish": False},
+                output_dir=tmpdir,
+                seed=42,
+            )
+
+            with mock.patch(
+                "model_trainers.baseline_rl_trainer._extract_q_histories",
+                return_value=None,
+            ):
+                output = trainer.fit(self.multisubject_bundle)
+
+            self.assertIn("train_q_value_examples", output)
+            self.assertIn("eval_q_value_examples", output)
+            self.assertGreater(
+                len(output["train_q_value_examples"]["plots"]["q_values_over_trials_examples"]),
+                0,
+            )
+            self.assertGreater(
+                len(output["eval_q_value_examples"]["plots"]["q_values_over_trials_examples"]),
+                0,
+            )
+            self.assertTrue(Path(output["train_choice_reward_fitted_prob_plot_path"]).exists())
+            self.assertTrue(Path(output["eval_choice_reward_fitted_prob_plot_path"]).exists())
 
     def test_multisubject_effective_de_kwargs_force_one_worker_and_preserve_other_options(self):
         """Test that multisubject mode forces one DE worker per subject."""

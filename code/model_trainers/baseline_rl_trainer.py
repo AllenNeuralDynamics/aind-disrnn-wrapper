@@ -141,6 +141,11 @@ def _json_default(value: Any) -> Any:
     raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
 
+def _subject_summary_key(subject_id: Any) -> str:
+    """Return a stable JSON-safe key for per-subject summaries."""
+    return str(normalize_subject_id(subject_id))
+
+
 def _fit_subject_sessions_impl(
     *,
     agent_class: str,
@@ -928,10 +933,14 @@ class BaselineRLTrainer(ModelTrainer):
             raise ValueError(
                 "Multisubject baseline RL requires subject_id_to_index and "
                 "index_to_subject_id in bundle metadata."
-            )
+        )
 
         subject_output_dir = self.output_dir / "subjects"
         subject_output_dir.mkdir(parents=True, exist_ok=True)
+        subject_record_lookup = {
+            int(subject_record["subject_index"]): subject_record
+            for subject_record in subject_records
+        }
 
         subject_parallel_workers = self._resolve_multisubject_subject_workers(
             len(subject_records)
@@ -961,6 +970,19 @@ class BaselineRLTrainer(ModelTrainer):
         per_subject_rows: list[dict[str, Any]] = []
         parameter_columns: List[str] | None = None
         per_subject_results: list[dict[str, Any]] = []
+        per_subject_summary_map: dict[str, dict[str, Any]] = {}
+        aggregated_train_choices: list[np.ndarray] = []
+        aggregated_train_rewards: list[np.ndarray] = []
+        aggregated_train_q_histories: list[np.ndarray | None] = []
+        aggregated_train_choice_prob_sessions: list[np.ndarray] = []
+        aggregated_train_session_ids: list[Any] = []
+        aggregated_train_subject_ids: list[Any] = []
+        aggregated_eval_choices: list[np.ndarray] = []
+        aggregated_eval_rewards: list[np.ndarray] = []
+        aggregated_eval_q_histories: list[np.ndarray | None] = []
+        aggregated_eval_choice_prob_sessions: list[np.ndarray] = []
+        aggregated_eval_session_ids: list[Any] = []
+        aggregated_eval_subject_ids: list[Any] = []
 
         if subject_parallel_workers == 1:
             for payload in worker_payloads:
@@ -1056,6 +1078,79 @@ class BaselineRLTrainer(ModelTrainer):
             with subject_summary_path.open("w") as f:
                 json.dump(subject_summary, f, indent=2, default=_json_default)
 
+            per_subject_summary_map[_subject_summary_key(subject_id)] = subject_summary
+
+            subject_record = subject_record_lookup.get(subject_index)
+            if subject_record is None:
+                raise KeyError(
+                    "Missing multisubject record while building example plots for "
+                    f"subject_index={subject_index}."
+                )
+
+            fitted_params = dict(fit_summary["fitted_params"])
+            train_choices = list(subject_record["train_choices"])
+            train_rewards = list(subject_record["train_rewards"])
+            eval_choices = list(subject_record["eval_choices"])
+            eval_rewards = list(subject_record["eval_rewards"])
+
+            subject_agent = self._resolve_agent_class()(
+                **self.agent_kwargs,
+                seed=self.seed,
+            )
+            subject_agent.set_params(**fitted_params)
+            subject_train_choice_prob_sessions = [
+                np.asarray(arr)
+                for arr in subject_agent.perform_closed_loop_multi_session(
+                    train_choices,
+                    train_rewards,
+                )
+            ]
+            subject_train_q_histories = _extract_q_histories(
+                subject_agent,
+                subject_train_choice_prob_sessions,
+            )
+
+            subject_eval_agent = self._resolve_agent_class()(
+                **self.agent_kwargs,
+                seed=self.seed,
+            )
+            subject_eval_agent.set_params(**fitted_params)
+            subject_eval_choice_prob_sessions = [
+                np.asarray(arr)
+                for arr in subject_eval_agent.perform_closed_loop_multi_session(
+                    eval_choices,
+                    eval_rewards,
+                )
+            ]
+            subject_eval_q_histories = _extract_q_histories(
+                subject_eval_agent,
+                subject_eval_choice_prob_sessions,
+            )
+
+            aggregated_train_choices.extend(train_choices)
+            aggregated_train_rewards.extend(train_rewards)
+            aggregated_train_choice_prob_sessions.extend(subject_train_choice_prob_sessions)
+            aggregated_train_session_ids.extend(subject_record["train_session_ids"])
+            aggregated_train_subject_ids.extend(
+                [normalize_subject_id(subject_id)] * len(train_choices)
+            )
+            if subject_train_q_histories is None:
+                aggregated_train_q_histories.extend([None] * len(train_choices))
+            else:
+                aggregated_train_q_histories.extend(list(subject_train_q_histories))
+
+            aggregated_eval_choices.extend(eval_choices)
+            aggregated_eval_rewards.extend(eval_rewards)
+            aggregated_eval_choice_prob_sessions.extend(subject_eval_choice_prob_sessions)
+            aggregated_eval_session_ids.extend(subject_record["eval_session_ids"])
+            aggregated_eval_subject_ids.extend(
+                [normalize_subject_id(subject_id)] * len(eval_choices)
+            )
+            if subject_eval_q_histories is None:
+                aggregated_eval_q_histories.extend([None] * len(eval_choices))
+            else:
+                aggregated_eval_q_histories.extend(list(subject_eval_q_histories))
+
         assert parameter_columns is not None
         subject_metrics_df = (
             pd.DataFrame(per_subject_rows).sort_values("subject_index").reset_index(drop=True)
@@ -1064,6 +1159,18 @@ class BaselineRLTrainer(ModelTrainer):
         subject_metrics_pickle_path = self.output_dir / "subject_fit_metrics.pkl"
         subject_metrics_df.to_csv(subject_metrics_csv_path, index=False)
         subject_metrics_df.to_pickle(subject_metrics_pickle_path)
+        subject_fit_summaries_path = self.output_dir / "subject_fit_summaries.json"
+        with subject_fit_summaries_path.open("w") as f:
+            json.dump(
+                {
+                    "num_subjects": int(len(subject_metrics_df)),
+                    "parameter_columns": parameter_columns,
+                    "subjects": per_subject_summary_map,
+                },
+                f,
+                indent=2,
+                default=_json_default,
+            )
 
         subject_index_map_path = save_subject_index_map(
             self.output_dir / "subject_index_map.json",
@@ -1110,6 +1217,43 @@ class BaselineRLTrainer(ModelTrainer):
         likelihood_scatter_fig.savefig(likelihood_scatter_path, dpi=150, bbox_inches="tight")
         plt.close(likelihood_scatter_fig)
 
+        default_sessions_per_subject = int(
+            metadata.get("heldout_example_sessions_per_subject", 1)
+        )
+        train_sessions_per_subject = int(
+            metadata.get("train_example_sessions_per_subject", default_sessions_per_subject)
+        )
+        eval_sessions_per_subject = int(
+            metadata.get("eval_example_sessions_per_subject", default_sessions_per_subject)
+        )
+        if train_sessions_per_subject < 0:
+            raise ValueError("train_example_sessions_per_subject must be >= 0")
+        if eval_sessions_per_subject < 0:
+            raise ValueError("eval_example_sessions_per_subject must be >= 0")
+
+        train_examples_summary = self._plot_q_value_examples_for_split(
+            split_name="train",
+            choice_sessions=aggregated_train_choices,
+            reward_sessions=aggregated_train_rewards,
+            q_histories=aggregated_train_q_histories,
+            choice_prob_sessions=aggregated_train_choice_prob_sessions,
+            session_ids=aggregated_train_session_ids,
+            session_subject_ids=aggregated_train_subject_ids,
+            sessions_per_subject=train_sessions_per_subject,
+            output_dir=self.output_dir,
+        )
+        eval_examples_summary = self._plot_q_value_examples_for_split(
+            split_name="eval",
+            choice_sessions=aggregated_eval_choices,
+            reward_sessions=aggregated_eval_rewards,
+            q_histories=aggregated_eval_q_histories,
+            choice_prob_sessions=aggregated_eval_choice_prob_sessions,
+            session_ids=aggregated_eval_session_ids,
+            session_subject_ids=aggregated_eval_subject_ids,
+            sessions_per_subject=eval_sessions_per_subject,
+            output_dir=self.output_dir,
+        )
+
         elapsed_time = time.time() - start_time
         output: Dict[str, Any] = {
             "multisubject": True,
@@ -1129,16 +1273,30 @@ class BaselineRLTrainer(ModelTrainer):
                 effective_subject_de_kwargs.get("workers", 1)
             ),
             "parameter_columns": parameter_columns,
+            "fitted_params_per_subject": per_subject_summary_map,
             "subject_artifacts": {
                 "subject_index_map": str(subject_index_map_path),
                 "subject_fit_metrics_csv": str(subject_metrics_csv_path),
                 "subject_fit_metrics_pickle": str(subject_metrics_pickle_path),
+                "subject_fit_summaries_json": str(subject_fit_summaries_path),
             },
             "subject_parameter_state_space_path": (
                 str(parameter_space_path) if parameter_space_path is not None else None
             ),
             "subject_likelihood_scatter_path": str(likelihood_scatter_path),
+            "train_q_value_examples": train_examples_summary,
+            "eval_q_value_examples": eval_examples_summary,
         }
+        train_plot_paths = train_examples_summary.get("plots", {}).get(
+            "q_values_over_trials_examples", []
+        )
+        eval_plot_paths = eval_examples_summary.get("plots", {}).get(
+            "q_values_over_trials_examples", []
+        )
+        if train_plot_paths:
+            output["train_choice_reward_fitted_prob_plot_path"] = str(train_plot_paths[0])
+        if eval_plot_paths:
+            output["eval_choice_reward_fitted_prob_plot_path"] = str(eval_plot_paths[0])
 
         output_path = save_baseline_rl_output(self.output_dir, output, indent=2)
         logger.info("Saved multisubject baseline RL output to %s", output_path)
@@ -1763,7 +1921,7 @@ class BaselineRLTrainer(ModelTrainer):
         split_name: str,
         choice_sessions: List[np.ndarray],
         reward_sessions: List[np.ndarray],
-        q_histories: List[np.ndarray] | None,
+        q_histories: List[np.ndarray | None] | None,
         choice_prob_sessions: List[np.ndarray] | None,
         session_ids: List[Any],
         session_subject_ids: List[Any],
@@ -1776,18 +1934,23 @@ class BaselineRLTrainer(ModelTrainer):
             raise ValueError(
                 f"{split_name} example plotting requires q_histories or choice_prob_sessions."
             )
-        history_sessions = q_histories if q_histories is not None else choice_prob_sessions
-        assert history_sessions is not None
-        if not (
-            len(choice_sessions)
-            == len(reward_sessions)
-            == len(history_sessions)
-            == len(session_ids)
-            == len(session_subject_ids)
-        ):
+        expected_lengths = [
+            len(choice_sessions),
+            len(reward_sessions),
+            len(session_ids),
+            len(session_subject_ids),
+        ]
+        if q_histories is not None:
+            expected_lengths.append(len(q_histories))
+        if choice_prob_sessions is not None:
+            expected_lengths.append(len(choice_prob_sessions))
+        if len(set(expected_lengths)) != 1:
             raise ValueError(
                 f"{split_name} split length mismatch: choices={len(choice_sessions)}, "
-                f"rewards={len(reward_sessions)}, histories={len(history_sessions)}, "
+                f"rewards={len(reward_sessions)}, "
+                f"q_histories={len(q_histories) if q_histories is not None else 'None'}, "
+                f"choice_probabilities="
+                f"{len(choice_prob_sessions) if choice_prob_sessions is not None else 'None'}, "
                 f"session_ids={len(session_ids)}, subject_ids={len(session_subject_ids)}"
             )
 
@@ -1806,8 +1969,9 @@ class BaselineRLTrainer(ModelTrainer):
                 for idx in indices[:sessions_per_subject]:
                     choices = choice_sessions[idx]
                     rewards = reward_sessions[idx]
-                    if q_histories is not None:
-                        q_session = _align_q_session(q_histories[idx], len(choices))
+                    q_session_history = None if q_histories is None else q_histories[idx]
+                    if q_session_history is not None:
+                        q_session = _align_q_session(q_session_history, len(choices))
                         fig = _plot_q_values_for_session(
                             choices=choices,
                             rewards=rewards,
