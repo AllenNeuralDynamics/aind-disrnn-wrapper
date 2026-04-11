@@ -543,19 +543,25 @@ def _candidate_layout_keys(teacher_dir: Path) -> list[Path]:
 
 
 def _iter_teacher_dir_candidates(teacher_dir: Path) -> list[Path]:
-    teacher_dir = teacher_dir.expanduser()
-    candidates: list[Path] = [teacher_dir]
-
-    # Also try nearby ancestors in case checkpoint leaf folders are not staged,
-    # but artifacts exist at parent levels (e.g. .../outputs/params.json).
-    for levels_up in range(1, 5):
-        ancestor = teacher_dir
-        for _ in range(levels_up):
-            if ancestor.parent == ancestor:
+    def _with_useful_ancestors(path: Path, *, max_levels: int = 4) -> list[Path]:
+        expanded = path.expanduser()
+        out: list[Path] = [expanded]
+        current = expanded
+        for _ in range(max_levels):
+            if current.parent == current:
                 break
-            ancestor = ancestor.parent
-        if ancestor != teacher_dir:
-            candidates.append(ancestor)
+            current = current.parent
+            # Never add filesystem roots / broad data roots as candidates.
+            if current == Path("/") or current == Path("/data"):
+                break
+            out.append(current)
+            # For checkpoint paths, resolving from outputs is the intended fallback.
+            if current.name == "outputs":
+                break
+        return out
+
+    teacher_dir = teacher_dir.expanduser()
+    candidates: list[Path] = _with_useful_ancestors(teacher_dir)
 
     if not teacher_dir.is_absolute():
         candidates.append((Path.cwd() / teacher_dir).expanduser())
@@ -575,15 +581,7 @@ def _iter_teacher_dir_candidates(teacher_dir: Path) -> list[Path]:
         # 2) basename fallback (e.g. step_100000)
         for key in layout_keys:
             mapped = (data_dir / key).expanduser()
-            candidates.append(mapped)
-            # Include mapped ancestors for staged layouts where only higher-level
-            # directories are materialized.
-            ancestor = mapped
-            for _ in range(1, 5):
-                if ancestor.parent == ancestor:
-                    break
-                ancestor = ancestor.parent
-                candidates.append(ancestor)
+            candidates.extend(_with_useful_ancestors(mapped))
 
         if not data_dir.exists():
             continue
