@@ -37,6 +37,7 @@ _CANDIDATE_DATA_DIRS: tuple[Path, ...] = tuple(
     path
     for path in (
         Path("/data"),
+        Path("/tmp/data"),
         _candidate_parent(2),
         _candidate_parent(3),
         Path(os.environ["DATA_PATH"]) if "DATA_PATH" in os.environ else None,
