@@ -531,7 +531,9 @@ def _candidate_layout_keys(teacher_dir: Path) -> list[Path]:
     if not teacher_dir.is_absolute():
         return [teacher_dir, Path(teacher_dir.name)]
 
-    keys: list[Path] = [Path(teacher_dir.name)]
+    # For absolute paths, avoid basename-only fallbacks (e.g. step_100000),
+    # which are not unique across runs and can cause cross-run mismatches.
+    keys: list[Path] = []
     tail_after_data = _path_tail_after_data_segment(teacher_dir)
     if tail_after_data is not None:
         keys.insert(0, tail_after_data)
@@ -539,6 +541,8 @@ def _candidate_layout_keys(teacher_dir: Path) -> list[Path]:
         # is dropped (e.g. /data/dataset_name/<id>/... -> /data/<id>/...).
         if len(tail_after_data.parts) > 1:
             keys.append(Path(*tail_after_data.parts[1:]))
+    else:
+        keys.append(teacher_dir)
     return _dedupe_paths(keys)
 
 
@@ -581,7 +585,7 @@ def _iter_teacher_dir_candidates(teacher_dir: Path) -> list[Path]:
         # 2) basename fallback (e.g. step_100000)
         for key in layout_keys:
             mapped = (data_dir / key).expanduser()
-            candidates.extend(_with_useful_ancestors(mapped))
+            candidates.append(mapped)
 
         if not data_dir.exists():
             continue
@@ -648,6 +652,10 @@ def _resolve_teacher_artifacts(teacher_dir: Path) -> tuple[Path, Path, Path | No
         if direct_params.exists():
             params_candidates.append(direct_params)
         if not params_candidates:
+            # Avoid broad recursive scans from generic roots (e.g. /tmp),
+            # which can resolve to unrelated runs.
+            if teacher_dir in {Path("/"), Path("/tmp"), Path("/data")}:
+                return None
             params_candidates.extend(sorted(teacher_dir.rglob("params.json")))
     else:
         return None
