@@ -546,6 +546,94 @@ def _candidate_layout_keys(teacher_dir: Path) -> list[Path]:
     return _dedupe_paths(keys)
 
 
+def _parse_teacher_identity(teacher_dir: Path) -> tuple[str | None, str | None, str | None]:
+    parts = teacher_dir.parts
+    dataset_name: str | None = None
+    run_id: str | None = None
+    step_name: str | None = None
+
+    if "outputs" in parts:
+        outputs_index = len(parts) - 1 - list(reversed(parts)).index("outputs")
+        if outputs_index >= 2:
+            dataset_name = parts[outputs_index - 2]
+            run_id = parts[outputs_index - 1]
+
+    if "checkpoints" in parts:
+        checkpoints_index = len(parts) - 1 - list(reversed(parts)).index("checkpoints")
+        if checkpoints_index + 1 < len(parts):
+            candidate = parts[checkpoints_index + 1]
+            if candidate.startswith("step_"):
+                step_name = candidate
+
+    return dataset_name, run_id, step_name
+
+
+def _numeric_step_value(step_name: str) -> int:
+    if not step_name.startswith("step_"):
+        return -1
+    suffix = step_name.split("step_", maxsplit=1)[1]
+    try:
+        return int(suffix)
+    except ValueError:
+        return -1
+
+
+def _find_identity_scoped_candidates(
+    *,
+    teacher_dir: Path,
+    search_roots: list[Path],
+) -> list[Path]:
+    dataset_name, run_id, requested_step = _parse_teacher_identity(teacher_dir)
+    if dataset_name is None or run_id is None:
+        return []
+
+    scoped: list[Path] = []
+    for root in search_roots:
+        if not root.exists():
+            continue
+
+        for config_path in root.rglob("gru_config.json"):
+            outputs_dir = config_path.parent
+            if outputs_dir.name != "outputs":
+                continue
+            if outputs_dir.parent.name != run_id:
+                continue
+            if outputs_dir.parent.parent.name != dataset_name:
+                continue
+
+            scoped.append(outputs_dir)
+            scoped.append(config_path)
+
+            direct_params = outputs_dir / "params.json"
+            if direct_params.exists():
+                scoped.append(direct_params)
+
+            checkpoints_dir = outputs_dir / "checkpoints"
+            if not checkpoints_dir.exists():
+                continue
+
+            step_dirs = sorted(
+                [path for path in checkpoints_dir.iterdir() if path.is_dir() and path.name.startswith("step_")],
+                key=lambda path: _numeric_step_value(path.name),
+            )
+            if not step_dirs:
+                continue
+
+            if requested_step is not None:
+                exact = checkpoints_dir / requested_step
+                if exact.exists():
+                    scoped.append(exact)
+                    scoped.append(exact / "params.json")
+                    continue
+
+            # Fallback to the highest available checkpoint within the same run.
+            chosen = step_dirs[-1]
+            scoped.append(chosen)
+            scoped.append(chosen / "params.json")
+
+    return _dedupe_paths(scoped)
+
+
 def _iter_teacher_dir_candidates(teacher_dir: Path) -> list[Path]:
     def _with_useful_ancestors(path: Path, *, max_levels: int = 4) -> list[Path]:
         expanded = path.expanduser()
@@ -625,6 +713,19 @@ def _iter_teacher_dir_candidates(teacher_dir: Path) -> list[Path]:
 
             if matched:
                 continue
+
+    # Identity-scoped fallback: same dataset/run only; avoids cross-run matches.
+    identity_candidates = _find_identity_scoped_candidates(
+        teacher_dir=teacher_dir,
+        search_roots=search_roots,
+    )
+    if identity_candidates:
+        logger.debug(
+            "Identity-scoped teacher candidates for %s: %s",
+            teacher_dir,
+            [str(path) for path in identity_candidates],
+        )
+        candidates.extend(identity_candidates)
 
     return _dedupe_paths(candidates)
 
