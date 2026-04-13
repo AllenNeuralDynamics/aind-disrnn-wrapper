@@ -50,6 +50,10 @@
 			"mount": "df_baseline_rl_fitting_260408"
 		},
 		{
+			"id": "f25f2cb1-daeb-41fa-8bf4-a860dcf92de3",
+			"mount": "mice_multisubject_train10_distillation-disrnn-260410-temp_2"
+		},
+		{
 			"id": "f908dd4d-d7ed-4d52-97cf-ccd0e167c659",
 			"mount": "foraging_nwb_bonsai"
 		}
