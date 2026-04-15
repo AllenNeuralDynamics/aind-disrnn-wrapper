@@ -3030,6 +3030,7 @@ def _build_delta_condition_summary(
     significant_condition_medians: list[float] = []
     significant_condition_labels: list[str] = []
     all_subject_condition_deltas: list[float] = []
+    subject_to_condition_deltas: dict[str, list[float]] = {}
 
     for row in rows:
         valid_points = list(row.get("points", []))
@@ -3062,24 +3063,40 @@ def _build_delta_condition_summary(
         if is_significant and median_delta is not None:
             significant_condition_medians.append(float(median_delta))
             significant_condition_labels.append(str(row.get("label")))
+        for point_index, point in enumerate(valid_points):
+            delta_probability = _extract_point_delta_probability(point)
+            if delta_probability is None:
+                continue
+            subject_key = str(
+                point.get("subject_id", f"__row_{row.get('label')}__point_{point_index}")
+            )
+            subject_to_condition_deltas.setdefault(subject_key, []).append(
+                float(delta_probability)
+            )
 
-    subject_condition_error_summary = {
-        "n_subject_condition_pairs": len(all_subject_condition_deltas),
-        "mean_signed_error": (
-            _mean(all_subject_condition_deltas)
-            if all_subject_condition_deltas
-            else None
-        ),
-        "mean_squared_error": (
-            _mean([delta**2 for delta in all_subject_condition_deltas])
-            if all_subject_condition_deltas
-            else None
-        ),
-        "definition": (
+    subject_condition_error_summary = _summarize_delta_error_values(
+        all_subject_condition_deltas,
+        n_label="n_subject_condition_pairs",
+        n_nonzero_label="n_nonzero_subject_condition_pairs",
+        definition=(
             "Computed by flattening all valid subject-condition delta probabilities "
             "within the plotted analysis family."
         ),
-    }
+    )
+    subject_balanced_delta_values = [
+        _mean(deltas)
+        for deltas in subject_to_condition_deltas.values()
+        if deltas
+    ]
+    subject_balanced_error_summary = _summarize_delta_error_values(
+        subject_balanced_delta_values,
+        n_label="n_subjects",
+        n_nonzero_label="n_nonzero_subjects",
+        definition=(
+            "Computed by averaging delta probabilities within each subject across "
+            "that plot family's valid conditions, then summarizing across subjects."
+        ),
+    )
     significant_summary = {
         "n_significant_conditions": len(significant_condition_medians),
         "condition_labels": significant_condition_labels,
@@ -3093,7 +3110,30 @@ def _build_delta_condition_summary(
         "test_name": "wilcoxon_signed_rank_two_sided",
         "conditions": condition_summaries,
         "subject_condition_error_summary": subject_condition_error_summary,
+        "subject_balanced_error_summary": subject_balanced_error_summary,
         "significant_conditions_summary": significant_summary,
+    }
+
+
+def _summarize_delta_error_values(
+    delta_values: Sequence[float],
+    *,
+    n_label: str,
+    n_nonzero_label: str,
+    definition: str,
+) -> dict[str, Any]:
+    overall_test_result = _wilcoxon_signed_rank_against_zero(delta_values)
+    return {
+        n_label: len(delta_values),
+        n_nonzero_label: int(overall_test_result.get("n_nonzero", 0) or 0),
+        "mean_signed_error": _mean(delta_values) if delta_values else None,
+        "mean_signed_error_sem": _sem(delta_values) if delta_values else None,
+        "p_value": overall_test_result.get("p_value"),
+        "mean_squared_error": (
+            _mean([delta**2 for delta in delta_values]) if delta_values else None
+        ),
+        "test_name": "wilcoxon_signed_rank_two_sided",
+        "definition": definition,
     }
 
 
@@ -5309,16 +5349,23 @@ def _extract_point_delta_probabilities(
 ) -> list[float]:
     deltas = []
     for point in points:
-        delta_probability = _coerce_probability(point.get("delta_probability"))
-        if delta_probability is None:
-            delta_probability = _finite_difference(
-                _coerce_probability(point.get("simulated_probability")),
-                _coerce_probability(point.get("animal_probability")),
-            )
+        delta_probability = _extract_point_delta_probability(point)
         if delta_probability is None:
             continue
         deltas.append(float(delta_probability))
     return deltas
+
+
+def _extract_point_delta_probability(point: Mapping[str, Any]) -> float | None:
+    delta_probability = _coerce_probability(point.get("delta_probability"))
+    if delta_probability is None:
+        delta_probability = _finite_difference(
+            _coerce_probability(point.get("simulated_probability")),
+            _coerce_probability(point.get("animal_probability")),
+        )
+    if delta_probability is None:
+        return None
+    return float(delta_probability)
 
 
 def _wilcoxon_signed_rank_against_zero(values: Sequence[float]) -> dict[str, Any]:
@@ -5456,6 +5503,16 @@ def _format_significance_label(p_value: float | None) -> str:
     return ""
 
 
+def _format_p_value(p_value: float | None) -> str:
+    if p_value is None:
+        return "n/a"
+    if p_value < 0.001:
+        return "<0.001"
+    if p_value < 0.01:
+        return f"{float(p_value):.4f}"
+    return f"{float(p_value):.3f}"
+
+
 def _set_delta_distribution_ylim(
     ax,
     finite_values: Sequence[float],
@@ -5500,7 +5557,7 @@ def _add_delta_significance_note(fig, *, y: float = 0.985) -> None:
     fig.text(
         0.5,
         y,
-        "Stars: two-sided Wilcoxon signed-rank test vs 0 (n.s. = p >= 0.05)",
+        "Stars: two-sided Wilcoxon signed-rank test vs 0",
         ha="center",
         va="top",
         fontsize=9,
@@ -5511,20 +5568,41 @@ def _format_delta_plot_title(
     base_title: str,
     delta_summary: Mapping[str, Any],
 ) -> str:
-    error_summary = _as_dict(
+    flattened_summary = _as_dict(
         _as_dict(delta_summary).get("subject_condition_error_summary", {})
     )
-    mean_signed_error = error_summary.get(
-        "mean_signed_error"
+    subject_balanced_summary = _as_dict(
+        _as_dict(delta_summary).get("subject_balanced_error_summary", {})
     )
-    mean_squared_error = error_summary.get(
-        "mean_squared_error"
+    flattened_line = _format_delta_error_summary_line("Flat", flattened_summary)
+    subject_balanced_line = _format_delta_error_summary_line(
+        "Subj-bal",
+        subject_balanced_summary,
     )
-    if mean_signed_error is None or mean_squared_error is None:
+    summary_lines = [line for line in (flattened_line, subject_balanced_line) if line]
+    if not summary_lines:
         return base_title
+    return "\n".join([base_title, *summary_lines])
+
+
+def _format_delta_error_summary_line(
+    prefix: str,
+    error_summary: Mapping[str, Any],
+) -> str:
+    mean_signed_error = error_summary.get("mean_signed_error")
+    mean_signed_error_sem = error_summary.get("mean_signed_error_sem")
+    p_value = error_summary.get("p_value")
+    mean_squared_error = error_summary.get("mean_squared_error")
+    if (
+        mean_signed_error is None
+        or mean_signed_error_sem is None
+        or mean_squared_error is None
+    ):
+        return ""
     return (
-        f"{base_title}\n"
-        f"ME={float(mean_signed_error):.3f}, "
+        f"{prefix}: ME={float(mean_signed_error):.3f} +/- "
+        f"{float(mean_signed_error_sem):.3f}, "
+        f"p={_format_p_value(p_value)}, "
         f"MSE={float(mean_squared_error):.3f}"
     )
 

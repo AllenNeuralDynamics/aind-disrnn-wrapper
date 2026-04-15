@@ -1356,22 +1356,31 @@ model:
             {
                 "label": "A",
                 "points": [
-                    {"delta_probability": value, "animal_n": 2}
-                    for value in [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
+                    {"subject_id": subject_id, "delta_probability": value, "animal_n": 2}
+                    for subject_id, value in zip(
+                        ["s1", "s2", "s3", "s4", "s5", "s6"],
+                        [0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
+                    )
                 ],
             },
             {
                 "label": "B",
                 "points": [
-                    {"delta_probability": value, "animal_n": 1}
-                    for value in [0.2, 0.2, 0.2, 0.2, 0.2, 0.2]
+                    {"subject_id": subject_id, "delta_probability": value, "animal_n": 1}
+                    for subject_id, value in zip(
+                        ["s1", "s2", "s3", "s4", "s5", "s6"],
+                        [0.2, 0.2, 0.2, 0.2, 0.2, 0.2],
+                    )
                 ],
             },
             {
                 "label": "C",
                 "points": [
-                    {"delta_probability": value, "animal_n": 5}
-                    for value in [-0.1, 0.1]
+                    {"subject_id": subject_id, "delta_probability": value, "animal_n": 5}
+                    for subject_id, value in zip(
+                        ["s1", "s2"],
+                        [-0.1, 0.1],
+                    )
                 ],
             },
         ]
@@ -1382,6 +1391,7 @@ model:
         )
 
         error_summary = summary["subject_condition_error_summary"]
+        subject_balanced_summary = summary["subject_balanced_error_summary"]
         significant_summary = summary["significant_conditions_summary"]
         self.assertEqual(significant_summary["n_significant_conditions"], 2)
         self.assertAlmostEqual(
@@ -1389,10 +1399,37 @@ model:
             0.2357142857142857,
         )
         self.assertAlmostEqual(
+            error_summary["mean_signed_error_sem"],
+            0.04472950774347691,
+        )
+        self.assertAlmostEqual(
+            error_summary["p_value"],
+            0.0014412255000055883,
+        )
+        self.assertAlmostEqual(
             error_summary["mean_squared_error"],
             0.08357142857142857,
         )
         self.assertEqual(error_summary["n_subject_condition_pairs"], 14)
+        self.assertEqual(error_summary["n_nonzero_subject_condition_pairs"], 14)
+        self.assertAlmostEqual(
+            subject_balanced_summary["mean_signed_error"],
+            0.25555555555555554,
+        )
+        self.assertAlmostEqual(
+            subject_balanced_summary["mean_signed_error_sem"],
+            0.04575610778002162,
+        )
+        self.assertAlmostEqual(
+            subject_balanced_summary["p_value"],
+            0.03125,
+        )
+        self.assertAlmostEqual(
+            subject_balanced_summary["mean_squared_error"],
+            0.07787037037037038,
+        )
+        self.assertEqual(subject_balanced_summary["n_subjects"], 6)
+        self.assertEqual(subject_balanced_summary["n_nonzero_subjects"], 6)
         self.assertEqual(significant_summary["condition_labels"], ["A", "B"])
 
     def test_simulate_model_sessions_multisubject_gru_uses_subject_indices(self):
