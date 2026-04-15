@@ -3142,6 +3142,9 @@ def _summarize_delta_error_values(
         "mean_signed_error": _mean(delta_values) if delta_values else None,
         "mean_signed_error_sem": _sem(delta_values) if delta_values else None,
         "p_value": overall_test_result.get("p_value"),
+        "mean_absolute_error": (
+            _mean([abs(delta) for delta in delta_values]) if delta_values else None
+        ),
         "mean_squared_error": (
             _mean([delta**2 for delta in delta_values]) if delta_values else None
         ),
@@ -5607,10 +5610,12 @@ def _format_delta_error_summary_line(
     mean_signed_error = error_summary.get("mean_signed_error")
     mean_signed_error_sem = error_summary.get("mean_signed_error_sem")
     p_value = error_summary.get("p_value")
+    mean_absolute_error = error_summary.get("mean_absolute_error")
     mean_squared_error = error_summary.get("mean_squared_error")
     if (
         mean_signed_error is None
         or mean_signed_error_sem is None
+        or mean_absolute_error is None
         or mean_squared_error is None
     ):
         return ""
@@ -5618,6 +5623,7 @@ def _format_delta_error_summary_line(
         f"{prefix}: ME={float(mean_signed_error):.3f} +/- "
         f"{float(mean_signed_error_sem):.3f}, "
         f"p={_format_p_value(p_value)}, "
+        f"MAE={float(mean_absolute_error):.3f}, "
         f"MSE={float(mean_squared_error):.3e}"
     )
 

@@ -1408,6 +1408,10 @@ model:
             0.0014412255000055883,
         )
         self.assertAlmostEqual(
+            error_summary["mean_absolute_error"],
+            0.25,
+        )
+        self.assertAlmostEqual(
             error_summary["mean_squared_error"],
             0.08357142857142857,
         )
@@ -1426,6 +1430,10 @@ model:
             0.03125,
         )
         self.assertAlmostEqual(
+            subject_balanced_summary["mean_absolute_error"],
+            0.25555555555555554,
+        )
+        self.assertAlmostEqual(
             subject_balanced_summary["mean_squared_error"],
             0.07787037037037038,
         )
@@ -1442,6 +1450,10 @@ model:
         self.assertAlmostEqual(
             condition_balanced_summary["p_value"],
             0.5,
+        )
+        self.assertAlmostEqual(
+            condition_balanced_summary["mean_absolute_error"],
+            0.18333333333333335,
         )
         self.assertAlmostEqual(
             condition_balanced_summary["mean_squared_error"],
