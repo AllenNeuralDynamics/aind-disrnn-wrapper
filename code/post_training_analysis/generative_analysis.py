@@ -3031,6 +3031,7 @@ def _build_delta_condition_summary(
     significant_condition_labels: list[str] = []
     all_subject_condition_deltas: list[float] = []
     subject_to_condition_deltas: dict[str, list[float]] = {}
+    condition_mean_deltas: list[float] = []
 
     for row in rows:
         valid_points = list(row.get("points", []))
@@ -3060,6 +3061,8 @@ def _build_delta_condition_summary(
             "animal_trial_count": animal_trial_count,
         }
         condition_summaries.append(condition_summary)
+        if mean_delta is not None:
+            condition_mean_deltas.append(float(mean_delta))
         if is_significant and median_delta is not None:
             significant_condition_medians.append(float(median_delta))
             significant_condition_labels.append(str(row.get("label")))
@@ -3097,6 +3100,15 @@ def _build_delta_condition_summary(
             "that plot family's valid conditions, then summarizing across subjects."
         ),
     )
+    condition_balanced_error_summary = _summarize_delta_error_values(
+        condition_mean_deltas,
+        n_label="n_conditions",
+        n_nonzero_label="n_nonzero_conditions",
+        definition=(
+            "Computed by averaging delta probabilities across subjects within each "
+            "condition, then summarizing across conditions."
+        ),
+    )
     significant_summary = {
         "n_significant_conditions": len(significant_condition_medians),
         "condition_labels": significant_condition_labels,
@@ -3111,6 +3123,7 @@ def _build_delta_condition_summary(
         "conditions": condition_summaries,
         "subject_condition_error_summary": subject_condition_error_summary,
         "subject_balanced_error_summary": subject_balanced_error_summary,
+        "condition_balanced_error_summary": condition_balanced_error_summary,
         "significant_conditions_summary": significant_summary,
     }
 
@@ -5507,7 +5520,7 @@ def _format_p_value(p_value: float | None) -> str:
     if p_value is None:
         return "n/a"
     if p_value < 0.001:
-        return "<0.001"
+        return "<=0.001"
     if p_value < 0.01:
         return f"{float(p_value):.4f}"
     return f"{float(p_value):.3f}"
@@ -5568,18 +5581,28 @@ def _format_delta_plot_title(
     base_title: str,
     delta_summary: Mapping[str, Any],
 ) -> str:
-    flattened_summary = _as_dict(
-        _as_dict(delta_summary).get("subject_condition_error_summary", {})
-    )
     subject_balanced_summary = _as_dict(
         _as_dict(delta_summary).get("subject_balanced_error_summary", {})
     )
-    flattened_line = _format_delta_error_summary_line("Flat", flattened_summary)
+    condition_balanced_summary = _as_dict(
+        _as_dict(delta_summary).get("condition_balanced_error_summary", {})
+    )
     subject_balanced_line = _format_delta_error_summary_line(
         "Subj-bal",
         subject_balanced_summary,
     )
-    summary_lines = [line for line in (flattened_line, subject_balanced_line) if line]
+    condition_balanced_line = _format_delta_error_summary_line(
+        "Cond-bal",
+        condition_balanced_summary,
+    )
+    summary_lines = [
+        line
+        for line in (
+            subject_balanced_line,
+            condition_balanced_line,
+        )
+        if line
+    ]
     if not summary_lines:
         return base_title
     return "\n".join([base_title, *summary_lines])
@@ -5603,7 +5626,7 @@ def _format_delta_error_summary_line(
         f"{prefix}: ME={float(mean_signed_error):.3f} +/- "
         f"{float(mean_signed_error_sem):.3f}, "
         f"p={_format_p_value(p_value)}, "
-        f"MSE={float(mean_squared_error):.3f}"
+        f"MSE={float(mean_squared_error):.3e}"
     )
 
 

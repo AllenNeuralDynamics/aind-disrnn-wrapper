@@ -1392,6 +1392,7 @@ model:
 
         error_summary = summary["subject_condition_error_summary"]
         subject_balanced_summary = summary["subject_balanced_error_summary"]
+        condition_balanced_summary = summary["condition_balanced_error_summary"]
         significant_summary = summary["significant_conditions_summary"]
         self.assertEqual(significant_summary["n_significant_conditions"], 2)
         self.assertAlmostEqual(
@@ -1430,6 +1431,24 @@ model:
         )
         self.assertEqual(subject_balanced_summary["n_subjects"], 6)
         self.assertEqual(subject_balanced_summary["n_nonzero_subjects"], 6)
+        self.assertAlmostEqual(
+            condition_balanced_summary["mean_signed_error"],
+            0.18333333333333335,
+        )
+        self.assertAlmostEqual(
+            condition_balanced_summary["mean_signed_error_sem"],
+            0.08277591347639632,
+        )
+        self.assertAlmostEqual(
+            condition_balanced_summary["p_value"],
+            0.5,
+        )
+        self.assertAlmostEqual(
+            condition_balanced_summary["mean_squared_error"],
+            0.05416666666666666,
+        )
+        self.assertEqual(condition_balanced_summary["n_conditions"], 3)
+        self.assertEqual(condition_balanced_summary["n_nonzero_conditions"], 2)
         self.assertEqual(significant_summary["condition_labels"], ["A", "B"])
 
     def test_simulate_model_sessions_multisubject_gru_uses_subject_indices(self):
