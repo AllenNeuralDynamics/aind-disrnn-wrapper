@@ -1381,17 +1381,19 @@ model:
             animal_count_key="animal_n",
         )
 
+        all_conditions_summary = summary["all_conditions_summary"]
         significant_summary = summary["significant_conditions_summary"]
         self.assertEqual(significant_summary["n_significant_conditions"], 2)
         self.assertAlmostEqual(
-            significant_summary["average_of_condition_medians"],
-            0.275,
+            all_conditions_summary["average_of_condition_medians"],
+            0.18333333333333335,
         )
         self.assertAlmostEqual(
-            significant_summary["weighted_average_delta_probability"],
-            0.3,
+            all_conditions_summary["weighted_average_delta_probability"],
+            0.19285714285714287,
         )
-        self.assertAlmostEqual(significant_summary["total_animal_trial_count"], 18.0)
+        self.assertAlmostEqual(all_conditions_summary["total_animal_trial_count"], 28.0)
+        self.assertEqual(significant_summary["condition_labels"], ["A", "B"])
 
     def test_simulate_model_sessions_multisubject_gru_uses_subject_indices(self):
         self._assert_multisubject_simulation_uses_subject_indices("gru")
