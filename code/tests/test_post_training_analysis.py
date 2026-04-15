@@ -1239,36 +1239,78 @@ model:
                 self.assertTrue(path.name.endswith(".png"))
                 self.assertTrue(path.exists())
 
-    def test_build_sorted_history_delta_rows_orders_by_descending_delta_mean(self):
+    def test_build_sorted_history_delta_rows_orders_by_descending_delta_median(self):
         panel_group = {
-            "high": {
-                "points": [
-                    {
-                        "animal_probability": 0.8,
-                        "simulated_probability": 0.9,
-                        "delta_probability": 0.1,
-                        "animal_total": 3,
-                        "simulated_total_effective": 3,
-                    }
-                ]
-            },
-            "low": {
+            "median_high": {
                 "points": [
                     {
                         "animal_probability": 0.2,
+                        "simulated_probability": 1.1,
+                        "delta_probability": 0.9,
+                        "animal_total": 3,
+                        "simulated_total_effective": 3,
+                    },
+                    {
+                        "animal_probability": 0.2,
+                        "simulated_probability": 1.1,
+                        "delta_probability": 0.9,
+                        "animal_total": 3,
+                        "simulated_total_effective": 3,
+                    },
+                    {
+                        "animal_probability": 0.8,
                         "simulated_probability": 0.0,
-                        "delta_probability": -0.2,
+                        "delta_probability": -0.8,
                         "animal_total": 3,
                         "simulated_total_effective": 3,
                     }
                 ]
             },
-            "mid": {
+            "median_mid": {
                 "points": [
                     {
-                        "animal_probability": 0.5,
-                        "simulated_probability": 0.55,
-                        "delta_probability": 0.05,
+                        "animal_probability": 0.2,
+                        "simulated_probability": 0.7,
+                        "delta_probability": 0.5,
+                        "animal_total": 3,
+                        "simulated_total_effective": 3,
+                    },
+                    {
+                        "animal_probability": 0.2,
+                        "simulated_probability": 0.7,
+                        "delta_probability": 0.5,
+                        "animal_total": 3,
+                        "simulated_total_effective": 3,
+                    },
+                    {
+                        "animal_probability": 0.2,
+                        "simulated_probability": 0.7,
+                        "delta_probability": 0.5,
+                        "animal_total": 3,
+                        "simulated_total_effective": 3,
+                    },
+                ]
+            },
+            "median_low": {
+                "points": [
+                    {
+                        "animal_probability": 0.6,
+                        "simulated_probability": 0.3,
+                        "delta_probability": -0.3,
+                        "animal_total": 3,
+                        "simulated_total_effective": 3,
+                    },
+                    {
+                        "animal_probability": 0.6,
+                        "simulated_probability": 0.4,
+                        "delta_probability": -0.2,
+                        "animal_total": 3,
+                        "simulated_total_effective": 3,
+                    },
+                    {
+                        "animal_probability": 0.6,
+                        "simulated_probability": 0.5,
+                        "delta_probability": -0.1,
                         "animal_total": 3,
                         "simulated_total_effective": 3,
                     }
@@ -1281,7 +1323,24 @@ model:
             min_trials=2,
         )
 
-        self.assertEqual([row["label"] for row in rows], ["high", "mid", "low"])
+        self.assertEqual(
+            [row["label"] for row in rows],
+            ["median_high", "median_mid", "median_low"],
+        )
+
+    def test_sign_test_against_zero_and_label(self):
+        result = generative_analysis._sign_test_against_zero([0.2, 0.1, 0.3, 0.4, 0.5, 0.6])
+
+        self.assertEqual(result["n_nonzero"], 6)
+        self.assertAlmostEqual(result["p_value"], 0.03125)
+        self.assertEqual(
+            generative_analysis._format_significance_label(result["p_value"]),
+            "*",
+        )
+        self.assertEqual(
+            generative_analysis._format_significance_label(None),
+            "n/a",
+        )
 
     def test_simulate_model_sessions_multisubject_gru_uses_subject_indices(self):
         self._assert_multisubject_simulation_uses_subject_indices("gru")

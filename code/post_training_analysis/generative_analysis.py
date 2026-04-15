@@ -3874,8 +3874,9 @@ def _plot_post_switch_delta_by_reward(
         plt=plt,
         curriculum_to_color=curriculum_to_color,
     )
+    _add_delta_significance_note(fig)
     _add_curriculum_legend_to_figure(fig, curriculum_to_color)
-    fig.tight_layout(rect=(0.0, 0.02, 1.0, 0.96))
+    fig.tight_layout(rect=(0.0, 0.14, 1.0, 0.95))
     fig.savefig(output_path)
     plt.close(fig)
 
@@ -3929,8 +3930,9 @@ def _plot_post_switch_delta_by_reward_and_run_length(
         plt=plt,
         curriculum_to_color=curriculum_to_color,
     )
+    _add_delta_significance_note(fig)
     _add_curriculum_legend_to_figure(fig, curriculum_to_color)
-    fig.tight_layout(rect=(0.0, 0.02, 1.0, 0.96))
+    fig.tight_layout(rect=(0.0, 0.14, 1.0, 0.95))
     fig.savefig(output_path)
     plt.close(fig)
 
@@ -3971,7 +3973,7 @@ def _plot_post_switch_by_reward_subject_scatter(
 
     fig.suptitle("Subject-Level Post-switch Probability By Reward", fontsize=14)
     _add_curriculum_legend_to_figure(fig, curriculum_to_color)
-    fig.tight_layout(rect=(0.0, 0.02, 1.0, 0.94))
+    fig.tight_layout(rect=(0.0, 0.12, 1.0, 0.94))
     fig.savefig(output_path)
     plt.close(fig)
 
@@ -4035,7 +4037,7 @@ def _plot_post_switch_by_reward_and_run_length_subject_scatter(
         fontsize=14,
     )
     _add_curriculum_legend_to_figure(fig, curriculum_to_color)
-    fig.tight_layout(rect=(0.0, 0.02, 1.0, 0.96))
+    fig.tight_layout(rect=(0.0, 0.12, 1.0, 0.96))
     fig.savefig(output_path)
     plt.close(fig)
 
@@ -4229,16 +4231,13 @@ def _plot_history_pattern_comparison_figure(
     )
     if legend_handles:
         sorted_patterns = sorted(legend_handles)
-        fig.legend(
-            [legend_handles[pattern] for pattern in sorted_patterns],
-            sorted_patterns,
-            loc="lower center",
-            bbox_to_anchor=(0.5, 0.0),
+        _add_bottom_legend_to_figure(
+            fig,
+            handles=[legend_handles[pattern] for pattern in sorted_patterns],
+            labels=sorted_patterns,
             ncol=min(max(1, len(sorted_patterns)), 8),
-            fontsize=9,
-            frameon=True,
         )
-        fig.tight_layout(rect=(0.0, 0.08, 1.0, 0.96))
+        fig.tight_layout(rect=(0.0, 0.14, 1.0, 0.96))
     else:
         fig.tight_layout(rect=(0.0, 0.02, 1.0, 0.96))
     fig.savefig(output_path)
@@ -4346,16 +4345,13 @@ def _plot_history_pattern_comparison_pooled_figure(
     )
     if legend_handles:
         sorted_patterns = sorted(legend_handles)
-        fig.legend(
-            [legend_handles[pattern] for pattern in sorted_patterns],
-            sorted_patterns,
-            loc="lower center",
-            bbox_to_anchor=(0.5, 0.0),
+        _add_bottom_legend_to_figure(
+            fig,
+            handles=[legend_handles[pattern] for pattern in sorted_patterns],
+            labels=sorted_patterns,
             ncol=min(max(1, len(sorted_patterns)), 8),
-            fontsize=9,
-            frameon=True,
         )
-        fig.tight_layout(rect=(0.0, 0.08, 1.0, 0.96))
+        fig.tight_layout(rect=(0.0, 0.14, 1.0, 0.96))
     else:
         fig.tight_layout(rect=(0.0, 0.02, 1.0, 0.96))
     fig.savefig(output_path)
@@ -4379,9 +4375,18 @@ def _plot_history_pattern_delta_figure(
     subject_level = _as_dict(
         _as_dict(history_stats.get("subject_level", {})).get(pattern_type, {})
     )
-    fig, axes = plt.subplots(1, max_trials_back, figsize=(6.5 * max_trials_back, 6))
-    if max_trials_back == 1:
-        axes = [axes]
+    if max_trials_back == 3:
+        fig = plt.figure(figsize=(13, 10))
+        grid = fig.add_gridspec(2, 2, height_ratios=[1.0, 1.15])
+        axes = [
+            fig.add_subplot(grid[0, 0]),
+            fig.add_subplot(grid[0, 1]),
+            fig.add_subplot(grid[1, :]),
+        ]
+    else:
+        fig, axes = plt.subplots(1, max_trials_back, figsize=(6.5 * max_trials_back, 6))
+        if max_trials_back == 1:
+            axes = [axes]
     curriculum_to_color = _build_curriculum_color_map(
         [
             point.get("curriculum_name", "Unknown")
@@ -4426,13 +4431,16 @@ def _plot_history_pattern_delta_figure(
             title=f"{n_back} Trial{'s' if n_back > 1 else ''} Back",
             plt=plt,
             curriculum_to_color=curriculum_to_color,
+            xtick_rotation=28.0,
         )
     fig.suptitle(
         f"History Pattern Subject Delta ({pattern_type.capitalize()} Patterns)",
         fontsize=14,
+        y=0.985,
     )
+    _add_delta_significance_note(fig, y=0.962)
     _add_curriculum_legend_to_figure(fig, curriculum_to_color)
-    fig.tight_layout(rect=(0.0, 0.02, 1.0, 0.96))
+    fig.tight_layout(rect=(0.0, 0.16, 1.0, 0.93))
     fig.savefig(output_path)
     plt.close(fig)
 
@@ -4520,7 +4528,7 @@ def _plot_history_pattern_subject_level_figure(
         fontsize=14,
     )
     _add_curriculum_legend_to_figure(fig, curriculum_to_color)
-    fig.tight_layout(rect=(0.0, 0.02, 1.0, 0.96))
+    fig.tight_layout(rect=(0.0, 0.12, 1.0, 0.96))
     fig.savefig(output_path)
     plt.close(fig)
 
@@ -4623,17 +4631,16 @@ def _plot_delta_distribution_panel(
     title: str,
     plt,
     curriculum_to_color: Mapping[str, Any],
+    xtick_rotation: float | None = None,
 ) -> None:
     np = _import_dependency("numpy")
     rng = np.random.default_rng(0)
     x_positions = list(range(len(rows)))
+    annotation_specs = []
+    finite_values: list[float] = [0.0]
     for x_position, row in zip(x_positions, rows, strict=False):
         valid_points = list(row.get("points", []))
-        deltas = [
-            float(point["delta_probability"])
-            for point in valid_points
-            if point.get("delta_probability") is not None
-        ]
+        deltas = _extract_point_delta_probabilities(valid_points)
         if len(deltas) >= 2:
             violin = ax.violinplot(
                 [deltas],
@@ -4687,13 +4694,29 @@ def _plot_delta_distribution_panel(
                     edgecolors="black",
                     linewidths=0.5,
                 )
+        if deltas:
+            finite_values.extend(deltas)
+            sign_test = _sign_test_against_zero(deltas)
+            annotation_specs.append(
+                {
+                    "x": x_position,
+                    "y": max(max(deltas), 0.0),
+                    "label": _format_significance_label(sign_test.get("p_value")),
+                }
+            )
 
     ax.axhline(0.0, color="black", linestyle="--", alpha=0.5, linewidth=1.2)
+    _annotate_delta_significance(ax, annotation_specs, finite_values)
     ax.set_xticks(x_positions)
+    rotation = (
+        20.0
+        if xtick_rotation is None and len(rows) > 3
+        else float(xtick_rotation or 0.0)
+    )
     ax.set_xticklabels(
         [str(row.get("label", "")) for row in rows],
-        rotation=20 if len(rows) > 3 else 0,
-        ha="right" if len(rows) > 3 else "center",
+        rotation=rotation,
+        ha="right" if rotation else "center",
     )
     ax.set_ylabel("Delta Probability (Simulation - Animal)")
     ax.set_title(title)
@@ -4713,26 +4736,115 @@ def _build_sorted_history_delta_rows(
         )
         if not valid_points:
             continue
-        delta_probabilities = [
-            float(point["delta_probability"])
-            for point in valid_points
-            if point.get("delta_probability") is not None
-        ]
-        delta_mean = _mean(delta_probabilities) if delta_probabilities else math.nan
+        delta_probabilities = _extract_point_delta_probabilities(valid_points)
+        delta_median = _median(delta_probabilities) if delta_probabilities else math.nan
         rows.append(
             {
                 "label": str(pattern),
                 "points": valid_points,
-                "delta_mean": delta_mean,
+                "delta_median": delta_median,
             }
         )
     return sorted(
         rows,
         key=lambda row: (
-            math.isnan(float(row["delta_mean"])),
-            -float(row["delta_mean"]) if not math.isnan(float(row["delta_mean"])) else 0.0,
+            math.isnan(float(row["delta_median"])),
+            -float(row["delta_median"])
+            if not math.isnan(float(row["delta_median"]))
+            else 0.0,
             str(row["label"]),
         ),
+    )
+
+
+def _extract_point_delta_probabilities(
+    points: Sequence[Mapping[str, Any]],
+) -> list[float]:
+    deltas = []
+    for point in points:
+        delta_probability = _coerce_probability(point.get("delta_probability"))
+        if delta_probability is None:
+            delta_probability = _finite_difference(
+                _coerce_probability(point.get("simulated_probability")),
+                _coerce_probability(point.get("animal_probability")),
+            )
+        if delta_probability is None:
+            continue
+        deltas.append(float(delta_probability))
+    return deltas
+
+
+def _sign_test_against_zero(values: Sequence[float]) -> dict[str, Any]:
+    finite_values = [float(value) for value in values if not _is_nan(value)]
+    positive_count = sum(1 for value in finite_values if value > 0.0)
+    negative_count = sum(1 for value in finite_values if value < 0.0)
+    n_nonzero = positive_count + negative_count
+    if n_nonzero == 0:
+        return {
+            "positive_count": positive_count,
+            "negative_count": negative_count,
+            "n_nonzero": 0,
+            "p_value": None,
+        }
+    min_tail = min(positive_count, negative_count)
+    tail_probability = sum(math.comb(n_nonzero, k) for k in range(min_tail + 1)) / (
+        2**n_nonzero
+    )
+    return {
+        "positive_count": positive_count,
+        "negative_count": negative_count,
+        "n_nonzero": n_nonzero,
+        "p_value": min(1.0, 2.0 * tail_probability),
+    }
+
+
+def _format_significance_label(p_value: float | None) -> str:
+    if p_value is None:
+        return "n/a"
+    if p_value < 0.001:
+        return "***"
+    if p_value < 0.01:
+        return "**"
+    if p_value < 0.05:
+        return "*"
+    return "n.s."
+
+
+def _annotate_delta_significance(
+    ax,
+    annotations: Sequence[Mapping[str, Any]],
+    finite_values: Sequence[float],
+) -> None:
+    finite = [float(value) for value in finite_values if not _is_nan(value)]
+    if not finite:
+        return
+    y_min = min(finite)
+    y_max = max(finite)
+    scale = max(y_max - y_min, abs(y_min), abs(y_max), 0.2)
+    lower_pad = 0.08 * scale
+    upper_pad = 0.2 * scale
+    ax.set_ylim(y_min - lower_pad, y_max + upper_pad)
+    label_offset = 0.06 * scale
+    for annotation in annotations:
+        ax.text(
+            float(annotation["x"]),
+            float(annotation["y"]) + label_offset,
+            str(annotation["label"]),
+            ha="center",
+            va="bottom",
+            fontsize=9,
+            fontweight="bold",
+        )
+
+
+def _add_delta_significance_note(fig, *, y: float = 0.985) -> None:
+    fig.text(
+        0.5,
+        y,
+        "Stars: two-sided sign test vs 0 (n.s. = p >= 0.05)",
+        ha="center",
+        va="top",
+        fontsize=9,
     )
 
 
@@ -4791,6 +4903,30 @@ def _build_curriculum_color_map(curricula: Sequence[Any], plt) -> dict[str, Any]
     }
 
 
+def _add_bottom_legend_to_figure(
+    fig,
+    *,
+    handles: Sequence[Any],
+    labels: Sequence[str],
+    title: str | None = None,
+    ncol: int = 1,
+    y_anchor: float = 0.01,
+    fontsize: int = 9,
+) -> None:
+    if not handles or not labels:
+        return
+    fig.legend(
+        handles=handles,
+        labels=list(labels),
+        loc="lower center",
+        bbox_to_anchor=(0.5, y_anchor),
+        ncol=max(1, int(ncol)),
+        fontsize=fontsize,
+        frameon=True,
+        title=title,
+    )
+
+
 def _add_curriculum_legend_to_figure(fig, curriculum_to_color: Mapping[str, Any]) -> None:
     if not curriculum_to_color:
         return
@@ -4807,14 +4943,12 @@ def _add_curriculum_legend_to_figure(fig, curriculum_to_color: Mapping[str, Any]
         )
         for curriculum, color in curriculum_to_color.items()
     ]
-    fig.legend(
+    _add_bottom_legend_to_figure(
+        fig,
         handles=handles,
-        loc="lower center",
-        bbox_to_anchor=(0.5, 0.0),
-        ncol=min(max(1, len(handles)), 6),
-        fontsize=9,
-        frameon=True,
+        labels=[str(curriculum) for curriculum in curriculum_to_color],
         title="Curriculum",
+        ncol=min(max(1, len(handles)), 6),
     )
 
 
