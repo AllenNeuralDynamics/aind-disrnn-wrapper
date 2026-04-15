@@ -3027,15 +3027,14 @@ def _build_delta_condition_summary(
     animal_count_key: str,
 ) -> dict[str, Any]:
     condition_summaries: list[dict[str, Any]] = []
-    all_condition_medians: list[float] = []
-    all_condition_mean_deltas: list[float] = []
-    all_condition_weights: list[float] = []
     significant_condition_medians: list[float] = []
     significant_condition_labels: list[str] = []
+    all_subject_condition_deltas: list[float] = []
 
     for row in rows:
         valid_points = list(row.get("points", []))
         deltas = _extract_point_delta_probabilities(valid_points)
+        all_subject_condition_deltas.extend(deltas)
         test_result = _wilcoxon_signed_rank_against_zero(deltas)
         p_value = test_result.get("p_value")
         is_significant = p_value is not None and float(p_value) < 0.05
@@ -3060,36 +3059,25 @@ def _build_delta_condition_summary(
             "animal_trial_count": animal_trial_count,
         }
         condition_summaries.append(condition_summary)
-        if median_delta is not None and mean_delta is not None:
-            all_condition_medians.append(float(median_delta))
-            all_condition_mean_deltas.append(float(mean_delta))
-            all_condition_weights.append(animal_trial_count)
         if is_significant and median_delta is not None:
             significant_condition_medians.append(float(median_delta))
             significant_condition_labels.append(str(row.get("label")))
 
-    all_conditions_summary = {
-        "average_of_condition_medians": (
-            _mean(all_condition_medians)
-            if all_condition_medians
+    subject_condition_error_summary = {
+        "n_subject_condition_pairs": len(all_subject_condition_deltas),
+        "mean_signed_error": (
+            _mean(all_subject_condition_deltas)
+            if all_subject_condition_deltas
             else None
         ),
-        "weighted_average_delta_probability": (
-            _weighted_mean(
-                all_condition_mean_deltas,
-                all_condition_weights,
-            )
-            if all_condition_mean_deltas and sum(all_condition_weights) > 0
+        "mean_squared_error": (
+            _mean([delta**2 for delta in all_subject_condition_deltas])
+            if all_subject_condition_deltas
             else None
         ),
-        "total_animal_trial_count": (
-            float(sum(all_condition_weights))
-            if all_condition_weights
-            else 0.0
-        ),
-        "weighted_average_definition": (
-            "Condition-level mean delta probability weighted by total animal trials "
-            "in that condition across valid subjects."
+        "definition": (
+            "Computed by flattening all valid subject-condition delta probabilities "
+            "within the plotted analysis family."
         ),
     }
     significant_summary = {
@@ -3104,7 +3092,7 @@ def _build_delta_condition_summary(
     return {
         "test_name": "wilcoxon_signed_rank_two_sided",
         "conditions": condition_summaries,
-        "all_conditions_summary": all_conditions_summary,
+        "subject_condition_error_summary": subject_condition_error_summary,
         "significant_conditions_summary": significant_summary,
     }
 
@@ -5523,21 +5511,21 @@ def _format_delta_plot_title(
     base_title: str,
     delta_summary: Mapping[str, Any],
 ) -> str:
-    all_conditions_summary = _as_dict(
-        _as_dict(delta_summary).get("all_conditions_summary", {})
+    error_summary = _as_dict(
+        _as_dict(delta_summary).get("subject_condition_error_summary", {})
     )
-    average_of_condition_medians = all_conditions_summary.get(
-        "average_of_condition_medians"
+    mean_signed_error = error_summary.get(
+        "mean_signed_error"
     )
-    weighted_average_delta_probability = all_conditions_summary.get(
-        "weighted_average_delta_probability"
+    mean_squared_error = error_summary.get(
+        "mean_squared_error"
     )
-    if average_of_condition_medians is None or weighted_average_delta_probability is None:
+    if mean_signed_error is None or mean_squared_error is None:
         return base_title
     return (
         f"{base_title}\n"
-        f"All-cond median avg={float(average_of_condition_medians):.3f}, "
-        f"wt delta={float(weighted_average_delta_probability):.3f}"
+        f"ME={float(mean_signed_error):.3f}, "
+        f"MSE={float(mean_squared_error):.3f}"
     )
 
 

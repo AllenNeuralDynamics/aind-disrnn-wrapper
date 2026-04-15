@@ -1351,7 +1351,7 @@ model:
             "",
         )
 
-    def test_build_delta_condition_summary_aggregates_significant_condition_stats(self):
+    def test_build_delta_condition_summary_summarizes_subject_condition_errors(self):
         rows = [
             {
                 "label": "A",
@@ -1381,18 +1381,18 @@ model:
             animal_count_key="animal_n",
         )
 
-        all_conditions_summary = summary["all_conditions_summary"]
+        error_summary = summary["subject_condition_error_summary"]
         significant_summary = summary["significant_conditions_summary"]
         self.assertEqual(significant_summary["n_significant_conditions"], 2)
         self.assertAlmostEqual(
-            all_conditions_summary["average_of_condition_medians"],
-            0.18333333333333335,
+            error_summary["mean_signed_error"],
+            0.2357142857142857,
         )
         self.assertAlmostEqual(
-            all_conditions_summary["weighted_average_delta_probability"],
-            0.19285714285714287,
+            error_summary["mean_squared_error"],
+            0.08357142857142857,
         )
-        self.assertAlmostEqual(all_conditions_summary["total_animal_trial_count"], 28.0)
+        self.assertEqual(error_summary["n_subject_condition_pairs"], 14)
         self.assertEqual(significant_summary["condition_labels"], ["A", "B"])
 
     def test_simulate_model_sessions_multisubject_gru_uses_subject_indices(self):
