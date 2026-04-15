@@ -1239,6 +1239,47 @@ model:
                 self.assertTrue(path.name.endswith(".png"))
                 self.assertTrue(path.exists())
 
+    def test_build_sorted_history_delta_rows_orders_by_animal_mean(self):
+        panel_group = {
+            "high": {
+                "points": [
+                    {
+                        "animal_probability": 0.8,
+                        "simulated_probability": 0.7,
+                        "animal_total": 3,
+                        "simulated_total_effective": 3,
+                    }
+                ]
+            },
+            "low": {
+                "points": [
+                    {
+                        "animal_probability": 0.2,
+                        "simulated_probability": 0.3,
+                        "animal_total": 3,
+                        "simulated_total_effective": 3,
+                    }
+                ]
+            },
+            "mid": {
+                "points": [
+                    {
+                        "animal_probability": 0.5,
+                        "simulated_probability": 0.4,
+                        "animal_total": 3,
+                        "simulated_total_effective": 3,
+                    }
+                ]
+            },
+        }
+
+        rows = generative_analysis._build_sorted_history_delta_rows(
+            panel_group,
+            min_trials=2,
+        )
+
+        self.assertEqual([row["label"] for row in rows], ["low", "mid", "high"])
+
     def test_simulate_model_sessions_multisubject_gru_uses_subject_indices(self):
         self._assert_multisubject_simulation_uses_subject_indices("gru")
 

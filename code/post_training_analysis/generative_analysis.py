@@ -4401,16 +4401,11 @@ def _plot_history_pattern_delta_figure(
     )
 
     for axis, n_back in zip(axes, range(1, max_trials_back + 1), strict=False):
-        rows = []
         panel_group = _as_dict(subject_level.get(n_back, {}))
-        for pattern in sorted(panel_group):
-            valid_points = _select_valid_subject_history_pattern_points(
-                list(_as_dict(panel_group.get(pattern, {})).get("points", [])),
-                min_trials=subject_min_trials,
-            )
-            if not valid_points:
-                continue
-            rows.append({"label": str(pattern), "points": valid_points})
+        rows = _build_sorted_history_delta_rows(
+            panel_group,
+            min_trials=subject_min_trials,
+        )
         if not rows:
             axis.text(
                 0.5,
@@ -4669,14 +4664,6 @@ def _plot_delta_distribution_panel(
                 linewidth=3.2,
                 zorder=4,
             )
-            ax.hlines(
-                [summary["whisker_low"], summary["whisker_high"]],
-                x_position - 0.07,
-                x_position + 0.07,
-                color="black",
-                linewidth=1.0,
-                zorder=3,
-            )
             ax.scatter(
                 [x_position],
                 [summary["median"]],
@@ -4711,6 +4698,42 @@ def _plot_delta_distribution_panel(
     ax.set_ylabel("Delta Probability (Simulation - Animal)")
     ax.set_title(title)
     ax.grid(True, axis="y", alpha=0.3)
+
+
+def _build_sorted_history_delta_rows(
+    panel_group: Mapping[str, Any],
+    *,
+    min_trials: int,
+) -> list[dict[str, Any]]:
+    rows = []
+    for pattern in panel_group:
+        valid_points = _select_valid_subject_history_pattern_points(
+            list(_as_dict(panel_group.get(pattern, {})).get("points", [])),
+            min_trials=min_trials,
+        )
+        if not valid_points:
+            continue
+        animal_probabilities = [
+            float(point["animal_probability"])
+            for point in valid_points
+            if point.get("animal_probability") is not None
+        ]
+        animal_mean = _mean(animal_probabilities) if animal_probabilities else math.nan
+        rows.append(
+            {
+                "label": str(pattern),
+                "points": valid_points,
+                "animal_mean": animal_mean,
+            }
+        )
+    return sorted(
+        rows,
+        key=lambda row: (
+            math.isnan(float(row["animal_mean"])),
+            float(row["animal_mean"]),
+            str(row["label"]),
+        ),
+    )
 
 
 def _compute_violin_summary_stats(values: Sequence[float]) -> dict[str, float]:
