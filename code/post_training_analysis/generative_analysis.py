@@ -4651,7 +4651,22 @@ def _plot_delta_distribution_panel(
             for body in violin["bodies"]:
                 body.set_facecolor("0.8")
                 body.set_edgecolor("0.6")
-                body.set_alpha(0.5)
+                body.set_alpha(0.45)
+            ax.boxplot(
+                [deltas],
+                positions=[x_position],
+                widths=0.18,
+                patch_artist=True,
+                showfliers=False,
+                boxprops={
+                    "facecolor": "white",
+                    "edgecolor": "black",
+                    "linewidth": 1.2,
+                },
+                whiskerprops={"color": "black", "linewidth": 1.0},
+                capprops={"color": "black", "linewidth": 1.0},
+                medianprops={"color": "black", "linewidth": 1.3},
+            )
         if valid_points:
             jitter = rng.uniform(-0.12, 0.12, size=len(valid_points))
             for point, x_offset in zip(valid_points, jitter, strict=False):
@@ -4661,22 +4676,11 @@ def _plot_delta_distribution_panel(
                     [x_position + float(x_offset)],
                     [float(point["delta_probability"])],
                     color=color,
-                    alpha=0.85,
+                    alpha=0.4,
                     s=34,
                     edgecolors="black",
                     linewidths=0.5,
                 )
-        if deltas:
-            ax.errorbar(
-                [x_position],
-                [_mean(deltas)],
-                yerr=_sem(deltas) if len(deltas) > 1 else None,
-                fmt="D",
-                color="black",
-                markersize=5,
-                capsize=4,
-                linewidth=1.3,
-            )
 
     ax.axhline(0.0, color="black", linestyle="--", alpha=0.5, linewidth=1.2)
     ax.set_xticks(x_positions)
