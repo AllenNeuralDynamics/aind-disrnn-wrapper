@@ -14,6 +14,9 @@ from post_training_analysis.generative_analysis import (
     run_post_training_analysis_from_saved_histories,
     simulate_model_sessions,
 )
+from post_training_analysis.likelihood_comparison import (
+    run_prediction_likelihood_comparison,
+)
 
 __all__ = [
     "ResolvedModelRun",
@@ -25,5 +28,6 @@ __all__ = [
     "run_post_training_analysis",
     "run_post_training_analysis_from_histories",
     "run_post_training_analysis_from_saved_histories",
+    "run_prediction_likelihood_comparison",
     "simulate_model_sessions",
 ]
