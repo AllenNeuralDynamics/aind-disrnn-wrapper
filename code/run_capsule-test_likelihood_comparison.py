@@ -14,7 +14,7 @@ from post_training_analysis import run_prediction_likelihood_comparison
 result = run_prediction_likelihood_comparison(
     [
         "/data/mice_multisubject_train10-baseline_rl_Bari-260414/1",
-        "/data/mice_multisubject_train10-baseline_rl_Hattori-260414/1"
+        "/data/mice_multisubject_train10-baseline_rl_Hattori-260414/1",
         "/data/mice_multisubject_train10-gru-260323/14",
         "/data/mice_train10_test3-gru-260324/14",
         "/data/mice_multisubject_train10-disrnn-260323/3",
@@ -26,7 +26,7 @@ result = run_prediction_likelihood_comparison(
         "Hattoril model",
         "GRU_subj_emb",
         "GRU_no_subj_emb",
-        "disrnn_subj_emb"
+        "disrnn_subj_emb",
     ],          # optional
     include_heldout=False,       # optional
 )
