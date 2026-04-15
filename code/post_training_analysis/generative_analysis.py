@@ -5584,22 +5584,14 @@ def _format_delta_plot_title(
     subject_balanced_summary = _as_dict(
         _as_dict(delta_summary).get("subject_balanced_error_summary", {})
     )
-    condition_balanced_summary = _as_dict(
-        _as_dict(delta_summary).get("condition_balanced_error_summary", {})
-    )
     subject_balanced_line = _format_delta_error_summary_line(
         "Subj-bal",
         subject_balanced_summary,
-    )
-    condition_balanced_line = _format_delta_error_summary_line(
-        "Cond-bal",
-        condition_balanced_summary,
     )
     summary_lines = [
         line
         for line in (
             subject_balanced_line,
-            condition_balanced_line,
         )
         if line
     ]
