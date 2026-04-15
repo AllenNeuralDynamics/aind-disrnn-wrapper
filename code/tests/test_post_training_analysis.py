@@ -865,7 +865,12 @@ model:
             self.assertIn("post_switch_by_reward_pooled", figure_paths)
             self.assertIn("post_switch_by_reward_subject_scatter", figure_paths)
             self.assertIn("post_switch_delta_by_reward", figure_paths)
+            self.assertIn("post_switch_delta_by_reward_no_stats", figure_paths)
             self.assertIn("post_switch_delta_by_reward_and_run_length", figure_paths)
+            self.assertIn(
+                "post_switch_delta_by_reward_and_run_length_no_stats",
+                figure_paths,
+            )
             self.assertIn(
                 "post_switch_by_reward_and_run_length_subject_scatter",
                 figure_paths,
@@ -1232,6 +1237,7 @@ model:
             self.assertIn("history_pattern_comparison_abstract", figure_paths)
             self.assertIn("history_pattern_comparison_abstract_pooled", figure_paths)
             self.assertIn("history_pattern_delta_abstract", figure_paths)
+            self.assertIn("history_pattern_delta_abstract_no_stats", figure_paths)
             self.assertIn("history_pattern_subject_level_abstract_nback_1", figure_paths)
             self.assertIn("history_pattern_subject_level_abstract_nback_2", figure_paths)
             self.assertIn("history_pattern_subject_level_abstract_nback_3", figure_paths)
@@ -1328,10 +1334,13 @@ model:
             ["median_high", "median_mid", "median_low"],
         )
 
-    def test_sign_test_against_zero_and_label(self):
-        result = generative_analysis._sign_test_against_zero([0.2, 0.1, 0.3, 0.4, 0.5, 0.6])
+    def test_wilcoxon_signed_rank_against_zero_and_label(self):
+        result = generative_analysis._wilcoxon_signed_rank_against_zero(
+            [0.2, 0.1, 0.3, 0.4, 0.5, 0.6]
+        )
 
         self.assertEqual(result["n_nonzero"], 6)
+        self.assertEqual(result["statistic"], 0.0)
         self.assertAlmostEqual(result["p_value"], 0.03125)
         self.assertEqual(
             generative_analysis._format_significance_label(result["p_value"]),

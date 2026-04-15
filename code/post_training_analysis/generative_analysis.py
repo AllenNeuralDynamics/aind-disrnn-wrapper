@@ -3550,17 +3550,43 @@ def _save_switch_figures(
     figure_paths["post_switch_by_reward_and_run_length"] = reward_run_path
 
     reward_delta_path = output_dir / "post_switch_delta_by_reward.png"
-    _plot_post_switch_delta_by_reward(plt, switch_stats, reward_delta_path)
+    _plot_post_switch_delta_by_reward(
+        plt,
+        switch_stats,
+        reward_delta_path,
+        show_significance=True,
+    )
     figure_paths["post_switch_delta_by_reward"] = reward_delta_path
+    reward_delta_no_stats_path = output_dir / "post_switch_delta_by_reward_no_stats.png"
+    _plot_post_switch_delta_by_reward(
+        plt,
+        switch_stats,
+        reward_delta_no_stats_path,
+        show_significance=False,
+    )
+    figure_paths["post_switch_delta_by_reward_no_stats"] = reward_delta_no_stats_path
 
     reward_run_delta_path = output_dir / "post_switch_delta_by_reward_and_run_length.png"
     _plot_post_switch_delta_by_reward_and_run_length(
         plt,
         switch_stats,
         reward_run_delta_path,
+        show_significance=True,
     )
     figure_paths["post_switch_delta_by_reward_and_run_length"] = (
         reward_run_delta_path
+    )
+    reward_run_delta_no_stats_path = (
+        output_dir / "post_switch_delta_by_reward_and_run_length_no_stats.png"
+    )
+    _plot_post_switch_delta_by_reward_and_run_length(
+        plt,
+        switch_stats,
+        reward_run_delta_no_stats_path,
+        show_significance=False,
+    )
+    figure_paths["post_switch_delta_by_reward_and_run_length_no_stats"] = (
+        reward_run_delta_no_stats_path
     )
 
     reward_subject_scatter_path = output_dir / "post_switch_by_reward_subject_scatter.png"
@@ -3637,8 +3663,22 @@ def _save_history_dependent_switch_figures(
         history_stats,
         delta_path,
         pattern_type=pattern_type,
+        show_significance=True,
     )
     figure_paths[f"history_pattern_delta_{pattern_type}"] = delta_path
+    delta_no_stats_path = (
+        output_dir / f"history_pattern_delta_{pattern_type}_no_stats.png"
+    )
+    _plot_history_pattern_delta_figure(
+        plt,
+        history_stats,
+        delta_no_stats_path,
+        pattern_type=pattern_type,
+        show_significance=False,
+    )
+    figure_paths[f"history_pattern_delta_{pattern_type}_no_stats"] = (
+        delta_no_stats_path
+    )
 
     for n_back in range(1, max_trials_back + 1):
         subject_path = (
@@ -3842,6 +3882,8 @@ def _plot_post_switch_delta_by_reward(
     plt,
     switch_stats: Mapping[str, Any],
     output_path: Path,
+    *,
+    show_significance: bool = True,
 ) -> None:
     fig, ax = plt.subplots(figsize=(8.5, 6))
     reward_stats = _as_dict(_as_dict(switch_stats.get("subject_level", {})).get("post_switch_by_reward", {}))
@@ -3873,8 +3915,10 @@ def _plot_post_switch_delta_by_reward(
         title="Subject Delta Probability By Reward",
         plt=plt,
         curriculum_to_color=curriculum_to_color,
+        show_significance=show_significance,
     )
-    _add_delta_significance_note(fig)
+    if show_significance:
+        _add_delta_significance_note(fig)
     _add_curriculum_legend_to_figure(fig, curriculum_to_color)
     fig.tight_layout(rect=(0.0, 0.14, 1.0, 0.95))
     fig.savefig(output_path)
@@ -3885,6 +3929,8 @@ def _plot_post_switch_delta_by_reward_and_run_length(
     plt,
     switch_stats: Mapping[str, Any],
     output_path: Path,
+    *,
+    show_significance: bool = True,
 ) -> None:
     fig, ax = plt.subplots(figsize=(11, 6))
     reward_run_stats = _as_dict(
@@ -3929,8 +3975,10 @@ def _plot_post_switch_delta_by_reward_and_run_length(
         title="Subject Delta Probability By Reward And Run Length",
         plt=plt,
         curriculum_to_color=curriculum_to_color,
+        show_significance=show_significance,
     )
-    _add_delta_significance_note(fig)
+    if show_significance:
+        _add_delta_significance_note(fig)
     _add_curriculum_legend_to_figure(fig, curriculum_to_color)
     fig.tight_layout(rect=(0.0, 0.14, 1.0, 0.95))
     fig.savefig(output_path)
@@ -4364,6 +4412,7 @@ def _plot_history_pattern_delta_figure(
     output_path: Path,
     *,
     pattern_type: str,
+    show_significance: bool = True,
 ) -> None:
     config = _as_dict(history_stats.get("config", {}))
     max_trials_back = int(
@@ -4432,13 +4481,15 @@ def _plot_history_pattern_delta_figure(
             plt=plt,
             curriculum_to_color=curriculum_to_color,
             xtick_rotation=28.0,
+            show_significance=show_significance,
         )
     fig.suptitle(
         f"History Pattern Subject Delta ({pattern_type.capitalize()} Patterns)",
         fontsize=14,
         y=0.985,
     )
-    _add_delta_significance_note(fig, y=0.962)
+    if show_significance:
+        _add_delta_significance_note(fig, y=0.962)
     _add_curriculum_legend_to_figure(fig, curriculum_to_color)
     fig.tight_layout(rect=(0.0, 0.16, 1.0, 0.93))
     fig.savefig(output_path)
@@ -4632,6 +4683,7 @@ def _plot_delta_distribution_panel(
     plt,
     curriculum_to_color: Mapping[str, Any],
     xtick_rotation: float | None = None,
+    show_significance: bool = True,
 ) -> None:
     np = _import_dependency("numpy")
     rng = np.random.default_rng(0)
@@ -4696,17 +4748,26 @@ def _plot_delta_distribution_panel(
                 )
         if deltas:
             finite_values.extend(deltas)
-            sign_test = _sign_test_against_zero(deltas)
-            annotation_specs.append(
-                {
-                    "x": x_position,
-                    "y": max(max(deltas), 0.0),
-                    "label": _format_significance_label(sign_test.get("p_value")),
-                }
-            )
+            if show_significance:
+                wilcoxon_result = _wilcoxon_signed_rank_against_zero(deltas)
+                annotation_specs.append(
+                    {
+                        "x": x_position,
+                        "y": max(max(deltas), 0.0),
+                        "label": _format_significance_label(
+                            wilcoxon_result.get("p_value")
+                        ),
+                    }
+                )
 
     ax.axhline(0.0, color="black", linestyle="--", alpha=0.5, linewidth=1.2)
-    _annotate_delta_significance(ax, annotation_specs, finite_values)
+    _set_delta_distribution_ylim(
+        ax,
+        finite_values,
+        annotation_space=show_significance and bool(annotation_specs),
+    )
+    if show_significance:
+        _annotate_delta_significance(ax, annotation_specs)
     ax.set_xticks(x_positions)
     rotation = (
         20.0
@@ -4774,28 +4835,127 @@ def _extract_point_delta_probabilities(
     return deltas
 
 
-def _sign_test_against_zero(values: Sequence[float]) -> dict[str, Any]:
+def _wilcoxon_signed_rank_against_zero(values: Sequence[float]) -> dict[str, Any]:
     finite_values = [float(value) for value in values if not _is_nan(value)]
-    positive_count = sum(1 for value in finite_values if value > 0.0)
-    negative_count = sum(1 for value in finite_values if value < 0.0)
-    n_nonzero = positive_count + negative_count
-    if n_nonzero == 0:
+    nonzero_values = [value for value in finite_values if value != 0.0]
+    if not nonzero_values:
         return {
-            "positive_count": positive_count,
-            "negative_count": negative_count,
             "n_nonzero": 0,
+            "statistic": None,
             "p_value": None,
+            "method": None,
         }
-    min_tail = min(positive_count, negative_count)
-    tail_probability = sum(math.comb(n_nonzero, k) for k in range(min_tail + 1)) / (
-        2**n_nonzero
-    )
+
+    try:
+        scipy_stats = importlib.import_module("scipy.stats")
+        result = scipy_stats.wilcoxon(
+            nonzero_values,
+            zero_method="wilcox",
+            alternative="two-sided",
+            method="auto",
+        )
+        return {
+            "n_nonzero": len(nonzero_values),
+            "statistic": float(result.statistic),
+            "p_value": float(result.pvalue),
+            "method": "scipy",
+        }
+    except ModuleNotFoundError:
+        pass
+
+    absolute_values = [abs(value) for value in nonzero_values]
+    ranks = _average_ranks(absolute_values)
+    w_plus = sum(rank for value, rank in zip(nonzero_values, ranks) if value > 0.0)
+    w_minus = sum(rank for value, rank in zip(nonzero_values, ranks) if value < 0.0)
+    statistic = min(w_plus, w_minus)
+    has_ties = len(set(absolute_values)) != len(absolute_values)
+
+    if len(nonzero_values) <= 20 and not has_ties:
+        p_value = _wilcoxon_exact_two_sided_p_value(
+            statistic=statistic,
+            n_nonzero=len(nonzero_values),
+        )
+        method = "exact"
+    else:
+        p_value = _wilcoxon_normal_approximation_p_value(
+            nonzero_values=nonzero_values,
+            absolute_values=absolute_values,
+            ranks=ranks,
+            w_plus=w_plus,
+        )
+        method = "normal_approx"
+
     return {
-        "positive_count": positive_count,
-        "negative_count": negative_count,
-        "n_nonzero": n_nonzero,
-        "p_value": min(1.0, 2.0 * tail_probability),
+        "n_nonzero": len(nonzero_values),
+        "statistic": float(statistic),
+        "p_value": p_value,
+        "method": method,
     }
+
+
+def _average_ranks(values: Sequence[float]) -> list[float]:
+    ordered_pairs = sorted(
+        enumerate(float(value) for value in values),
+        key=lambda item: item[1],
+    )
+    ranks = [0.0] * len(values)
+    index = 0
+    while index < len(ordered_pairs):
+        start = index
+        current_value = ordered_pairs[index][1]
+        while index < len(ordered_pairs) and ordered_pairs[index][1] == current_value:
+            index += 1
+        average_rank = ((start + 1) + index) / 2.0
+        for original_index, _ in ordered_pairs[start:index]:
+            ranks[original_index] = float(average_rank)
+    return ranks
+
+
+def _wilcoxon_exact_two_sided_p_value(
+    *,
+    statistic: float,
+    n_nonzero: int,
+) -> float | None:
+    if n_nonzero <= 0:
+        return None
+    total_rank_sum = n_nonzero * (n_nonzero + 1) // 2
+    counts: dict[int, int] = {0: 1}
+    for rank in range(1, n_nonzero + 1):
+        updated = dict(counts)
+        for existing_sum, count in counts.items():
+            updated[existing_sum + rank] = updated.get(existing_sum + rank, 0) + count
+        counts = updated
+    tail_count = sum(
+        count
+        for rank_sum, count in counts.items()
+        if min(rank_sum, total_rank_sum - rank_sum) <= statistic + 1e-12
+    )
+    return float(min(1.0, tail_count / float(2**n_nonzero)))
+
+
+def _wilcoxon_normal_approximation_p_value(
+    *,
+    nonzero_values: Sequence[float],
+    absolute_values: Sequence[float],
+    ranks: Sequence[float],
+    w_plus: float,
+) -> float | None:
+    n_nonzero = len(nonzero_values)
+    if n_nonzero == 0:
+        return None
+    expected = n_nonzero * (n_nonzero + 1) / 4.0
+    tie_counts: dict[float, int] = {}
+    for value in absolute_values:
+        tie_counts[float(value)] = tie_counts.get(float(value), 0) + 1
+    tie_correction = sum((count**3) - count for count in tie_counts.values())
+    variance = (
+        n_nonzero * (n_nonzero + 1) * (2 * n_nonzero + 1) / 24.0
+        - tie_correction / 48.0
+    )
+    if variance <= 0:
+        return None
+    z = (abs(w_plus - expected) - 0.5) / math.sqrt(variance)
+    return float(min(1.0, math.erfc(abs(z) / math.sqrt(2.0))))
 
 
 def _format_significance_label(p_value: float | None) -> str:
@@ -4810,10 +4970,11 @@ def _format_significance_label(p_value: float | None) -> str:
     return "n.s."
 
 
-def _annotate_delta_significance(
+def _set_delta_distribution_ylim(
     ax,
-    annotations: Sequence[Mapping[str, Any]],
     finite_values: Sequence[float],
+    *,
+    annotation_space: bool,
 ) -> None:
     finite = [float(value) for value in finite_values if not _is_nan(value)]
     if not finite:
@@ -4822,8 +4983,18 @@ def _annotate_delta_significance(
     y_max = max(finite)
     scale = max(y_max - y_min, abs(y_min), abs(y_max), 0.2)
     lower_pad = 0.08 * scale
-    upper_pad = 0.2 * scale
+    upper_pad = (0.2 if annotation_space else 0.08) * scale
     ax.set_ylim(y_min - lower_pad, y_max + upper_pad)
+
+
+def _annotate_delta_significance(
+    ax,
+    annotations: Sequence[Mapping[str, Any]],
+) -> None:
+    if not annotations:
+        return
+    y_min, y_max = ax.get_ylim()
+    scale = max(y_max - y_min, abs(y_min), abs(y_max), 0.2)
     label_offset = 0.06 * scale
     for annotation in annotations:
         ax.text(
@@ -4841,7 +5012,7 @@ def _add_delta_significance_note(fig, *, y: float = 0.985) -> None:
     fig.text(
         0.5,
         y,
-        "Stars: two-sided sign test vs 0 (n.s. = p >= 0.05)",
+        "Stars: two-sided Wilcoxon signed-rank test vs 0 (n.s. = p >= 0.05)",
         ha="center",
         va="top",
         fontsize=9,
