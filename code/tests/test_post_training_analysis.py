@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import pickle
 import tempfile
 import unittest
 from pathlib import Path
@@ -121,12 +122,13 @@ seed: 7
         choice_history: list[int],
         reward_history: list[int],
         source_ses_idx: str | None = None,
+        curriculum_name: str = "Uncoupled Baiting",
     ) -> dict[str, object]:
         session = {
             "subject_id": subject_id,
             "ses_idx": ses_idx,
             "session_date": "2024-01-01",
-            "curriculum_name": "Uncoupled Baiting",
+            "curriculum_name": curriculum_name,
             "choice_history": choice_history,
             "reward_history": reward_history,
             "n_trials": len(choice_history),
@@ -793,9 +795,16 @@ model:
         ][0]
         self.assertEqual(rewarded_point["subject_id"], "m4")
         self.assertEqual(rewarded_point["animal_n"], 6)
+        self.assertEqual(rewarded_point["animal_n_source_sessions"], 1)
         self.assertEqual(rewarded_point["simulated_effective_n"], 2)
         self.assertEqual(rewarded_point["simulated_n_source_sessions"], 2)
         self.assertAlmostEqual(rewarded_point["simulated_probability"], 0.75)
+        self.assertAlmostEqual(rewarded_point["delta_probability"], -0.25)
+        self.assertEqual(rewarded_point["curriculum_name"], "Uncoupled Baiting")
+        self.assertIsNone(rewarded_point["animal_ci_low"])
+        self.assertIsNone(rewarded_point["animal_ci_high"])
+        self.assertIsNotNone(rewarded_point["simulated_ci_low"])
+        self.assertIsNotNone(rewarded_point["simulated_ci_high"])
 
         rewarded_summary = stats["subject_level"]["post_switch_by_reward"]["rewarded"][
             "summary"
@@ -804,6 +813,20 @@ model:
         self.assertIsNone(rewarded_summary["correlation"])
         self.assertAlmostEqual(rewarded_summary["rmse"], 0.25)
         self.assertAlmostEqual(rewarded_summary["bias"], -0.25)
+
+        rewarded_subject_aggregate = stats["subject_aggregate"]["post_switch_by_reward"][
+            "rewarded"
+        ]
+        self.assertEqual(rewarded_subject_aggregate["n_subjects"], 1)
+        self.assertAlmostEqual(rewarded_subject_aggregate["animal_mean"], 1.0)
+        self.assertAlmostEqual(rewarded_subject_aggregate["simulated_mean"], 0.75)
+        self.assertAlmostEqual(rewarded_subject_aggregate["delta_mean"], -0.25)
+        self.assertEqual(
+            stats["quantitative_summary"]["subject_mean"]["post_switch_by_reward"][
+                "n_rows"
+            ],
+            1,
+        )
 
     def test_save_switch_figures_includes_subject_level_scatter_plots(self):
         try:
@@ -839,7 +862,10 @@ model:
                 switch_stats=stats,
                 output_dir=Path(tmpdir),
             )
+            self.assertIn("post_switch_by_reward_pooled", figure_paths)
             self.assertIn("post_switch_by_reward_subject_scatter", figure_paths)
+            self.assertIn("post_switch_delta_by_reward", figure_paths)
+            self.assertIn("post_switch_delta_by_reward_and_run_length", figure_paths)
             self.assertIn(
                 "post_switch_by_reward_and_run_length_subject_scatter",
                 figure_paths,
@@ -1093,9 +1119,16 @@ model:
         self.assertEqual(points["m1"]["animal_probability"], 1.0)
         self.assertEqual(points["m1"]["animal_total"], 2)
         self.assertEqual(points["m1"]["animal_n_sessions"], 2)
+        self.assertEqual(points["m1"]["animal_n_source_sessions"], 2)
         self.assertAlmostEqual(points["m1"]["simulated_probability"], 0.75)
         self.assertEqual(points["m1"]["simulated_total_effective"], 2)
         self.assertEqual(points["m1"]["simulated_n_source_sessions"], 2)
+        self.assertAlmostEqual(points["m1"]["delta_probability"], -0.25)
+        self.assertEqual(points["m1"]["curriculum_name"], "Uncoupled Baiting")
+        self.assertIsNotNone(points["m1"]["animal_ci_low"])
+        self.assertIsNotNone(points["m1"]["animal_ci_high"])
+        self.assertIsNotNone(points["m1"]["simulated_ci_low"])
+        self.assertIsNotNone(points["m1"]["simulated_ci_high"])
         self.assertEqual(points["m2"]["animal_probability"], 0.0)
         self.assertEqual(points["m2"]["simulated_probability"], 0.0)
 
@@ -1103,6 +1136,19 @@ model:
         self.assertEqual(summary["n_subjects"], 2)
         self.assertAlmostEqual(summary["correlation"], 1.0)
         self.assertAlmostEqual(summary["rmse"], math.sqrt(0.03125))
+
+        aggregate_rows = {
+            row["pattern"]: row
+            for row in stats["subject_aggregate"]["abstract"][1]["rows"]
+        }
+        self.assertEqual(aggregate_rows["a"]["n_subjects"], 2)
+        self.assertAlmostEqual(aggregate_rows["a"]["animal_mean"], 0.5)
+        self.assertAlmostEqual(aggregate_rows["a"]["simulated_mean"], 0.375)
+        self.assertAlmostEqual(aggregate_rows["a"]["delta_mean"], -0.125)
+        self.assertEqual(
+            stats["quantitative_summary"]["subject_mean"]["abstract"][1]["n_rows"],
+            2,
+        )
 
     def test_save_history_dependent_switch_figures_creates_expected_outputs(self):
         try:
@@ -1184,6 +1230,8 @@ model:
                 output_dir=Path(tmpdir),
             )
             self.assertIn("history_pattern_comparison_abstract", figure_paths)
+            self.assertIn("history_pattern_comparison_abstract_pooled", figure_paths)
+            self.assertIn("history_pattern_delta_abstract", figure_paths)
             self.assertIn("history_pattern_subject_level_abstract_nback_1", figure_paths)
             self.assertIn("history_pattern_subject_level_abstract_nback_2", figure_paths)
             self.assertIn("history_pattern_subject_level_abstract_nback_3", figure_paths)
@@ -1366,6 +1414,181 @@ model:
                 "/tmp/model/outputs/subject_index_map.json",
             )
             self.assertEqual(resolved_payload["trained_subject_ids"], ["m1"])
+
+    def test_run_post_training_analysis_from_histories_writes_quantitative_summary(self):
+        animal_sessions = [
+            self._session(
+                subject_id="m1",
+                ses_idx="m1_s1",
+                choice_history=[0, 1, 0, 1, 0, 1],
+                reward_history=[0, 1, 0, 1, 0, 1],
+                curriculum_name="Coupled Baiting",
+            )
+        ]
+        simulated_sessions = [
+            self._session(
+                subject_id="m1",
+                ses_idx="m1_s1__rollout_0",
+                source_ses_idx="m1_s1",
+                choice_history=[0, 1, 0, 1, 0, 0],
+                reward_history=[0, 1, 0, 1, 0, 0],
+                curriculum_name="Coupled Baiting",
+            )
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = generative_analysis.run_post_training_analysis_from_histories(
+                animal_sessions=animal_sessions,
+                simulated_sessions=simulated_sessions,
+                output_dir=Path(tmpdir),
+            )
+
+            self.assertIn("model_vs_animal_quantitative_summary", result)
+            summary_payload = json.loads(
+                Path(result["model_vs_animal_quantitative_summary"]).read_text()
+            )
+            self.assertIn("switch_triggered", summary_payload)
+            self.assertIn("history_dependent", summary_payload)
+
+            switch_payload = json.loads(Path(result["switch_stats"]).read_text())
+            self.assertIn("subject_aggregate", switch_payload)
+            self.assertIn("quantitative_summary", switch_payload)
+
+            history_payload = json.loads(
+                Path(result["history_dependent_switch_stats"]).read_text()
+            )
+            self.assertIn("subject_aggregate", history_payload)
+            self.assertIn("quantitative_summary", history_payload)
+
+    def test_run_post_training_analysis_from_saved_histories_matches_direct_reanalysis(self):
+        animal_sessions = [
+            self._session(
+                subject_id="m1",
+                ses_idx="m1_s1",
+                choice_history=[0, 0, 1, 1, 0],
+                reward_history=[1, 0, 1, 0, 1],
+            )
+        ]
+        simulated_sessions = [
+            self._session(
+                subject_id="m1",
+                ses_idx="m1_s1__rollout_0",
+                source_ses_idx="m1_s1",
+                choice_history=[0, 0, 1, 0, 0],
+                reward_history=[1, 0, 1, 0, 1],
+            )
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            direct_result = generative_analysis.run_post_training_analysis_from_histories(
+                animal_sessions=animal_sessions,
+                simulated_sessions=simulated_sessions,
+                output_dir=root / "direct",
+            )
+
+            animal_path = root / "animal.pkl"
+            simulated_path = root / "simulated.pkl"
+            with animal_path.open("wb") as f:
+                pickle.dump(animal_sessions, f)
+            with simulated_path.open("wb") as f:
+                pickle.dump(simulated_sessions, f)
+
+            saved_result = generative_analysis.run_post_training_analysis_from_saved_histories(
+                simulated_session_history_path=simulated_path,
+                animal_session_history_path=animal_path,
+                output_dir=root / "saved",
+            )
+
+            direct_switch_payload = json.loads(Path(direct_result["switch_stats"]).read_text())
+            saved_switch_payload = json.loads(Path(saved_result["switch_stats"]).read_text())
+            direct_switch_payload.pop("figure_paths", None)
+            saved_switch_payload.pop("figure_paths", None)
+            self.assertEqual(
+                direct_switch_payload,
+                saved_switch_payload,
+            )
+            direct_history_payload = json.loads(
+                Path(direct_result["history_dependent_switch_stats"]).read_text()
+            )
+            saved_history_payload = json.loads(
+                Path(saved_result["history_dependent_switch_stats"]).read_text()
+            )
+            direct_history_payload.pop("figure_paths", None)
+            saved_history_payload.pop("figure_paths", None)
+            self.assertEqual(
+                direct_history_payload,
+                saved_history_payload,
+            )
+            self.assertEqual(
+                json.loads(
+                    Path(direct_result["model_vs_animal_quantitative_summary"]).read_text()
+                ),
+                json.loads(
+                    Path(saved_result["model_vs_animal_quantitative_summary"]).read_text()
+                ),
+            )
+
+    def test_run_post_training_analysis_from_saved_histories_loads_animal_from_resolved_run(self):
+        simulated_sessions = [
+            self._session(
+                subject_id="m1",
+                ses_idx="m1_s1__rollout_0",
+                source_ses_idx="m1_s1",
+                choice_history=[0, 0, 1],
+                reward_history=[1, 0, 0],
+            )
+        ]
+        resolved_run = generative_analysis.ResolvedModelRun(
+            model_dir="/tmp/model",
+            inputs_path="/tmp/model/inputs.yaml",
+            outputs_dir="/tmp/model/outputs",
+            model_type="gru",
+            split="train",
+            checkpoint_policy="final",
+            checkpoint_step=10,
+            checkpoint_label="final",
+            params_path="/tmp/model/outputs/params.json",
+            config_path="/tmp/model/outputs/gru_config.json",
+            seed=1,
+            multisubject=False,
+            mature_only=True,
+            ignore_policy="exclude",
+            curricula=["Uncoupled Baiting"],
+            features=None,
+            selection={"subject_start": 0, "subject_end": 1},
+        )
+        animal_sessions = [
+            self._session(
+                subject_id="m1",
+                ses_idx="m1_s1",
+                choice_history=[0, 0, 1],
+                reward_history=[1, 0, 0],
+            )
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            simulated_path = root / "simulated.pkl"
+            resolved_run_path = root / "resolved_run.json"
+            with simulated_path.open("wb") as f:
+                pickle.dump(simulated_sessions, f)
+            resolved_run_path.write_text(json.dumps(resolved_run.to_dict(), indent=2))
+
+            with mock.patch.object(
+                generative_analysis,
+                "load_animal_session_history",
+                return_value=animal_sessions,
+            ) as mocked_load:
+                result = generative_analysis.run_post_training_analysis_from_saved_histories(
+                    simulated_session_history_path=simulated_path,
+                    resolved_run_path=resolved_run_path,
+                    output_dir=root / "saved",
+                )
+
+            mocked_load.assert_called_once()
+            self.assertTrue(Path(result["switch_stats"]).exists())
+            self.assertTrue(Path(result["history_dependent_switch_stats"]).exists())
 
 
 if __name__ == "__main__":

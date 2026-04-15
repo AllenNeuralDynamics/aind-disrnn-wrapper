@@ -10,6 +10,8 @@ from post_training_analysis.generative_analysis import (
     load_animal_session_history,
     resolve_model_run,
     run_post_training_analysis,
+    run_post_training_analysis_from_histories,
+    run_post_training_analysis_from_saved_histories,
     simulate_model_sessions,
 )
 
@@ -21,5 +23,7 @@ __all__ = [
     "load_animal_session_history",
     "resolve_model_run",
     "run_post_training_analysis",
+    "run_post_training_analysis_from_histories",
+    "run_post_training_analysis_from_saved_histories",
     "simulate_model_sessions",
 ]

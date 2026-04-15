@@ -15,6 +15,7 @@ import json
 import logging
 import math
 import pickle
+import random
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -33,6 +34,8 @@ _DEFAULT_HISTORY_MAX_TRIALS_BACK = 3
 _DEFAULT_HISTORY_AGGREGATE_MIN_TRIALS = 10
 _DEFAULT_HISTORY_SUBJECT_MIN_TRIALS = 5
 _SUBJECT_LEVEL_MIN_ANIMAL_N = 5
+_DEFAULT_SUBJECT_BOOTSTRAP_RESAMPLES = 1000
+_DEFAULT_SUBJECT_BOOTSTRAP_SEED = 0
 _REWARD_CONDITIONS = ("rewarded", "unrewarded")
 _RUN_LENGTH_CONDITIONS = ("run_length_1", "run_length_gt1")
 _HISTORY_PATTERN_TYPES = ("detailed", "abstract")
@@ -496,16 +499,25 @@ def compute_switch_stats(
 
     animal_summary = _compute_switch_summary(animal_with_switches, window_size)
     simulated_summary = _compute_switch_summary(simulated_with_switches, window_size)
+    subject_level = _compute_subject_level_comparison(
+        animal_with_switches,
+        simulated_with_switches,
+    )
+    subject_aggregate = _build_switch_subject_aggregate(subject_level)
+    quantitative_summary = _build_switch_quantitative_summary(
+        animal_summary=animal_summary,
+        simulated_summary=simulated_summary,
+        subject_aggregate=subject_aggregate,
+    )
 
     return {
         "window_size": window_size,
         "animal": animal_summary,
         "simulated": simulated_summary,
         "comparison": _compare_switch_summaries(animal_summary, simulated_summary),
-        "subject_level": _compute_subject_level_comparison(
-            animal_with_switches,
-            simulated_with_switches,
-        ),
+        "subject_level": subject_level,
+        "subject_aggregate": subject_aggregate,
+        "quantitative_summary": quantitative_summary,
     }
 
 
@@ -531,6 +543,10 @@ def compute_history_dependent_switch_stats(
         raise ValueError("subject_min_trials must be >= 0.")
 
     normalized_pattern_type = _normalize_history_pattern_type(default_pattern_type)
+    subject_curriculum_map = _resolve_subject_curriculum_map(
+        animal_sessions,
+        fallback_rows=simulated_sessions,
+    )
     animal_records = _build_history_pattern_count_records(
         animal_sessions,
         max_trials_back=max_trials_back,
@@ -558,11 +574,35 @@ def compute_history_dependent_switch_stats(
         animal_records,
         max_trials_back=max_trials_back,
         average_rollouts_by_source=False,
+        subject_curriculum_map=subject_curriculum_map,
     )
     simulated_subject_stats = _build_subject_history_pattern_summary(
         simulated_records,
         max_trials_back=max_trials_back,
         average_rollouts_by_source=True,
+        subject_curriculum_map=subject_curriculum_map,
+    )
+    comparison = _build_history_pattern_comparison(
+        animal_summary,
+        simulated_summary,
+        max_trials_back=max_trials_back,
+        aggregate_min_trials=aggregate_min_trials,
+    )
+    subject_level = _build_subject_history_pattern_comparison(
+        animal_subject_stats,
+        simulated_subject_stats,
+        max_trials_back=max_trials_back,
+        subject_min_trials=subject_min_trials,
+    )
+    subject_aggregate = _build_history_subject_aggregate(
+        subject_level,
+        max_trials_back=max_trials_back,
+        subject_min_trials=subject_min_trials,
+    )
+    quantitative_summary = _build_history_quantitative_summary(
+        comparison=comparison,
+        subject_aggregate=subject_aggregate,
+        max_trials_back=max_trials_back,
     )
 
     return {
@@ -574,18 +614,10 @@ def compute_history_dependent_switch_stats(
         },
         "animal": animal_summary,
         "simulated": simulated_summary,
-        "comparison": _build_history_pattern_comparison(
-            animal_summary,
-            simulated_summary,
-            max_trials_back=max_trials_back,
-            aggregate_min_trials=aggregate_min_trials,
-        ),
-        "subject_level": _build_subject_history_pattern_comparison(
-            animal_subject_stats,
-            simulated_subject_stats,
-            max_trials_back=max_trials_back,
-            subject_min_trials=subject_min_trials,
-        ),
+        "comparison": comparison,
+        "subject_level": subject_level,
+        "subject_aggregate": subject_aggregate,
+        "quantitative_summary": quantitative_summary,
     }
 
 
@@ -659,6 +691,124 @@ def run_post_training_analysis(
         time.perf_counter() - stage_started_at,
     )
 
+    result = run_post_training_analysis_from_histories(
+        animal_sessions=animal_sessions,
+        simulated_sessions=simulated_sessions,
+        output_dir=output_dir,
+        resolved_run=resolved_run,
+        window_size=window_size,
+        save_animal_session_history=save_animal_session_history,
+    )
+    logger.info(
+        "Finished post-training analysis in %.2fs",
+        time.perf_counter() - started_at,
+    )
+    return result
+
+
+def run_post_training_analysis_from_histories(
+    animal_sessions,
+    simulated_sessions,
+    *,
+    output_dir: str | Path | None = None,
+    resolved_run: ResolvedModelRun | Mapping[str, Any] | None = None,
+    window_size: int = _DEFAULT_WINDOW_SIZE,
+    save_animal_session_history: bool = False,
+) -> dict[str, Any]:
+    """Compute and save post-training analysis outputs from in-memory histories."""
+
+    resolved_run_obj = (
+        None if resolved_run is None else _coerce_resolved_run(resolved_run)
+    )
+    if output_dir is None:
+        if resolved_run_obj is None:
+            raise ValueError(
+                "output_dir is required when resolved_run is not provided."
+            )
+        resolved_output_dir = _resolve_analysis_output_dir(
+            resolved_run=resolved_run_obj,
+            output_dir=None,
+        )
+    else:
+        resolved_output_dir = Path(output_dir).expanduser().resolve()
+
+    return _compute_and_save_post_training_outputs(
+        animal_sessions=animal_sessions,
+        simulated_sessions=simulated_sessions,
+        output_dir=resolved_output_dir,
+        resolved_run=resolved_run_obj,
+        window_size=window_size,
+        save_animal_session_history=save_animal_session_history,
+    )
+
+
+def run_post_training_analysis_from_saved_histories(
+    simulated_session_history_path: str | Path,
+    *,
+    animal_session_history_path: str | Path | None = None,
+    resolved_run_path: str | Path | None = None,
+    output_dir: str | Path | None = None,
+    window_size: int = _DEFAULT_WINDOW_SIZE,
+    save_animal_session_history: bool = False,
+) -> dict[str, Any]:
+    """Recompute analysis outputs from saved simulated session histories."""
+
+    simulated_history_path = Path(simulated_session_history_path).expanduser().resolve()
+    with simulated_history_path.open("rb") as f:
+        simulated_sessions = pickle.load(f)
+
+    resolved_run_obj = None
+    if resolved_run_path is not None:
+        resolved_run_payload = _load_structured_file(
+            Path(resolved_run_path).expanduser().resolve()
+        )
+        if isinstance(resolved_run_payload, ResolvedModelRun):
+            resolved_run_obj = resolved_run_payload
+        elif isinstance(resolved_run_payload, Mapping):
+            resolved_run_obj = ResolvedModelRun(**dict(resolved_run_payload))
+        else:
+            raise ValueError(
+                f"Expected mapping-style resolved run payload in {resolved_run_path!s}."
+            )
+
+    if animal_session_history_path is not None:
+        animal_history_path = Path(animal_session_history_path).expanduser().resolve()
+        with animal_history_path.open("rb") as f:
+            animal_sessions = pickle.load(f)
+    else:
+        if resolved_run_obj is None:
+            raise ValueError(
+                "Either animal_session_history_path or resolved_run_path must be provided."
+            )
+        animal_sessions = load_animal_session_history(
+            resolved_run_obj,
+            split=resolved_run_obj.split,
+        )
+
+    resolved_output_dir = (
+        Path(output_dir).expanduser().resolve()
+        if output_dir is not None
+        else simulated_history_path.parent / "reanalysis"
+    )
+    return run_post_training_analysis_from_histories(
+        animal_sessions=animal_sessions,
+        simulated_sessions=simulated_sessions,
+        output_dir=resolved_output_dir,
+        resolved_run=resolved_run_obj,
+        window_size=window_size,
+        save_animal_session_history=save_animal_session_history,
+    )
+
+
+def _compute_and_save_post_training_outputs(
+    *,
+    animal_sessions,
+    simulated_sessions,
+    output_dir: str | Path,
+    resolved_run: ResolvedModelRun | None,
+    window_size: int,
+    save_animal_session_history: bool,
+) -> dict[str, Any]:
     stage_started_at = time.perf_counter()
     switch_stats = compute_switch_stats(
         animal_sessions=animal_sessions,
@@ -681,10 +831,7 @@ def run_post_training_analysis(
     )
 
     stage_started_at = time.perf_counter()
-    analysis_output_dir = _resolve_analysis_output_dir(
-        resolved_run=resolved_run,
-        output_dir=output_dir,
-    )
+    analysis_output_dir = Path(output_dir).expanduser().resolve()
     analysis_output_dir.mkdir(parents=True, exist_ok=True)
 
     resolved_run_path = analysis_output_dir / "resolved_run.json"
@@ -694,8 +841,12 @@ def run_post_training_analysis(
     history_dependent_switch_stats_path = (
         analysis_output_dir / "history_dependent_switch_stats.json"
     )
+    quantitative_summary_path = (
+        analysis_output_dir / "model_vs_animal_quantitative_summary.json"
+    )
 
-    resolved_run_path.write_text(json.dumps(resolved_run.to_dict(), indent=2))
+    if resolved_run is not None:
+        resolved_run_path.write_text(json.dumps(resolved_run.to_dict(), indent=2))
     if save_animal_session_history:
         with animal_history_path.open("wb") as f:
             pickle.dump(animal_sessions, f)
@@ -710,7 +861,10 @@ def run_post_training_analysis(
     switch_stats_with_figures["figure_paths"] = {
         name: str(path) for name, path in figure_paths.items()
     }
-    switch_stats_path.write_text(json.dumps(_to_serializable(switch_stats_with_figures), indent=2))
+    switch_stats_path.write_text(
+        json.dumps(_to_serializable(switch_stats_with_figures), indent=2)
+    )
+
     history_figure_paths = _save_history_dependent_switch_figures(
         history_stats=history_dependent_switch_stats,
         output_dir=analysis_output_dir / "figures",
@@ -722,27 +876,36 @@ def run_post_training_analysis(
     history_dependent_switch_stats_path.write_text(
         json.dumps(_to_serializable(history_stats_with_figures), indent=2)
     )
+
+    combined_quantitative_summary = {
+        "switch_triggered": _as_dict(switch_stats.get("quantitative_summary", {})),
+        "history_dependent": _as_dict(
+            history_dependent_switch_stats.get("quantitative_summary", {})
+        ),
+    }
+    quantitative_summary_path.write_text(
+        json.dumps(_to_serializable(combined_quantitative_summary), indent=2)
+    )
+
     logger.info(
         "Saved analysis outputs in %.2fs to %s",
         time.perf_counter() - stage_started_at,
         analysis_output_dir,
     )
-    logger.info(
-        "Finished post-training analysis in %.2fs",
-        time.perf_counter() - started_at,
-    )
 
     result = {
-        "resolved_run": str(resolved_run_path),
         "simulated_session_history": str(simulated_history_path),
         "switch_stats": str(switch_stats_path),
         "history_dependent_switch_stats": str(history_dependent_switch_stats_path),
+        "model_vs_animal_quantitative_summary": str(quantitative_summary_path),
         "figure_paths": {
             name: str(path)
             for name, path in {**figure_paths, **history_figure_paths}.items()
         },
         "output_dir": str(analysis_output_dir),
     }
+    if resolved_run is not None:
+        result["resolved_run"] = str(resolved_run_path)
     if save_animal_session_history:
         result["animal_session_history"] = str(animal_history_path)
     return result
@@ -1273,21 +1436,30 @@ def _copy_history_pattern_count_tree(
 
 def _finalize_history_pattern_count_tree(
     raw_tree: Mapping[str, Any],
+    *,
+    intervals: Mapping[str, Any] | None = None,
 ) -> dict[str, dict[int, dict[str, dict[str, Any]]]]:
     finalized: dict[str, dict[int, dict[str, dict[str, Any]]]] = {}
     for pattern_type in _HISTORY_PATTERN_TYPES:
         finalized[pattern_type] = {}
         pattern_group = _as_dict(raw_tree.get(pattern_type, {}))
+        interval_group = _as_dict(_as_dict(intervals).get(pattern_type, {}))
         for n_back, bucket in pattern_group.items():
             finalized[pattern_type][int(n_back)] = {}
+            interval_bucket = _as_dict(interval_group.get(int(n_back), {}))
             for pattern, counts in sorted(_as_dict(bucket).items()):
                 finalized[pattern_type][int(n_back)][str(pattern)] = _finalize_history_pattern_leaf(
-                    _as_dict(counts)
+                    _as_dict(counts),
+                    intervals=_as_dict(interval_bucket.get(str(pattern), {})),
                 )
     return finalized
 
 
-def _finalize_history_pattern_leaf(counts: Mapping[str, Any]) -> dict[str, Any]:
+def _finalize_history_pattern_leaf(
+    counts: Mapping[str, Any],
+    *,
+    intervals: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     probability = _history_probability_from_counts(counts)
     total = float(counts.get("total", 0.0))
     return {
@@ -1296,6 +1468,8 @@ def _finalize_history_pattern_leaf(counts: Mapping[str, Any]) -> dict[str, Any]:
         "total": _normalize_count_output(total),
         "switch_probability": probability,
         "switch_probability_sem": _history_switch_probability_sem(probability, total),
+        "ci_low": _coerce_probability(_as_dict(intervals).get("ci_low")),
+        "ci_high": _coerce_probability(_as_dict(intervals).get("ci_high")),
     }
 
 
@@ -1409,6 +1583,7 @@ def _build_subject_history_pattern_summary(
     *,
     max_trials_back: int,
     average_rollouts_by_source: bool,
+    subject_curriculum_map: Mapping[Any, str] | None = None,
 ) -> dict[Any, dict[str, Any]]:
     if not records:
         return {}
@@ -1427,6 +1602,9 @@ def _build_subject_history_pattern_summary(
             records,
             max_trials_back=max_trials_back,
         )
+    curriculum_lookup = (
+        dict(subject_curriculum_map) if isinstance(subject_curriculum_map, Mapping) else {}
+    )
 
     summaries: dict[Any, dict[str, Any]] = {}
     for subject_id in subject_order:
@@ -1442,9 +1620,23 @@ def _build_subject_history_pattern_summary(
                 max_trials_back=max_trials_back,
             )
 
+        bootstrap_intervals = _bootstrap_history_pattern_intervals(
+            subject_records,
+            max_trials_back=max_trials_back,
+            seed=_seed_from_parts(
+                _DEFAULT_SUBJECT_BOOTSTRAP_SEED,
+                "history",
+                subject_id,
+            ),
+            n_bootstrap=_DEFAULT_SUBJECT_BOOTSTRAP_RESAMPLES,
+        )
         summaries[subject_id] = {
-            "patterns": _finalize_history_pattern_count_tree(aggregated),
+            "patterns": _finalize_history_pattern_count_tree(
+                aggregated,
+                intervals=bootstrap_intervals,
+            ),
             "n_source_sessions": int(subject_session_counts.get(subject_id, 0)),
+            "curriculum_name": str(curriculum_lookup.get(subject_id, "Unknown")),
         }
 
     return summaries
@@ -1618,6 +1810,14 @@ def _build_subject_history_pattern_points(
                         0,
                     )
                 ),
+                "animal_n_source_sessions": int(
+                    _as_dict(animal_subject_stats.get(subject_id, {})).get(
+                        "n_source_sessions",
+                        0,
+                    )
+                ),
+                "animal_ci_low": _coerce_probability(animal_leaf.get("ci_low")),
+                "animal_ci_high": _coerce_probability(animal_leaf.get("ci_high")),
                 "simulated_probability": _coerce_probability(
                     simulated_leaf.get("switch_probability")
                 ),
@@ -1629,6 +1829,21 @@ def _build_subject_history_pattern_points(
                         "n_source_sessions",
                         0,
                     )
+                ),
+                "simulated_ci_low": _coerce_probability(simulated_leaf.get("ci_low")),
+                "simulated_ci_high": _coerce_probability(simulated_leaf.get("ci_high")),
+                "curriculum_name": str(
+                    _as_dict(animal_subject_stats.get(subject_id, {})).get(
+                        "curriculum_name",
+                        _as_dict(simulated_subject_stats.get(subject_id, {})).get(
+                            "curriculum_name",
+                            "Unknown",
+                        ),
+                    )
+                ),
+                "delta_probability": _finite_difference(
+                    _coerce_probability(simulated_leaf.get("switch_probability")),
+                    _coerce_probability(animal_leaf.get("switch_probability")),
                 ),
             }
         )
@@ -1678,13 +1893,19 @@ def _compute_subject_level_comparison(
     animal_sessions,
     simulated_sessions,
 ) -> dict[str, Any]:
+    subject_curriculum_map = _resolve_subject_curriculum_map(
+        animal_sessions,
+        fallback_rows=simulated_sessions,
+    )
     animal_subject_stats = _build_subject_level_metric_summary(
         animal_sessions,
         average_rollouts_by_source=False,
+        subject_curriculum_map=subject_curriculum_map,
     )
     simulated_subject_stats = _build_subject_level_metric_summary(
         simulated_sessions,
         average_rollouts_by_source=True,
+        subject_curriculum_map=subject_curriculum_map,
     )
 
     comparison = {
@@ -1722,31 +1943,42 @@ def _compute_subject_level_comparison(
     return comparison
 
 
-def _build_subject_level_metric_summary(
+def _prepare_subject_metric_records(
     session_rows,
     *,
     average_rollouts_by_source: bool,
-) -> dict[Any, dict[str, Any]]:
+) -> tuple[dict[Any, list[dict[str, Any]]], dict[Any, int]]:
     session_counts = [
         _extract_subject_metric_counts(row)
         for row in _iter_session_records(session_rows)
     ]
     if not session_counts:
-        return {}
+        return {}, {}
 
-    subject_order = _unique_preserve_order(
-        [record["subject_id"] for record in session_counts]
-    )
     if average_rollouts_by_source and all(
         record["source_ses_idx"] not in (None, "") for record in session_counts
     ):
-        per_subject_records, subject_session_counts = _average_rollout_metric_counts(
-            session_counts
-        )
-    else:
-        per_subject_records, subject_session_counts = _collect_direct_metric_counts(
-            session_counts
-        )
+        return _average_rollout_metric_counts(session_counts)
+    return _collect_direct_metric_counts(session_counts)
+
+
+def _build_subject_level_metric_summary(
+    session_rows,
+    *,
+    average_rollouts_by_source: bool,
+    subject_curriculum_map: Mapping[Any, str] | None = None,
+) -> dict[Any, dict[str, Any]]:
+    per_subject_records, subject_session_counts = _prepare_subject_metric_records(
+        session_rows,
+        average_rollouts_by_source=average_rollouts_by_source,
+    )
+    if not per_subject_records:
+        return {}
+
+    subject_order = _unique_preserve_order(list(per_subject_records.keys()))
+    curriculum_lookup = (
+        dict(subject_curriculum_map) if isinstance(subject_curriculum_map, Mapping) else {}
+    )
 
     summaries: dict[Any, dict[str, Any]] = {}
     for subject_id in subject_order:
@@ -1763,6 +1995,15 @@ def _build_subject_level_metric_summary(
                 record["reward_and_run_length"],
             )
 
+        reward_intervals, reward_run_intervals = _bootstrap_switch_metric_intervals(
+            subject_records,
+            seed=_seed_from_parts(
+                _DEFAULT_SUBJECT_BOOTSTRAP_SEED,
+                "switch",
+                subject_id,
+            ),
+            n_bootstrap=_DEFAULT_SUBJECT_BOOTSTRAP_RESAMPLES,
+        )
         summaries[subject_id] = {
             "post_switch_by_reward": {
                 reward_condition: {
@@ -1771,6 +2012,12 @@ def _build_subject_level_metric_summary(
                     ),
                     "n": _normalize_count_output(
                         reward_totals[reward_condition]["n"]
+                    ),
+                    "ci_low": _coerce_probability(
+                        _as_dict(reward_intervals.get(reward_condition, {})).get("ci_low")
+                    ),
+                    "ci_high": _coerce_probability(
+                        _as_dict(reward_intervals.get(reward_condition, {})).get("ci_high")
                     ),
                 }
                 for reward_condition in _REWARD_CONDITIONS
@@ -1784,12 +2031,29 @@ def _build_subject_level_metric_summary(
                         "n": _normalize_count_output(
                             reward_run_totals[reward_condition][run_condition]["n"]
                         ),
+                        "ci_low": _coerce_probability(
+                            _as_dict(
+                                _as_dict(reward_run_intervals.get(reward_condition, {})).get(
+                                    run_condition,
+                                    {},
+                                )
+                            ).get("ci_low")
+                        ),
+                        "ci_high": _coerce_probability(
+                            _as_dict(
+                                _as_dict(reward_run_intervals.get(reward_condition, {})).get(
+                                    run_condition,
+                                    {},
+                                )
+                            ).get("ci_high")
+                        ),
                     }
                     for run_condition in _RUN_LENGTH_CONDITIONS
                 }
                 for reward_condition in _REWARD_CONDITIONS
             },
             "n_source_sessions": int(subject_session_counts.get(subject_id, 0)),
+            "curriculum_name": str(curriculum_lookup.get(subject_id, "Unknown")),
         }
 
     return summaries
@@ -1973,6 +2237,11 @@ def _build_subject_comparison_points(
                 "animal_probability": _coerce_probability(animal_leaf.get("probability")),
                 "animal_n": _normalize_count_output(animal_leaf.get("n", 0)),
                 "animal_n_sessions": int(animal_metrics.get("n_source_sessions", 0)),
+                "animal_n_source_sessions": int(
+                    animal_metrics.get("n_source_sessions", 0)
+                ),
+                "animal_ci_low": _coerce_probability(animal_leaf.get("ci_low")),
+                "animal_ci_high": _coerce_probability(animal_leaf.get("ci_high")),
                 "simulated_probability": _coerce_probability(
                     simulated_leaf.get("probability")
                 ),
@@ -1981,6 +2250,18 @@ def _build_subject_comparison_points(
                 ),
                 "simulated_n_source_sessions": int(
                     simulated_metrics.get("n_source_sessions", 0)
+                ),
+                "simulated_ci_low": _coerce_probability(simulated_leaf.get("ci_low")),
+                "simulated_ci_high": _coerce_probability(simulated_leaf.get("ci_high")),
+                "curriculum_name": str(
+                    animal_metrics.get(
+                        "curriculum_name",
+                        simulated_metrics.get("curriculum_name", "Unknown"),
+                    )
+                ),
+                "delta_probability": _finite_difference(
+                    _coerce_probability(simulated_leaf.get("probability")),
+                    _coerce_probability(animal_leaf.get("probability")),
                 ),
             }
         )
@@ -2163,6 +2444,382 @@ def _compare_switch_summaries(
             }
 
     return comparison
+
+
+def _build_switch_subject_aggregate(
+    subject_level: Mapping[str, Any],
+) -> dict[str, Any]:
+    reward_level = _as_dict(subject_level.get("post_switch_by_reward", {}))
+    reward_run_level = _as_dict(
+        subject_level.get("post_switch_by_reward_and_run_length", {})
+    )
+    return {
+        "post_switch_by_reward": {
+            reward_condition: _build_subject_aggregate_leaf(
+                list(_as_dict(reward_level.get(reward_condition, {})).get("points", [])),
+                selector=_select_valid_subject_points,
+            )
+            for reward_condition in _REWARD_CONDITIONS
+        },
+        "post_switch_by_reward_and_run_length": {
+            reward_condition: {
+                run_condition: _build_subject_aggregate_leaf(
+                    list(
+                        _as_dict(
+                            _as_dict(reward_run_level.get(reward_condition, {})).get(
+                                run_condition,
+                                {},
+                            )
+                        ).get("points", [])
+                    ),
+                    selector=_select_valid_subject_points,
+                )
+                for run_condition in _RUN_LENGTH_CONDITIONS
+            }
+            for reward_condition in _REWARD_CONDITIONS
+        },
+    }
+
+
+def _build_history_subject_aggregate(
+    subject_level: Mapping[str, Any],
+    *,
+    max_trials_back: int,
+    subject_min_trials: int,
+) -> dict[str, dict[int, dict[str, Any]]]:
+    subject_aggregate: dict[str, dict[int, dict[str, Any]]] = {
+        pattern_type: {}
+        for pattern_type in _HISTORY_PATTERN_TYPES
+    }
+    for pattern_type in _HISTORY_PATTERN_TYPES:
+        pattern_group = _as_dict(subject_level.get(pattern_type, {}))
+        for n_back in range(1, int(max_trials_back) + 1):
+            panel_group = _as_dict(pattern_group.get(n_back, {}))
+            rows = []
+            for pattern in sorted(panel_group):
+                aggregate_row = _build_subject_aggregate_leaf(
+                    list(_as_dict(panel_group.get(pattern, {})).get("points", [])),
+                    selector=lambda points, min_trials=subject_min_trials: (
+                        _select_valid_subject_history_pattern_points(
+                            points,
+                            min_trials=min_trials,
+                        )
+                    ),
+                )
+                aggregate_row["pattern"] = str(pattern)
+                rows.append(aggregate_row)
+            subject_aggregate[pattern_type][n_back] = {
+                "rows": rows,
+                "summary": _summarize_probability_rows(
+                    rows,
+                    weight_key="n_subjects",
+                ),
+            }
+    return subject_aggregate
+
+
+def _build_subject_aggregate_leaf(
+    points: Sequence[Mapping[str, Any]],
+    *,
+    selector,
+) -> dict[str, Any]:
+    valid_points = list(selector(points))
+    animal_values = [float(point["animal_probability"]) for point in valid_points]
+    simulated_values = [float(point["simulated_probability"]) for point in valid_points]
+    delta_values = [float(point["delta_probability"]) for point in valid_points]
+    return {
+        "animal_mean": _mean(animal_values) if animal_values else math.nan,
+        "animal_sem": _sem(animal_values) if animal_values else math.nan,
+        "simulated_mean": _mean(simulated_values) if simulated_values else math.nan,
+        "simulated_sem": _sem(simulated_values) if simulated_values else math.nan,
+        "delta_mean": _mean(delta_values) if delta_values else math.nan,
+        "delta_sem": _sem(delta_values) if delta_values else math.nan,
+        "delta_median": _median(delta_values) if delta_values else math.nan,
+        "delta_iqr": _iqr(delta_values) if delta_values else math.nan,
+        "n_subjects": len(valid_points),
+    }
+
+
+def _build_switch_quantitative_summary(
+    *,
+    animal_summary: Mapping[str, Any],
+    simulated_summary: Mapping[str, Any],
+    subject_aggregate: Mapping[str, Any],
+) -> dict[str, Any]:
+    pooled_reward_rows = _build_switch_pooled_reward_rows(
+        animal_summary=animal_summary,
+        simulated_summary=simulated_summary,
+    )
+    pooled_reward_run_rows = _build_switch_pooled_reward_run_rows(
+        animal_summary=animal_summary,
+        simulated_summary=simulated_summary,
+    )
+    subject_reward_rows = _build_switch_subject_reward_rows(subject_aggregate)
+    subject_reward_run_rows = _build_switch_subject_reward_run_rows(subject_aggregate)
+    return {
+        "pooled": {
+            "post_switch_by_reward": _summarize_probability_rows(
+                pooled_reward_rows,
+                weight_key="effective_weight",
+            ),
+            "post_switch_by_reward_and_run_length": _summarize_probability_rows(
+                pooled_reward_run_rows,
+                weight_key="effective_weight",
+            ),
+            "overall": _summarize_probability_rows(
+                [*pooled_reward_rows, *pooled_reward_run_rows],
+                weight_key="effective_weight",
+            ),
+        },
+        "subject_mean": {
+            "post_switch_by_reward": _summarize_probability_rows(
+                subject_reward_rows,
+                weight_key="n_subjects",
+            ),
+            "post_switch_by_reward_and_run_length": _summarize_probability_rows(
+                subject_reward_run_rows,
+                weight_key="n_subjects",
+            ),
+            "overall": _summarize_probability_rows(
+                [*subject_reward_rows, *subject_reward_run_rows],
+                weight_key="n_subjects",
+            ),
+        },
+    }
+
+
+def _build_history_quantitative_summary(
+    *,
+    comparison: Mapping[str, Any],
+    subject_aggregate: Mapping[str, Any],
+    max_trials_back: int,
+) -> dict[str, Any]:
+    summary: dict[str, Any] = {"pooled": {}, "subject_mean": {}}
+    pooled_overall_rows: list[dict[str, Any]] = []
+    subject_overall_rows: list[dict[str, Any]] = []
+    for pattern_type in _HISTORY_PATTERN_TYPES:
+        pooled_group = _as_dict(comparison.get(pattern_type, {}))
+        subject_group = _as_dict(subject_aggregate.get(pattern_type, {}))
+        pattern_pooled_summary: dict[str, Any] = {}
+        pattern_subject_summary: dict[str, Any] = {}
+        pattern_pooled_rows: list[dict[str, Any]] = []
+        pattern_subject_rows: list[dict[str, Any]] = []
+        for n_back in range(1, int(max_trials_back) + 1):
+            pooled_rows = list(_as_dict(pooled_group.get(n_back, {})).get("rows", []))
+            subject_rows = list(_as_dict(subject_group.get(n_back, {})).get("rows", []))
+            pattern_pooled_summary[n_back] = _summarize_probability_rows(
+                pooled_rows,
+                weight_key="effective_weight",
+            )
+            pattern_subject_summary[n_back] = _summarize_probability_rows(
+                subject_rows,
+                weight_key="n_subjects",
+            )
+            pattern_pooled_rows.extend(pooled_rows)
+            pattern_subject_rows.extend(subject_rows)
+            pooled_overall_rows.extend(pooled_rows)
+            subject_overall_rows.extend(subject_rows)
+        pattern_pooled_summary["overall"] = _summarize_probability_rows(
+            pattern_pooled_rows,
+            weight_key="effective_weight",
+        )
+        pattern_subject_summary["overall"] = _summarize_probability_rows(
+            pattern_subject_rows,
+            weight_key="n_subjects",
+        )
+        summary["pooled"][pattern_type] = pattern_pooled_summary
+        summary["subject_mean"][pattern_type] = pattern_subject_summary
+    summary["pooled"]["overall"] = _summarize_probability_rows(
+        pooled_overall_rows,
+        weight_key="effective_weight",
+    )
+    summary["subject_mean"]["overall"] = _summarize_probability_rows(
+        subject_overall_rows,
+        weight_key="n_subjects",
+    )
+    return summary
+
+
+def _build_switch_pooled_reward_rows(
+    *,
+    animal_summary: Mapping[str, Any],
+    simulated_summary: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    animal_reward = _as_dict(animal_summary.get("post_switch_by_reward", {}))
+    simulated_reward = _as_dict(simulated_summary.get("post_switch_by_reward", {}))
+    rows = []
+    for reward_condition in _REWARD_CONDITIONS:
+        animal_leaf = _as_dict(animal_reward.get(reward_condition, {}))
+        simulated_leaf = _as_dict(simulated_reward.get(reward_condition, {}))
+        animal_n = animal_leaf.get("n")
+        simulated_n = simulated_leaf.get("n")
+        effective_weight = None
+        if animal_n is not None and simulated_n is not None:
+            effective_weight = min(float(animal_n), float(simulated_n))
+        rows.append(
+            {
+                "condition": reward_condition,
+                "animal_probability": _coerce_probability(animal_leaf.get("probability")),
+                "simulated_probability": _coerce_probability(
+                    simulated_leaf.get("probability")
+                ),
+                "delta_probability": _finite_difference(
+                    _coerce_probability(simulated_leaf.get("probability")),
+                    _coerce_probability(animal_leaf.get("probability")),
+                ),
+                "effective_weight": effective_weight,
+            }
+        )
+    return rows
+
+
+def _build_switch_pooled_reward_run_rows(
+    *,
+    animal_summary: Mapping[str, Any],
+    simulated_summary: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    animal_reward_run = _as_dict(
+        animal_summary.get("post_switch_by_reward_and_run_length", {})
+    )
+    simulated_reward_run = _as_dict(
+        simulated_summary.get("post_switch_by_reward_and_run_length", {})
+    )
+    rows = []
+    for reward_condition in _REWARD_CONDITIONS:
+        for run_condition in _RUN_LENGTH_CONDITIONS:
+            animal_leaf = _as_dict(
+                _as_dict(animal_reward_run.get(reward_condition, {})).get(
+                    run_condition,
+                    {},
+                )
+            )
+            simulated_leaf = _as_dict(
+                _as_dict(simulated_reward_run.get(reward_condition, {})).get(
+                    run_condition,
+                    {},
+                )
+            )
+            animal_n = animal_leaf.get("n")
+            simulated_n = simulated_leaf.get("n")
+            effective_weight = None
+            if animal_n is not None and simulated_n is not None:
+                effective_weight = min(float(animal_n), float(simulated_n))
+            rows.append(
+                {
+                    "reward_condition": reward_condition,
+                    "run_condition": run_condition,
+                    "animal_probability": _coerce_probability(
+                        animal_leaf.get("probability")
+                    ),
+                    "simulated_probability": _coerce_probability(
+                        simulated_leaf.get("probability")
+                    ),
+                    "delta_probability": _finite_difference(
+                        _coerce_probability(simulated_leaf.get("probability")),
+                        _coerce_probability(animal_leaf.get("probability")),
+                    ),
+                    "effective_weight": effective_weight,
+                }
+            )
+    return rows
+
+
+def _build_switch_subject_reward_rows(
+    subject_aggregate: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    reward_group = _as_dict(subject_aggregate.get("post_switch_by_reward", {}))
+    return [
+        {"condition": reward_condition, **_as_dict(reward_group.get(reward_condition, {}))}
+        for reward_condition in _REWARD_CONDITIONS
+    ]
+
+
+def _build_switch_subject_reward_run_rows(
+    subject_aggregate: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    reward_run_group = _as_dict(
+        subject_aggregate.get("post_switch_by_reward_and_run_length", {})
+    )
+    rows = []
+    for reward_condition in _REWARD_CONDITIONS:
+        for run_condition in _RUN_LENGTH_CONDITIONS:
+            rows.append(
+                {
+                    "reward_condition": reward_condition,
+                    "run_condition": run_condition,
+                    **_as_dict(
+                        _as_dict(reward_run_group.get(reward_condition, {})).get(
+                            run_condition,
+                            {},
+                        )
+                    ),
+                }
+            )
+    return rows
+
+
+def _summarize_probability_rows(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    weight_key: str,
+) -> dict[str, Any]:
+    valid_rows = []
+    for row in rows:
+        animal_probability = _coerce_probability(
+            row.get("animal_probability", row.get("animal_mean"))
+        )
+        simulated_probability = _coerce_probability(
+            row.get("simulated_probability", row.get("simulated_mean"))
+        )
+        if animal_probability is None or simulated_probability is None:
+            continue
+        normalized_row = dict(row)
+        normalized_row["animal_probability"] = animal_probability
+        normalized_row["simulated_probability"] = simulated_probability
+        if normalized_row.get("delta_probability") is None:
+            normalized_row["delta_probability"] = _finite_difference(
+                simulated_probability,
+                animal_probability,
+            )
+        if weight_key == "effective_weight" and normalized_row.get(weight_key) is None:
+            animal_total = normalized_row.get("animal_total")
+            simulated_total = normalized_row.get("simulated_total_effective")
+            if animal_total is not None and simulated_total is not None:
+                normalized_row[weight_key] = min(
+                    float(animal_total),
+                    float(simulated_total),
+                )
+        valid_rows.append(normalized_row)
+
+    xs = [float(row["animal_probability"]) for row in valid_rows]
+    ys = [float(row["simulated_probability"]) for row in valid_rows]
+    deltas = [float(row["delta_probability"]) for row in valid_rows]
+    weights = []
+    has_all_weights = True
+    for row in valid_rows:
+        weight_value = row.get(weight_key)
+        if weight_value is None or float(weight_value) <= 0:
+            has_all_weights = False
+            continue
+        weights.append(float(weight_value))
+    return {
+        "n_rows": len(valid_rows),
+        "total_weight": sum(weights) if has_all_weights and weights else 0.0,
+        "mae": _mean([abs(delta) for delta in deltas]) if deltas else None,
+        "rmse": _rmse(xs, ys),
+        "bias": _mean(deltas) if deltas else None,
+        "correlation": _pearson_correlation(xs, ys),
+        "weighted_mae": (
+            _weighted_mean([abs(delta) for delta in deltas], weights)
+            if has_all_weights and len(weights) == len(deltas)
+            else None
+        ),
+        "weighted_rmse": (
+            _weighted_rmse(xs, ys, weights)
+            if has_all_weights and len(weights) == len(xs)
+            else None
+        ),
+    }
 
 
 def _normalize_split(split: str) -> str:
@@ -2872,13 +3529,39 @@ def _save_switch_figures(
     _plot_pooled_switch_probability(plt, switch_stats, pooled_path)
     figure_paths["pooled_switch_probability"] = pooled_path
 
+    reward_pooled_path = output_dir / "post_switch_by_reward_pooled.png"
+    _plot_post_switch_by_reward_pooled(plt, switch_stats, reward_pooled_path)
+    figure_paths["post_switch_by_reward_pooled"] = reward_pooled_path
+
     reward_path = output_dir / "post_switch_by_reward.png"
     _plot_post_switch_by_reward(plt, switch_stats, reward_path)
     figure_paths["post_switch_by_reward"] = reward_path
 
+    reward_run_pooled_path = output_dir / "post_switch_by_reward_and_run_length_pooled.png"
+    _plot_post_switch_by_reward_and_run_length_pooled(
+        plt,
+        switch_stats,
+        reward_run_pooled_path,
+    )
+    figure_paths["post_switch_by_reward_and_run_length_pooled"] = reward_run_pooled_path
+
     reward_run_path = output_dir / "post_switch_by_reward_and_run_length.png"
     _plot_post_switch_by_reward_and_run_length(plt, switch_stats, reward_run_path)
     figure_paths["post_switch_by_reward_and_run_length"] = reward_run_path
+
+    reward_delta_path = output_dir / "post_switch_delta_by_reward.png"
+    _plot_post_switch_delta_by_reward(plt, switch_stats, reward_delta_path)
+    figure_paths["post_switch_delta_by_reward"] = reward_delta_path
+
+    reward_run_delta_path = output_dir / "post_switch_delta_by_reward_and_run_length.png"
+    _plot_post_switch_delta_by_reward_and_run_length(
+        plt,
+        switch_stats,
+        reward_run_delta_path,
+    )
+    figure_paths["post_switch_delta_by_reward_and_run_length"] = (
+        reward_run_delta_path
+    )
 
     reward_subject_scatter_path = output_dir / "post_switch_by_reward_subject_scatter.png"
     _plot_post_switch_by_reward_subject_scatter(
@@ -2935,6 +3618,28 @@ def _save_history_dependent_switch_figures(
     )
     figure_paths[f"history_pattern_comparison_{pattern_type}"] = aggregate_path
 
+    aggregate_pooled_path = (
+        output_dir / f"history_pattern_comparison_{pattern_type}_pooled.png"
+    )
+    _plot_history_pattern_comparison_pooled_figure(
+        plt,
+        history_stats,
+        aggregate_pooled_path,
+        pattern_type=pattern_type,
+    )
+    figure_paths[
+        f"history_pattern_comparison_{pattern_type}_pooled"
+    ] = aggregate_pooled_path
+
+    delta_path = output_dir / f"history_pattern_delta_{pattern_type}.png"
+    _plot_history_pattern_delta_figure(
+        plt,
+        history_stats,
+        delta_path,
+        pattern_type=pattern_type,
+    )
+    figure_paths[f"history_pattern_delta_{pattern_type}"] = delta_path
+
     for n_back in range(1, max_trials_back + 1):
         subject_path = (
             output_dir / f"history_pattern_subject_level_{pattern_type}_nback_{n_back}.png"
@@ -2974,7 +3679,11 @@ def _plot_pooled_switch_probability(plt, switch_stats: Mapping[str, Any], output
     plt.close(fig)
 
 
-def _plot_post_switch_by_reward(plt, switch_stats: Mapping[str, Any], output_path: Path) -> None:
+def _plot_post_switch_by_reward_pooled(
+    plt,
+    switch_stats: Mapping[str, Any],
+    output_path: Path,
+) -> None:
     fig, ax = plt.subplots(figsize=(8, 6))
     conditions = ["rewarded", "unrewarded"]
     labels = ["Animal", "Simulated"]
@@ -3008,7 +3717,42 @@ def _plot_post_switch_by_reward(plt, switch_stats: Mapping[str, Any], output_pat
     plt.close(fig)
 
 
-def _plot_post_switch_by_reward_and_run_length(
+def _plot_post_switch_by_reward(plt, switch_stats: Mapping[str, Any], output_path: Path) -> None:
+    fig, ax = plt.subplots(figsize=(8, 6))
+    subject_aggregate = _as_dict(switch_stats.get("subject_aggregate", {}))
+    reward_group = _as_dict(subject_aggregate.get("post_switch_by_reward", {}))
+    conditions = ["rewarded", "unrewarded"]
+    labels = ["Animal", "Simulated"]
+    offsets = [-0.18, 0.18]
+    width = 0.32
+    x_positions = [0, 1]
+
+    for idx, source in enumerate(("animal", "simulated")):
+        mean_key = f"{source}_mean"
+        sem_key = f"{source}_sem"
+        probs = [
+            _coerce_probability(_as_dict(reward_group.get(condition, {})).get(mean_key))
+            for condition in conditions
+        ]
+        sems = [
+            _coerce_probability(_as_dict(reward_group.get(condition, {})).get(sem_key))
+            for condition in conditions
+        ]
+        xs = [x + offsets[idx] for x in x_positions]
+        ax.bar(xs, probs, width=width, yerr=sems, capsize=4, label=labels[idx], alpha=0.8)
+
+    ax.set_xticks(x_positions)
+    ax.set_xticklabels(["Rewarded", "Unrewarded"])
+    ax.set_ylabel("p_switch(t+1)")
+    ax.set_title("Post-switch Probability By Reward (Subject Mean +/- SEM)")
+    ax.grid(True, axis="y", alpha=0.3)
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(output_path)
+    plt.close(fig)
+
+
+def _plot_post_switch_by_reward_and_run_length_pooled(
     plt,
     switch_stats: Mapping[str, Any],
     output_path: Path,
@@ -3052,6 +3796,145 @@ def _plot_post_switch_by_reward_and_run_length(
     plt.close(fig)
 
 
+def _plot_post_switch_by_reward_and_run_length(
+    plt,
+    switch_stats: Mapping[str, Any],
+    output_path: Path,
+) -> None:
+    fig, ax = plt.subplots(figsize=(10, 6))
+    subject_aggregate = _as_dict(switch_stats.get("subject_aggregate", {}))
+    nested = _as_dict(subject_aggregate.get("post_switch_by_reward_and_run_length", {}))
+    conditions = [
+        ("rewarded", "run_length_1", "Rewarded\nRun=1"),
+        ("rewarded", "run_length_gt1", "Rewarded\nRun>1"),
+        ("unrewarded", "run_length_1", "Unrewarded\nRun=1"),
+        ("unrewarded", "run_length_gt1", "Unrewarded\nRun>1"),
+    ]
+    labels = ["Animal", "Simulated"]
+    offsets = [-0.18, 0.18]
+    width = 0.32
+    x_positions = [0, 1, 2, 3]
+
+    for idx, source in enumerate(("animal", "simulated")):
+        mean_key = f"{source}_mean"
+        sem_key = f"{source}_sem"
+        probs = []
+        sems = []
+        for reward_condition, run_condition, _ in conditions:
+            stats = _as_dict(_as_dict(nested.get(reward_condition, {})).get(run_condition, {}))
+            probs.append(_coerce_probability(stats.get(mean_key)))
+            sems.append(_coerce_probability(stats.get(sem_key)))
+        xs = [x + offsets[idx] for x in x_positions]
+        ax.bar(xs, probs, width=width, yerr=sems, capsize=4, label=labels[idx], alpha=0.8)
+
+    ax.set_xticks(x_positions)
+    ax.set_xticklabels([label for _, _, label in conditions])
+    ax.set_ylabel("p_switch(t+1)")
+    ax.set_title("Post-switch Probability By Reward And Run Length (Subject Mean +/- SEM)")
+    ax.grid(True, axis="y", alpha=0.3)
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(output_path)
+    plt.close(fig)
+
+
+def _plot_post_switch_delta_by_reward(
+    plt,
+    switch_stats: Mapping[str, Any],
+    output_path: Path,
+) -> None:
+    fig, ax = plt.subplots(figsize=(8.5, 6))
+    reward_stats = _as_dict(_as_dict(switch_stats.get("subject_level", {})).get("post_switch_by_reward", {}))
+    rows = [
+        {
+            "label": "Rewarded",
+            "points": _select_valid_subject_points(
+                list(_as_dict(reward_stats.get("rewarded", {})).get("points", []))
+            ),
+        },
+        {
+            "label": "Unrewarded",
+            "points": _select_valid_subject_points(
+                list(_as_dict(reward_stats.get("unrewarded", {})).get("points", []))
+            ),
+        },
+    ]
+    curriculum_to_color = _build_curriculum_color_map(
+        [
+            point.get("curriculum_name", "Unknown")
+            for row in rows
+            for point in row["points"]
+        ],
+        plt,
+    )
+    _plot_delta_distribution_panel(
+        ax=ax,
+        rows=rows,
+        title="Subject Delta Probability By Reward",
+        plt=plt,
+        curriculum_to_color=curriculum_to_color,
+    )
+    _add_curriculum_legend_to_figure(fig, curriculum_to_color)
+    fig.tight_layout(rect=(0.0, 0.02, 1.0, 0.96))
+    fig.savefig(output_path)
+    plt.close(fig)
+
+
+def _plot_post_switch_delta_by_reward_and_run_length(
+    plt,
+    switch_stats: Mapping[str, Any],
+    output_path: Path,
+) -> None:
+    fig, ax = plt.subplots(figsize=(11, 6))
+    reward_run_stats = _as_dict(
+        _as_dict(switch_stats.get("subject_level", {})).get(
+            "post_switch_by_reward_and_run_length",
+            {},
+        )
+    )
+    rows = []
+    for reward_condition, run_condition, label in (
+        ("rewarded", "run_length_1", "Rewarded / Run=1"),
+        ("rewarded", "run_length_gt1", "Rewarded / Run>1"),
+        ("unrewarded", "run_length_1", "Unrewarded / Run=1"),
+        ("unrewarded", "run_length_gt1", "Unrewarded / Run>1"),
+    ):
+        rows.append(
+            {
+                "label": label,
+                "points": _select_valid_subject_points(
+                    list(
+                        _as_dict(
+                            _as_dict(reward_run_stats.get(reward_condition, {})).get(
+                                run_condition,
+                                {},
+                            )
+                        ).get("points", [])
+                    )
+                ),
+            }
+        )
+    curriculum_to_color = _build_curriculum_color_map(
+        [
+            point.get("curriculum_name", "Unknown")
+            for row in rows
+            for point in row["points"]
+        ],
+        plt,
+    )
+    _plot_delta_distribution_panel(
+        ax=ax,
+        rows=rows,
+        title="Subject Delta Probability By Reward And Run Length",
+        plt=plt,
+        curriculum_to_color=curriculum_to_color,
+    )
+    _add_curriculum_legend_to_figure(fig, curriculum_to_color)
+    fig.tight_layout(rect=(0.0, 0.02, 1.0, 0.96))
+    fig.savefig(output_path)
+    plt.close(fig)
+
+
 def _plot_post_switch_by_reward_subject_scatter(
     plt,
     switch_stats: Mapping[str, Any],
@@ -3060,6 +3943,16 @@ def _plot_post_switch_by_reward_subject_scatter(
     fig, axes = plt.subplots(1, 2, figsize=(12, 6))
     subject_level = _as_dict(switch_stats.get("subject_level", {}))
     reward_stats = _as_dict(subject_level.get("post_switch_by_reward", {}))
+    curriculum_to_color = _build_curriculum_color_map(
+        [
+            point.get("curriculum_name", "Unknown")
+            for reward_condition in _REWARD_CONDITIONS
+            for point in _select_valid_subject_points(
+                list(_as_dict(reward_stats.get(reward_condition, {})).get("points", []))
+            )
+        ],
+        plt,
+    )
 
     for axis, reward_condition, label in zip(
         axes,
@@ -3073,10 +3966,12 @@ def _plot_post_switch_by_reward_subject_scatter(
             points=list(panel_stats.get("points", [])),
             summary=_as_dict(panel_stats.get("summary", {})),
             title=label,
+            curriculum_to_color=curriculum_to_color,
         )
 
     fig.suptitle("Subject-Level Post-switch Probability By Reward", fontsize=14)
-    fig.tight_layout()
+    _add_curriculum_legend_to_figure(fig, curriculum_to_color)
+    fig.tight_layout(rect=(0.0, 0.02, 1.0, 0.94))
     fig.savefig(output_path)
     plt.close(fig)
 
@@ -3090,6 +3985,24 @@ def _plot_post_switch_by_reward_and_run_length_subject_scatter(
     subject_level = _as_dict(switch_stats.get("subject_level", {}))
     reward_run_stats = _as_dict(
         subject_level.get("post_switch_by_reward_and_run_length", {})
+    )
+    curriculum_to_color = _build_curriculum_color_map(
+        [
+            point.get("curriculum_name", "Unknown")
+            for reward_condition in _REWARD_CONDITIONS
+            for run_condition in _RUN_LENGTH_CONDITIONS
+            for point in _select_valid_subject_points(
+                list(
+                    _as_dict(
+                        _as_dict(reward_run_stats.get(reward_condition, {})).get(
+                            run_condition,
+                            {},
+                        )
+                    ).get("points", [])
+                )
+            )
+        ],
+        plt,
     )
     panel_definitions = [
         ("rewarded", "run_length_1", "Rewarded / Run=1"),
@@ -3114,13 +4027,15 @@ def _plot_post_switch_by_reward_and_run_length_subject_scatter(
             points=list(panel_stats.get("points", [])),
             summary=_as_dict(panel_stats.get("summary", {})),
             title=label,
+            curriculum_to_color=curriculum_to_color,
         )
 
     fig.suptitle(
         "Subject-Level Post-switch Probability By Reward And Run Length",
         fontsize=14,
     )
-    fig.tight_layout()
+    _add_curriculum_legend_to_figure(fig, curriculum_to_color)
+    fig.tight_layout(rect=(0.0, 0.02, 1.0, 0.96))
     fig.savefig(output_path)
     plt.close(fig)
 
@@ -3131,21 +4046,46 @@ def _plot_subject_level_scatter_panel(
     points: Sequence[Mapping[str, Any]],
     summary: Mapping[str, Any],
     title: str,
+    curriculum_to_color: Mapping[str, Any],
 ) -> None:
     valid_points = _select_valid_subject_points(points)
-    xs = [float(point["animal_probability"]) for point in valid_points]
-    ys = [float(point["simulated_probability"]) for point in valid_points]
-
     if valid_points:
-        ax.scatter(
-            xs,
-            ys,
-            alpha=0.7,
-            s=45,
-            color="tab:blue",
-            edgecolors="black",
-            linewidths=0.7,
-        )
+        for point in valid_points:
+            x_value = float(point["animal_probability"])
+            y_value = float(point["simulated_probability"])
+            curriculum_name = str(point.get("curriculum_name", "Unknown"))
+            color = curriculum_to_color.get(curriculum_name, "tab:blue")
+            xerr = _asymmetric_errorbar(
+                x_value,
+                point.get("animal_ci_low"),
+                point.get("animal_ci_high"),
+            )
+            yerr = _asymmetric_errorbar(
+                y_value,
+                point.get("simulated_ci_low"),
+                point.get("simulated_ci_high"),
+            )
+            if xerr is not None or yerr is not None:
+                ax.errorbar(
+                    [x_value],
+                    [y_value],
+                    xerr=xerr,
+                    yerr=yerr,
+                    fmt="none",
+                    ecolor=color,
+                    alpha=0.25,
+                    capsize=2,
+                    linewidth=1.1,
+                )
+            ax.scatter(
+                [x_value],
+                [y_value],
+                alpha=0.8,
+                s=50,
+                color=color,
+                edgecolors="black",
+                linewidths=0.7,
+            )
     else:
         ax.text(
             0.5,
@@ -3191,6 +4131,121 @@ def _plot_subject_level_scatter_panel(
 
 
 def _plot_history_pattern_comparison_figure(
+    plt,
+    history_stats: Mapping[str, Any],
+    output_path: Path,
+    *,
+    pattern_type: str,
+) -> None:
+    subject_aggregate = _as_dict(
+        _as_dict(history_stats.get("subject_aggregate", {})).get(pattern_type, {})
+    )
+    config = _as_dict(history_stats.get("config", {}))
+    max_trials_back = int(
+        config.get("max_trials_back", _DEFAULT_HISTORY_MAX_TRIALS_BACK)
+    )
+    fig, axes = plt.subplots(1, max_trials_back, figsize=(6 * max_trials_back, 6))
+    if max_trials_back == 1:
+        axes = [axes]
+
+    all_patterns = sorted(
+        {
+            str(row.get("pattern"))
+            for n_back in range(1, max_trials_back + 1)
+            for row in list(_as_dict(subject_aggregate.get(n_back, {})).get("rows", []))
+            if int(row.get("n_subjects", 0)) > 0
+        }
+    )
+    pattern_colors = _build_history_pattern_color_map(all_patterns, plt)
+    legend_handles: dict[str, Any] = {}
+
+    for axis, n_back in zip(axes, range(1, max_trials_back + 1), strict=False):
+        panel = _as_dict(subject_aggregate.get(n_back, {}))
+        valid_rows = [
+            row
+            for row in list(panel.get("rows", []))
+            if int(row.get("n_subjects", 0)) > 0
+        ]
+
+        if not valid_rows:
+            axis.text(
+                0.5,
+                0.5,
+                "No patterns with\nmatched subjects",
+                transform=axis.transAxes,
+                ha="center",
+                va="center",
+                fontsize=11,
+            )
+        else:
+            for row in valid_rows:
+                pattern = str(row.get("pattern"))
+                handle = axis.errorbar(
+                    float(row["animal_mean"]),
+                    float(row["simulated_mean"]),
+                    xerr=row.get("animal_sem"),
+                    yerr=row.get("simulated_sem"),
+                    marker="o",
+                    markersize=7,
+                    color=pattern_colors.get(pattern, "tab:blue"),
+                    capsize=3,
+                    alpha=0.85,
+                    linewidth=1.5,
+                )
+                legend_handles.setdefault(pattern, handle)
+
+        axis.plot([0.0, 1.0], [0.0, 1.0], "k--", alpha=0.5, linewidth=1.25)
+        axis.set_xlim(0.0, 1.0)
+        axis.set_ylim(0.0, 1.0)
+        axis.set_aspect("equal", adjustable="box")
+        axis.set_xlabel("Animal Switch Probability")
+        axis.set_ylabel("Simulation Switch Probability")
+        axis.set_title(f"{n_back} Trial{'s' if n_back > 1 else ''} Back")
+        axis.grid(True, alpha=0.3)
+
+        summary = _as_dict(panel.get("summary", {}))
+        annotation_lines = [
+            f"r={float(summary['correlation']):.3f}"
+            if summary.get("correlation") is not None
+            else "r=None",
+            f"RMSE={float(summary['rmse']):.3f}"
+            if summary.get("rmse") is not None
+            else "RMSE=None",
+            f"n={int(summary.get('n_rows', 0))}",
+        ]
+        axis.text(
+            0.05,
+            0.95,
+            "\n".join(annotation_lines),
+            transform=axis.transAxes,
+            va="top",
+            fontsize=10,
+            bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.8},
+        )
+
+    fig.suptitle(
+        f"History-Dependent Switch Comparison ({pattern_type.capitalize()} Patterns, Subject Mean +/- SEM)",
+        fontsize=14,
+    )
+    if legend_handles:
+        sorted_patterns = sorted(legend_handles)
+        fig.legend(
+            [legend_handles[pattern] for pattern in sorted_patterns],
+            sorted_patterns,
+            loc="lower center",
+            bbox_to_anchor=(0.5, 0.0),
+            ncol=min(max(1, len(sorted_patterns)), 8),
+            fontsize=9,
+            frameon=True,
+        )
+        fig.tight_layout(rect=(0.0, 0.08, 1.0, 0.96))
+    else:
+        fig.tight_layout(rect=(0.0, 0.02, 1.0, 0.96))
+    fig.savefig(output_path)
+    plt.close(fig)
+
+
+def _plot_history_pattern_comparison_pooled_figure(
     plt,
     history_stats: Mapping[str, Any],
     output_path: Path,
@@ -3307,6 +4362,86 @@ def _plot_history_pattern_comparison_figure(
     plt.close(fig)
 
 
+def _plot_history_pattern_delta_figure(
+    plt,
+    history_stats: Mapping[str, Any],
+    output_path: Path,
+    *,
+    pattern_type: str,
+) -> None:
+    config = _as_dict(history_stats.get("config", {}))
+    max_trials_back = int(
+        config.get("max_trials_back", _DEFAULT_HISTORY_MAX_TRIALS_BACK)
+    )
+    subject_min_trials = int(
+        config.get("subject_min_trials", _DEFAULT_HISTORY_SUBJECT_MIN_TRIALS)
+    )
+    subject_level = _as_dict(
+        _as_dict(history_stats.get("subject_level", {})).get(pattern_type, {})
+    )
+    fig, axes = plt.subplots(1, max_trials_back, figsize=(6.5 * max_trials_back, 6))
+    if max_trials_back == 1:
+        axes = [axes]
+    curriculum_to_color = _build_curriculum_color_map(
+        [
+            point.get("curriculum_name", "Unknown")
+            for n_back in range(1, max_trials_back + 1)
+            for pattern in _as_dict(subject_level.get(n_back, {})).keys()
+            for point in _select_valid_subject_history_pattern_points(
+                list(
+                    _as_dict(_as_dict(subject_level.get(n_back, {})).get(pattern, {})).get(
+                        "points",
+                        [],
+                    )
+                ),
+                min_trials=subject_min_trials,
+            )
+        ],
+        plt,
+    )
+
+    for axis, n_back in zip(axes, range(1, max_trials_back + 1), strict=False):
+        rows = []
+        panel_group = _as_dict(subject_level.get(n_back, {}))
+        for pattern in sorted(panel_group):
+            valid_points = _select_valid_subject_history_pattern_points(
+                list(_as_dict(panel_group.get(pattern, {})).get("points", [])),
+                min_trials=subject_min_trials,
+            )
+            if not valid_points:
+                continue
+            rows.append({"label": str(pattern), "points": valid_points})
+        if not rows:
+            axis.text(
+                0.5,
+                0.5,
+                "No valid subject deltas",
+                transform=axis.transAxes,
+                ha="center",
+                va="center",
+                fontsize=11,
+            )
+            axis.set_title(f"{n_back} Trial{'s' if n_back > 1 else ''} Back")
+            axis.set_ylabel("Delta Probability (Simulation - Animal)")
+            axis.grid(True, axis="y", alpha=0.3)
+            continue
+        _plot_delta_distribution_panel(
+            ax=axis,
+            rows=rows,
+            title=f"{n_back} Trial{'s' if n_back > 1 else ''} Back",
+            plt=plt,
+            curriculum_to_color=curriculum_to_color,
+        )
+    fig.suptitle(
+        f"History Pattern Subject Delta ({pattern_type.capitalize()} Patterns)",
+        fontsize=14,
+    )
+    _add_curriculum_legend_to_figure(fig, curriculum_to_color)
+    fig.tight_layout(rect=(0.0, 0.02, 1.0, 0.96))
+    fig.savefig(output_path)
+    plt.close(fig)
+
+
 def _plot_history_pattern_subject_level_figure(
     plt,
     history_stats: Mapping[str, Any],
@@ -3323,6 +4458,17 @@ def _plot_history_pattern_subject_level_figure(
         _as_dict(history_stats.get("subject_level", {})).get(pattern_type, {})
     )
     panel_data = _as_dict(subject_level.get(n_back, {}))
+    curriculum_to_color = _build_curriculum_color_map(
+        [
+            point.get("curriculum_name", "Unknown")
+            for pattern in panel_data
+            for point in _select_valid_subject_history_pattern_points(
+                list(_as_dict(panel_data.get(pattern, {})).get("points", [])),
+                min_trials=subject_min_trials,
+            )
+        ],
+        plt,
+    )
     patterns = sorted(panel_data)
 
     if not patterns:
@@ -3368,6 +4514,7 @@ def _plot_history_pattern_subject_level_figure(
             summary=_as_dict(panel.get("summary", {})),
             title=str(pattern),
             min_trials=subject_min_trials,
+            curriculum_to_color=curriculum_to_color,
         )
 
     for axis in axes_flat[len(patterns) :]:
@@ -3377,6 +4524,7 @@ def _plot_history_pattern_subject_level_figure(
         f"Subject-Level History Patterns ({pattern_type.capitalize()}, n_back={n_back})",
         fontsize=14,
     )
+    _add_curriculum_legend_to_figure(fig, curriculum_to_color)
     fig.tight_layout(rect=(0.0, 0.02, 1.0, 0.96))
     fig.savefig(output_path)
     plt.close(fig)
@@ -3389,21 +4537,49 @@ def _plot_history_subject_pattern_scatter_panel(
     summary: Mapping[str, Any],
     title: str,
     min_trials: int,
+    curriculum_to_color: Mapping[str, Any],
 ) -> None:
     valid_points = _select_valid_subject_history_pattern_points(
         points,
         min_trials=min_trials,
     )
     if valid_points:
-        ax.scatter(
-            [float(point["animal_probability"]) for point in valid_points],
-            [float(point["simulated_probability"]) for point in valid_points],
-            alpha=0.7,
-            s=40,
-            color="tab:blue",
-            edgecolors="black",
-            linewidths=0.7,
-        )
+        for point in valid_points:
+            x_value = float(point["animal_probability"])
+            y_value = float(point["simulated_probability"])
+            curriculum_name = str(point.get("curriculum_name", "Unknown"))
+            color = curriculum_to_color.get(curriculum_name, "tab:blue")
+            xerr = _asymmetric_errorbar(
+                x_value,
+                point.get("animal_ci_low"),
+                point.get("animal_ci_high"),
+            )
+            yerr = _asymmetric_errorbar(
+                y_value,
+                point.get("simulated_ci_low"),
+                point.get("simulated_ci_high"),
+            )
+            if xerr is not None or yerr is not None:
+                ax.errorbar(
+                    [x_value],
+                    [y_value],
+                    xerr=xerr,
+                    yerr=yerr,
+                    fmt="none",
+                    ecolor=color,
+                    alpha=0.25,
+                    capsize=2,
+                    linewidth=1.1,
+                )
+            ax.scatter(
+                [x_value],
+                [y_value],
+                alpha=0.8,
+                s=45,
+                color=color,
+                edgecolors="black",
+                linewidths=0.7,
+            )
     else:
         ax.text(
             0.5,
@@ -3443,6 +4619,129 @@ def _plot_history_subject_pattern_scatter_panel(
             fontsize=9,
             bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.8},
         )
+
+
+def _plot_delta_distribution_panel(
+    *,
+    ax,
+    rows: Sequence[Mapping[str, Any]],
+    title: str,
+    plt,
+    curriculum_to_color: Mapping[str, Any],
+) -> None:
+    np = _import_dependency("numpy")
+    rng = np.random.default_rng(0)
+    x_positions = list(range(len(rows)))
+    for x_position, row in zip(x_positions, rows, strict=False):
+        valid_points = list(row.get("points", []))
+        deltas = [
+            float(point["delta_probability"])
+            for point in valid_points
+            if point.get("delta_probability") is not None
+        ]
+        if len(deltas) >= 2:
+            violin = ax.violinplot(
+                [deltas],
+                positions=[x_position],
+                widths=0.7,
+                showmeans=False,
+                showmedians=False,
+                showextrema=False,
+            )
+            for body in violin["bodies"]:
+                body.set_facecolor("0.8")
+                body.set_edgecolor("0.6")
+                body.set_alpha(0.5)
+        if valid_points:
+            jitter = rng.uniform(-0.12, 0.12, size=len(valid_points))
+            for point, x_offset in zip(valid_points, jitter, strict=False):
+                curriculum_name = str(point.get("curriculum_name", "Unknown"))
+                color = curriculum_to_color.get(curriculum_name, "tab:blue")
+                ax.scatter(
+                    [x_position + float(x_offset)],
+                    [float(point["delta_probability"])],
+                    color=color,
+                    alpha=0.85,
+                    s=34,
+                    edgecolors="black",
+                    linewidths=0.5,
+                )
+        if deltas:
+            ax.errorbar(
+                [x_position],
+                [_mean(deltas)],
+                yerr=_sem(deltas) if len(deltas) > 1 else None,
+                fmt="D",
+                color="black",
+                markersize=5,
+                capsize=4,
+                linewidth=1.3,
+            )
+
+    ax.axhline(0.0, color="black", linestyle="--", alpha=0.5, linewidth=1.2)
+    ax.set_xticks(x_positions)
+    ax.set_xticklabels(
+        [str(row.get("label", "")) for row in rows],
+        rotation=20 if len(rows) > 3 else 0,
+        ha="right" if len(rows) > 3 else "center",
+    )
+    ax.set_ylabel("Delta Probability (Simulation - Animal)")
+    ax.set_title(title)
+    ax.grid(True, axis="y", alpha=0.3)
+
+
+def _asymmetric_errorbar(
+    center: float,
+    ci_low: Any,
+    ci_high: Any,
+) -> list[list[float]] | None:
+    lower = _coerce_probability(ci_low)
+    upper = _coerce_probability(ci_high)
+    if lower is None or upper is None:
+        return None
+    return [[max(0.0, center - lower)], [max(0.0, upper - center)]]
+
+
+def _build_curriculum_color_map(curricula: Sequence[Any], plt) -> dict[str, Any]:
+    normalized = [
+        "Unknown" if curriculum is None or _is_nan(curriculum) else str(curriculum)
+        for curriculum in curricula
+    ]
+    unique_curricula = list(dict.fromkeys(normalized))
+    if not unique_curricula:
+        return {}
+    cmap = plt.get_cmap("tab10")
+    return {
+        curriculum: cmap(index % max(1, cmap.N))
+        for index, curriculum in enumerate(unique_curricula)
+    }
+
+
+def _add_curriculum_legend_to_figure(fig, curriculum_to_color: Mapping[str, Any]) -> None:
+    if not curriculum_to_color:
+        return
+    line2d = importlib.import_module("matplotlib.lines").Line2D
+    handles = [
+        line2d(
+            [0],
+            [0],
+            marker="o",
+            linestyle="",
+            markerfacecolor=color,
+            markeredgecolor="black",
+            label=curriculum,
+        )
+        for curriculum, color in curriculum_to_color.items()
+    ]
+    fig.legend(
+        handles=handles,
+        loc="lower center",
+        bbox_to_anchor=(0.5, 0.0),
+        ncol=min(max(1, len(handles)), 6),
+        fontsize=9,
+        frameon=True,
+        title="Curriculum",
+    )
 
 
 def _build_history_pattern_color_map(
@@ -3887,6 +5186,23 @@ def _sem(values: Sequence[float]) -> float:
     return float(_std(values) / math.sqrt(len(values)))
 
 
+def _median(values: Sequence[float]) -> float:
+    if not values:
+        return math.nan
+    ordered = sorted(float(value) for value in values)
+    mid = len(ordered) // 2
+    if len(ordered) % 2 == 1:
+        return float(ordered[mid])
+    return float((ordered[mid - 1] + ordered[mid]) / 2.0)
+
+
+def _iqr(values: Sequence[float]) -> float:
+    if len(values) < 2:
+        return math.nan
+    ordered = sorted(float(value) for value in values)
+    return float(_quantile(ordered, 0.75) - _quantile(ordered, 0.25))
+
+
 def _rmse(xs: Sequence[float], ys: Sequence[float]) -> float | None:
     if not xs or not ys or len(xs) != len(ys):
         return None
@@ -3926,6 +5242,404 @@ def _finite_difference(lhs: float | None, rhs: float | None) -> float | None:
     if lhs is None or rhs is None:
         return None
     return float(lhs - rhs)
+
+
+def _weighted_mean(values: Sequence[float], weights: Sequence[float]) -> float | None:
+    if not values or not weights or len(values) != len(weights):
+        return None
+    total_weight = float(sum(weights))
+    if total_weight <= 0:
+        return None
+    return float(sum(value * weight for value, weight in zip(values, weights)) / total_weight)
+
+
+def _weighted_rmse(
+    xs: Sequence[float],
+    ys: Sequence[float],
+    weights: Sequence[float],
+) -> float | None:
+    if not xs or not ys or not weights or len(xs) != len(ys) or len(xs) != len(weights):
+        return None
+    total_weight = float(sum(weights))
+    if total_weight <= 0:
+        return None
+    return float(
+        math.sqrt(
+            sum(weight * ((y - x) ** 2) for x, y, weight in zip(xs, ys, weights))
+            / total_weight
+        )
+    )
+
+
+def _resolve_subject_curriculum_map(
+    session_rows,
+    *,
+    fallback_rows=None,
+) -> dict[Any, str]:
+    subject_curriculum_map = _collect_subject_curriculum_map(session_rows)
+    fallback_map = _collect_subject_curriculum_map(fallback_rows)
+    resolved: dict[Any, str] = {}
+    for subject_id in _unique_preserve_order(
+        [*list(subject_curriculum_map.keys()), *list(fallback_map.keys())]
+    ):
+        resolved[subject_id] = str(
+            subject_curriculum_map.get(
+                subject_id,
+                fallback_map.get(subject_id, "Unknown"),
+            )
+        )
+    return resolved
+
+
+def _collect_subject_curriculum_map(session_rows) -> dict[Any, str]:
+    if session_rows is None:
+        return {}
+    curricula_by_subject: dict[Any, list[str]] = {}
+    for row in _iter_session_records(session_rows):
+        subject_id = _normalize_identifier(row.get("subject_id"))
+        curriculum_name = row.get("curriculum_name")
+        if curriculum_name is None or _is_nan(curriculum_name):
+            continue
+        curricula_by_subject.setdefault(subject_id, []).append(str(curriculum_name))
+
+    resolved: dict[Any, str] = {}
+    for subject_id, curricula in curricula_by_subject.items():
+        unique_curricula = list(dict.fromkeys(curricula))
+        if not unique_curricula:
+            resolved[subject_id] = "Unknown"
+        elif len(unique_curricula) == 1:
+            resolved[subject_id] = unique_curricula[0]
+        else:
+            resolved[subject_id] = "Mixed"
+    return resolved
+
+
+def _seed_from_parts(seed: int | None, *parts: Any) -> int:
+    base = "0" if seed is None else str(seed)
+    payload = ":".join([base, *(str(part) for part in parts)]).encode("utf-8")
+    digest = hashlib.sha256(payload).hexdigest()
+    return int(digest[:8], 16)
+
+
+def _bootstrap_switch_metric_intervals(
+    subject_records: Sequence[Mapping[str, Any]],
+    *,
+    seed: int,
+    n_bootstrap: int,
+) -> tuple[dict[str, dict[str, float | None]], dict[str, dict[str, dict[str, float | None]]]]:
+    reward_intervals = {
+        reward_condition: {"ci_low": None, "ci_high": None}
+        for reward_condition in _REWARD_CONDITIONS
+    }
+    reward_run_intervals = {
+        reward_condition: {
+            run_condition: {"ci_low": None, "ci_high": None}
+            for run_condition in _RUN_LENGTH_CONDITIONS
+        }
+        for reward_condition in _REWARD_CONDITIONS
+    }
+    if len(subject_records) < 2 or int(n_bootstrap) <= 0:
+        return reward_intervals, reward_run_intervals
+
+    try:
+        np = importlib.import_module("numpy")
+    except ModuleNotFoundError:
+        np = None
+
+    if np is not None:
+        reward_successes = np.asarray(
+            [
+                [
+                    float(_as_dict(record["reward"][reward_condition]).get("successes", 0.0))
+                    for reward_condition in _REWARD_CONDITIONS
+                ]
+                for record in subject_records
+            ],
+            dtype=float,
+        )
+        reward_ns = np.asarray(
+            [
+                [
+                    float(_as_dict(record["reward"][reward_condition]).get("n", 0.0))
+                    for reward_condition in _REWARD_CONDITIONS
+                ]
+                for record in subject_records
+            ],
+            dtype=float,
+        )
+        reward_run_successes = np.asarray(
+            [
+                [
+                    [
+                        float(
+                            _as_dict(
+                                _as_dict(record["reward_and_run_length"][reward_condition]).get(
+                                    run_condition,
+                                    {},
+                                )
+                            ).get("successes", 0.0)
+                        )
+                        for run_condition in _RUN_LENGTH_CONDITIONS
+                    ]
+                    for reward_condition in _REWARD_CONDITIONS
+                ]
+                for record in subject_records
+            ],
+            dtype=float,
+        )
+        reward_run_ns = np.asarray(
+            [
+                [
+                    [
+                        float(
+                            _as_dict(
+                                _as_dict(record["reward_and_run_length"][reward_condition]).get(
+                                    run_condition,
+                                    {},
+                                )
+                            ).get("n", 0.0)
+                        )
+                        for run_condition in _RUN_LENGTH_CONDITIONS
+                    ]
+                    for reward_condition in _REWARD_CONDITIONS
+                ]
+                for record in subject_records
+            ],
+            dtype=float,
+        )
+        rng = np.random.default_rng(int(seed))
+        sample_indices = rng.integers(
+            0,
+            len(subject_records),
+            size=(int(n_bootstrap), len(subject_records)),
+        )
+        reward_probabilities = np.divide(
+            reward_successes[sample_indices].sum(axis=1),
+            reward_ns[sample_indices].sum(axis=1),
+            out=np.full((int(n_bootstrap), len(_REWARD_CONDITIONS)), np.nan, dtype=float),
+            where=reward_ns[sample_indices].sum(axis=1) > 0,
+        )
+        reward_run_probabilities = np.divide(
+            reward_run_successes[sample_indices].sum(axis=1),
+            reward_run_ns[sample_indices].sum(axis=1),
+            out=np.full(
+                (int(n_bootstrap), len(_REWARD_CONDITIONS), len(_RUN_LENGTH_CONDITIONS)),
+                np.nan,
+                dtype=float,
+            ),
+            where=reward_run_ns[sample_indices].sum(axis=1) > 0,
+        )
+        for reward_index, reward_condition in enumerate(_REWARD_CONDITIONS):
+            reward_intervals[reward_condition] = _bootstrap_interval_from_values(
+                reward_probabilities[:, reward_index]
+            )
+            for run_index, run_condition in enumerate(_RUN_LENGTH_CONDITIONS):
+                reward_run_intervals[reward_condition][
+                    run_condition
+                ] = _bootstrap_interval_from_values(
+                    reward_run_probabilities[:, reward_index, run_index]
+                )
+        return reward_intervals, reward_run_intervals
+
+    rng = random.Random(int(seed))
+    reward_samples = {reward_condition: [] for reward_condition in _REWARD_CONDITIONS}
+    reward_run_samples = {
+        reward_condition: {run_condition: [] for run_condition in _RUN_LENGTH_CONDITIONS}
+        for reward_condition in _REWARD_CONDITIONS
+    }
+    for _ in range(int(n_bootstrap)):
+        sampled_records = [
+            subject_records[rng.randrange(len(subject_records))]
+            for _ in range(len(subject_records))
+        ]
+        reward_totals = _new_reward_count_tree()
+        reward_run_totals = _new_reward_run_count_tree()
+        for record in sampled_records:
+            _accumulate_reward_counts(reward_totals, record["reward"])
+            _accumulate_reward_run_counts(
+                reward_run_totals,
+                record["reward_and_run_length"],
+            )
+        for reward_condition in _REWARD_CONDITIONS:
+            reward_samples[reward_condition].append(
+                _probability_from_counts(reward_totals[reward_condition])
+            )
+            for run_condition in _RUN_LENGTH_CONDITIONS:
+                reward_run_samples[reward_condition][run_condition].append(
+                    _probability_from_counts(
+                        reward_run_totals[reward_condition][run_condition]
+                    )
+                )
+    for reward_condition in _REWARD_CONDITIONS:
+        reward_intervals[reward_condition] = _bootstrap_interval_from_values(
+            reward_samples[reward_condition]
+        )
+        for run_condition in _RUN_LENGTH_CONDITIONS:
+            reward_run_intervals[reward_condition][
+                run_condition
+            ] = _bootstrap_interval_from_values(
+                reward_run_samples[reward_condition][run_condition]
+            )
+    return reward_intervals, reward_run_intervals
+
+
+def _bootstrap_history_pattern_intervals(
+    subject_records: Sequence[Mapping[str, Any]],
+    *,
+    max_trials_back: int,
+    seed: int,
+    n_bootstrap: int,
+) -> dict[str, dict[int, dict[str, dict[str, float | None]]]]:
+    intervals: dict[str, dict[int, dict[str, dict[str, float | None]]]] = {
+        pattern_type: {
+            n_back: {}
+            for n_back in range(1, int(max_trials_back) + 1)
+        }
+        for pattern_type in _HISTORY_PATTERN_TYPES
+    }
+    if len(subject_records) < 2 or int(n_bootstrap) <= 0:
+        return intervals
+
+    try:
+        np = importlib.import_module("numpy")
+    except ModuleNotFoundError:
+        np = None
+
+    if np is not None:
+        rng = np.random.default_rng(int(seed))
+        sample_indices = rng.integers(
+            0,
+            len(subject_records),
+            size=(int(n_bootstrap), len(subject_records)),
+        )
+        for pattern_type in _HISTORY_PATTERN_TYPES:
+            for n_back in range(1, int(max_trials_back) + 1):
+                patterns = sorted(
+                    {
+                        str(pattern)
+                        for record in subject_records
+                        for pattern in _as_dict(
+                            _as_dict(
+                                _as_dict(record.get(pattern_type, {})).get(n_back, {})
+                            )
+                        ).keys()
+                    }
+                )
+                if not patterns:
+                    continue
+                switches = np.zeros((len(subject_records), len(patterns)), dtype=float)
+                totals = np.zeros((len(subject_records), len(patterns)), dtype=float)
+                for record_index, record in enumerate(subject_records):
+                    pattern_bucket = _as_dict(
+                        _as_dict(_as_dict(record.get(pattern_type, {})).get(n_back, {}))
+                    )
+                    for pattern_index, pattern in enumerate(patterns):
+                        counts = _as_dict(pattern_bucket.get(pattern, {}))
+                        switches[record_index, pattern_index] = float(
+                            counts.get("switches", 0.0)
+                        )
+                        totals[record_index, pattern_index] = float(
+                            counts.get("total", 0.0)
+                        )
+                sampled_switches = switches[sample_indices].sum(axis=1)
+                sampled_totals = totals[sample_indices].sum(axis=1)
+                probabilities = np.divide(
+                    sampled_switches,
+                    sampled_totals,
+                    out=np.full(sampled_switches.shape, np.nan, dtype=float),
+                    where=sampled_totals > 0,
+                )
+                for pattern_index, pattern in enumerate(patterns):
+                    intervals[pattern_type][n_back][pattern] = _bootstrap_interval_from_values(
+                        probabilities[:, pattern_index]
+                    )
+        return intervals
+
+    rng = random.Random(int(seed))
+    pattern_samples: dict[str, dict[int, dict[str, list[float]]]] = {
+        pattern_type: {
+            n_back: {}
+            for n_back in range(1, int(max_trials_back) + 1)
+        }
+        for pattern_type in _HISTORY_PATTERN_TYPES
+    }
+    for pattern_type in _HISTORY_PATTERN_TYPES:
+        for n_back in range(1, int(max_trials_back) + 1):
+            patterns = sorted(
+                {
+                    str(pattern)
+                    for record in subject_records
+                    for pattern in _as_dict(
+                        _as_dict(_as_dict(record.get(pattern_type, {})).get(n_back, {}))
+                    ).keys()
+                }
+            )
+            for pattern in patterns:
+                pattern_samples[pattern_type][n_back][pattern] = []
+    for _ in range(int(n_bootstrap)):
+        sampled_records = [
+            subject_records[rng.randrange(len(subject_records))]
+            for _ in range(len(subject_records))
+        ]
+        aggregated = _new_history_pattern_count_tree(max_trials_back)
+        for record in sampled_records:
+            _accumulate_history_pattern_count_tree(
+                aggregated,
+                record,
+                max_trials_back=max_trials_back,
+            )
+        for pattern_type in _HISTORY_PATTERN_TYPES:
+            for n_back in range(1, int(max_trials_back) + 1):
+                for pattern, values in pattern_samples[pattern_type][n_back].items():
+                    probability = _history_probability_from_counts(
+                        _as_dict(
+                            _as_dict(_as_dict(aggregated.get(pattern_type, {})).get(n_back, {})).get(
+                                pattern,
+                                {},
+                            )
+                        )
+                    )
+                    values.append(probability)
+    for pattern_type in _HISTORY_PATTERN_TYPES:
+        for n_back in range(1, int(max_trials_back) + 1):
+            for pattern, values in pattern_samples[pattern_type][n_back].items():
+                intervals[pattern_type][n_back][pattern] = _bootstrap_interval_from_values(
+                    values
+                )
+    return intervals
+
+
+def _bootstrap_interval_from_values(values: Sequence[Any]) -> dict[str, float | None]:
+    finite_values = sorted(
+        float(value)
+        for value in values
+        if value is not None and not _is_nan(value)
+    )
+    if len(finite_values) < 2:
+        return {"ci_low": None, "ci_high": None}
+    return {
+        "ci_low": float(_quantile(finite_values, 0.025)),
+        "ci_high": float(_quantile(finite_values, 0.975)),
+    }
+
+
+def _quantile(values: Sequence[float], q: float) -> float:
+    if not values:
+        return math.nan
+    if len(values) == 1:
+        return float(values[0])
+    bounded_q = min(max(float(q), 0.0), 1.0)
+    ordered = sorted(float(value) for value in values)
+    position = bounded_q * (len(ordered) - 1)
+    lower_index = int(math.floor(position))
+    upper_index = int(math.ceil(position))
+    if lower_index == upper_index:
+        return float(ordered[lower_index])
+    fraction = position - lower_index
+    return float(
+        ordered[lower_index]
+        + (ordered[upper_index] - ordered[lower_index]) * fraction
+    )
 
 
 def _to_serializable(value: Any) -> Any:

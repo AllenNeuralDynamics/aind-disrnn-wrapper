@@ -181,17 +181,32 @@ class TestBaselineRlPostTrainingAnalysis(unittest.TestCase):
             )
         return pd.DataFrame.from_records(records)
 
-    def _mock_save_switch_figures(self, *, switch_stats, output_dir: Path):
+    def _mock_analysis_result(self, output_dir: Path) -> dict[str, object]:
         output_dir.mkdir(parents=True, exist_ok=True)
-        path = output_dir / "pooled_switch_probability.png"
-        path.write_text("switch")
-        return {"pooled_switch_probability": path}
-
-    def _mock_save_history_figures(self, *, history_stats, output_dir: Path):
-        output_dir.mkdir(parents=True, exist_ok=True)
-        path = output_dir / "history_pattern_comparison_abstract.png"
-        path.write_text("history")
-        return {"history_pattern_comparison_abstract": path}
+        simulated_history_path = output_dir / "simulated_session_history.pkl"
+        simulated_history_path.write_bytes(b"simulated")
+        switch_stats_path = output_dir / "switch_stats.json"
+        switch_stats_path.write_text(json.dumps({"window_size": 10}))
+        history_stats_path = output_dir / "history_dependent_switch_stats.json"
+        history_stats_path.write_text(json.dumps({"config": {"max_trials_back": 3}}))
+        quantitative_summary_path = output_dir / "model_vs_animal_quantitative_summary.json"
+        quantitative_summary_path.write_text(json.dumps({"switch_triggered": {}}))
+        switch_figure_path = output_dir / "figures" / "pooled_switch_probability.png"
+        switch_figure_path.parent.mkdir(parents=True, exist_ok=True)
+        switch_figure_path.write_text("switch")
+        history_figure_path = output_dir / "figures" / "history_pattern_comparison_abstract.png"
+        history_figure_path.write_text("history")
+        return {
+            "simulated_session_history": str(simulated_history_path),
+            "switch_stats": str(switch_stats_path),
+            "history_dependent_switch_stats": str(history_stats_path),
+            "model_vs_animal_quantitative_summary": str(quantitative_summary_path),
+            "figure_paths": {
+                "pooled_switch_probability": str(switch_figure_path),
+                "history_pattern_comparison_abstract": str(history_figure_path),
+            },
+            "output_dir": str(output_dir),
+        }
 
     def test_run_analysis_auto_detects_nwb_name_and_logs_missing_sessions(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -218,20 +233,10 @@ class TestBaselineRlPostTrainingAnalysis(unittest.TestCase):
                 ),
             ), mock.patch.object(
                 baseline_rl_analysis,
-                "compute_switch_stats",
-                return_value={"window_size": 10},
-            ), mock.patch.object(
-                baseline_rl_analysis,
-                "compute_history_dependent_switch_stats",
-                return_value={"config": {"max_trials_back": 3}},
-            ), mock.patch.object(
-                baseline_rl_analysis,
-                "save_switch_figures",
-                side_effect=self._mock_save_switch_figures,
-            ), mock.patch.object(
-                baseline_rl_analysis,
-                "save_history_dependent_switch_figures",
-                side_effect=self._mock_save_history_figures,
+                "run_post_training_analysis_from_histories",
+                side_effect=lambda **kwargs: self._mock_analysis_result(
+                    Path(kwargs["output_dir"])
+                ),
             ):
                 result = run_baseline_rl_post_training_analysis(
                     resolved_run_path,
@@ -256,6 +261,10 @@ class TestBaselineRlPostTrainingAnalysis(unittest.TestCase):
             )
             ql2_fit_coverage = json.loads(ql2_fit_coverage_path.read_text())
             self.assertEqual(ql2_fit_coverage["missing_session_ids"], ["m2_2024-01-02_14-00-00"])
+            self.assertIn(
+                "model_vs_animal_quantitative_summary_path",
+                result["models"]["QLearning_L1F1_CK1_softmax"],
+            )
             self.assertTrue(Path(result["animal_session_history"]).exists())
             self.assertTrue(Path(result["model_summary_csv"]).exists())
             self.assertTrue(Path(result["model_summary_json"]).exists())
@@ -282,20 +291,10 @@ class TestBaselineRlPostTrainingAnalysis(unittest.TestCase):
                 ),
             ), mock.patch.object(
                 baseline_rl_analysis,
-                "compute_switch_stats",
-                return_value={"window_size": 10},
-            ), mock.patch.object(
-                baseline_rl_analysis,
-                "compute_history_dependent_switch_stats",
-                return_value={"config": {"max_trials_back": 3}},
-            ), mock.patch.object(
-                baseline_rl_analysis,
-                "save_switch_figures",
-                side_effect=self._mock_save_switch_figures,
-            ), mock.patch.object(
-                baseline_rl_analysis,
-                "save_history_dependent_switch_figures",
-                side_effect=self._mock_save_history_figures,
+                "run_post_training_analysis_from_histories",
+                side_effect=lambda **kwargs: self._mock_analysis_result(
+                    Path(kwargs["output_dir"])
+                ),
             ):
                 result = run_baseline_rl_post_training_analysis(
                     resolved_run_path,

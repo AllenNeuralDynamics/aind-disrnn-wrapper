@@ -21,12 +21,9 @@ from typing import Any, Mapping, Sequence
 from post_training_analysis.generative_analysis import (
     ResolvedModelRun,
     build_curriculum_matched_task,
-    compute_history_dependent_switch_stats,
-    compute_switch_stats,
     derive_session_seed,
     load_animal_session_history,
-    save_history_dependent_switch_figures,
-    save_switch_figures,
+    run_post_training_analysis_from_histories,
     to_serializable,
 )
 
@@ -167,48 +164,17 @@ def run_baseline_rl_post_training_analysis(
                 fit_gap_policy=normalized_fit_gap_policy,
                 n_rollouts_per_session=n_rollouts_per_session,
             )
-            simulated_history_path = model_output_dir / "simulated_session_history.pkl"
-            with simulated_history_path.open("wb") as f:
-                pickle.dump(simulated_sessions, f)
-
             alias_animal_sessions = selected_animal_sessions[
                 selected_animal_sessions["requested_session_id"].isin(
                     fit_coverage["available_session_ids"]
                 )
             ].reset_index(drop=True)
 
-            switch_stats = compute_switch_stats(
+            analysis_result = run_post_training_analysis_from_histories(
                 animal_sessions=alias_animal_sessions,
                 simulated_sessions=simulated_sessions,
-            )
-            switch_figure_paths = save_switch_figures(
-                switch_stats=switch_stats,
-                output_dir=model_output_dir / "figures",
-            )
-            switch_stats_with_figures = dict(switch_stats)
-            switch_stats_with_figures["figure_paths"] = {
-                name: str(path) for name, path in switch_figure_paths.items()
-            }
-            switch_stats_path = model_output_dir / "switch_stats.json"
-            switch_stats_path.write_text(
-                json.dumps(to_serializable(switch_stats_with_figures), indent=2)
-            )
-
-            history_stats = compute_history_dependent_switch_stats(
-                animal_sessions=alias_animal_sessions,
-                simulated_sessions=simulated_sessions,
-            )
-            history_figure_paths = save_history_dependent_switch_figures(
-                history_stats=history_stats,
-                output_dir=model_output_dir / "figures",
-            )
-            history_stats_with_figures = dict(history_stats)
-            history_stats_with_figures["figure_paths"] = {
-                name: str(path) for name, path in history_figure_paths.items()
-            }
-            history_stats_path = model_output_dir / "history_dependent_switch_stats.json"
-            history_stats_path.write_text(
-                json.dumps(to_serializable(history_stats_with_figures), indent=2)
+                output_dir=model_output_dir,
+                save_animal_session_history=False,
             )
 
             fit_coverage["status"] = "completed"
@@ -224,22 +190,33 @@ def run_baseline_rl_post_training_analysis(
             fit_coverage["weighted_average_lpt_secondary_trial_count"] = fit_summary[
                 "weighted_average_lpt_secondary_trial_count"
             ]
-            fit_coverage["simulated_session_history_path"] = str(simulated_history_path)
-            fit_coverage["switch_stats_path"] = str(switch_stats_path)
-            fit_coverage["history_dependent_switch_stats_path"] = str(history_stats_path)
-            fit_coverage["figure_paths"] = {
-                name: str(path)
-                for name, path in {**switch_figure_paths, **history_figure_paths}.items()
-            }
+            fit_coverage["simulated_session_history_path"] = analysis_result[
+                "simulated_session_history"
+            ]
+            fit_coverage["switch_stats_path"] = analysis_result["switch_stats"]
+            fit_coverage["history_dependent_switch_stats_path"] = analysis_result[
+                "history_dependent_switch_stats"
+            ]
+            fit_coverage["model_vs_animal_quantitative_summary_path"] = analysis_result[
+                "model_vs_animal_quantitative_summary"
+            ]
+            fit_coverage["figure_paths"] = dict(analysis_result["figure_paths"])
             fit_coverage_path.write_text(json.dumps(to_serializable(fit_coverage), indent=2))
 
             model_result.update(
                 {
                     **fit_summary,
                     "analysis_session_count": int(len(alias_animal_sessions)),
-                    "simulated_session_history_path": str(simulated_history_path),
-                    "switch_stats_path": str(switch_stats_path),
-                    "history_dependent_switch_stats_path": str(history_stats_path),
+                    "simulated_session_history_path": analysis_result[
+                        "simulated_session_history"
+                    ],
+                    "switch_stats_path": analysis_result["switch_stats"],
+                    "history_dependent_switch_stats_path": analysis_result[
+                        "history_dependent_switch_stats"
+                    ],
+                    "model_vs_animal_quantitative_summary_path": analysis_result[
+                        "model_vs_animal_quantitative_summary"
+                    ],
                     "figure_paths": fit_coverage["figure_paths"],
                 }
             )
