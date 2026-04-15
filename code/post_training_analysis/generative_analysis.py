@@ -4652,20 +4652,39 @@ def _plot_delta_distribution_panel(
                 body.set_facecolor("0.8")
                 body.set_edgecolor("0.6")
                 body.set_alpha(0.45)
-            ax.boxplot(
-                [deltas],
-                positions=[x_position],
-                widths=0.18,
-                patch_artist=True,
-                showfliers=False,
-                boxprops={
-                    "facecolor": "white",
-                    "edgecolor": "black",
-                    "linewidth": 1.2,
-                },
-                whiskerprops={"color": "black", "linewidth": 1.0},
-                capprops={"color": "black", "linewidth": 1.0},
-                medianprops={"color": "black", "linewidth": 1.3},
+            summary = _compute_violin_summary_stats(deltas)
+            ax.vlines(
+                x_position,
+                summary["whisker_low"],
+                summary["whisker_high"],
+                color="black",
+                linewidth=1.0,
+                zorder=3,
+            )
+            ax.vlines(
+                x_position,
+                summary["q1"],
+                summary["q3"],
+                color="black",
+                linewidth=3.2,
+                zorder=4,
+            )
+            ax.hlines(
+                [summary["whisker_low"], summary["whisker_high"]],
+                x_position - 0.07,
+                x_position + 0.07,
+                color="black",
+                linewidth=1.0,
+                zorder=3,
+            )
+            ax.scatter(
+                [x_position],
+                [summary["median"]],
+                color="white",
+                edgecolors="black",
+                linewidths=1.0,
+                s=28,
+                zorder=5,
             )
         if valid_points:
             jitter = rng.uniform(-0.12, 0.12, size=len(valid_points))
@@ -4676,7 +4695,7 @@ def _plot_delta_distribution_panel(
                     [x_position + float(x_offset)],
                     [float(point["delta_probability"])],
                     color=color,
-                    alpha=0.4,
+                    alpha=0.35,
                     s=34,
                     edgecolors="black",
                     linewidths=0.5,
@@ -4692,6 +4711,34 @@ def _plot_delta_distribution_panel(
     ax.set_ylabel("Delta Probability (Simulation - Animal)")
     ax.set_title(title)
     ax.grid(True, axis="y", alpha=0.3)
+
+
+def _compute_violin_summary_stats(values: Sequence[float]) -> dict[str, float]:
+    ordered = sorted(float(value) for value in values)
+    if not ordered:
+        return {
+            "median": math.nan,
+            "q1": math.nan,
+            "q3": math.nan,
+            "whisker_low": math.nan,
+            "whisker_high": math.nan,
+        }
+
+    q1 = float(_quantile(ordered, 0.25))
+    median = float(_median(ordered))
+    q3 = float(_quantile(ordered, 0.75))
+    iqr = q3 - q1
+    lower_bound = q1 - (1.5 * iqr)
+    upper_bound = q3 + (1.5 * iqr)
+    whisker_low = min(value for value in ordered if value >= lower_bound)
+    whisker_high = max(value for value in ordered if value <= upper_bound)
+    return {
+        "median": median,
+        "q1": q1,
+        "q3": q3,
+        "whisker_low": float(whisker_low),
+        "whisker_high": float(whisker_high),
+    }
 
 
 def _asymmetric_errorbar(
