@@ -54,6 +54,49 @@ def _ordered_split_session_ids_from_aligned_df(
     )
 
 
+def _normalize_snapshot_cols_to_retain(
+    cols_to_retain: Optional[List[str]],
+) -> list[str]:
+    snapshot_cols_to_retain = list(cols_to_retain) if cols_to_retain is not None else None
+    if snapshot_cols_to_retain is None:
+        snapshot_cols_to_retain = [
+            "trial",
+            "subject_id",
+            "ses_idx",
+            "animal_response",
+            "earned_reward",
+            "curriculum_name",
+        ]
+    for required_column in ("trial", "subject_id", "ses_idx", "animal_response"):
+        if required_column not in snapshot_cols_to_retain:
+            snapshot_cols_to_retain.append(required_column)
+    if "curriculum_name" not in snapshot_cols_to_retain:
+        snapshot_cols_to_retain.append("curriculum_name")
+    return snapshot_cols_to_retain
+
+
+def _load_snapshot_selection(
+    *,
+    subject_ids: Optional[List],
+    subject_start: Optional[int],
+    subject_end: Optional[int],
+    mature_only: bool,
+    curricula: Optional[List[str]],
+    cols_to_retain: Optional[List[str]],
+) -> tuple[pd.DataFrame, list]:
+    from utils.load_mice_snapshot import load_mice_snapshot  # noqa: PLC0415
+
+    logger.info("Loading train dataset (mature_only=%s) …", mature_only)
+    return load_mice_snapshot(
+        subject_ids=subject_ids,
+        subject_start=subject_start,
+        subject_end=subject_end,
+        mature_only=mature_only,
+        curricula=curricula,
+        cols_to_retain=_normalize_snapshot_cols_to_retain(cols_to_retain),
+    )
+
+
 def _resolve_multisubject_subject_order(
     df: pd.DataFrame,
     resolved_subject_ids: Iterable[int] | Iterable[str] | None = None,
@@ -106,6 +149,168 @@ def _make_multisubject_session_ids_unique(df: pd.DataFrame) -> pd.DataFrame:
         )
     ]
     return normalized_df
+
+
+def _build_session_split_manifest_from_aligned_df(
+    aligned_df: pd.DataFrame,
+    *,
+    eval_every_n: int,
+) -> dict[str, object]:
+    if aligned_df.empty:
+        raise ValueError("Cannot build a session split manifest from an empty dataframe.")
+
+    full_session_ids = list(dict.fromkeys(aligned_df["ses_idx"].tolist()))
+    train_session_ids, eval_session_ids = _ordered_split_session_ids_from_aligned_df(
+        aligned_df,
+        eval_every_n=eval_every_n,
+    )
+
+    train_session_id_set = {str(session_id) for session_id in train_session_ids}
+    eval_session_id_set = {str(session_id) for session_id in eval_session_ids}
+    per_subject_rows = []
+    if "subject_id" in aligned_df.columns:
+        ordered_subject_ids = unique_subject_ids_preserve_order(aligned_df["subject_id"].tolist())
+        for subject_id in ordered_subject_ids:
+            subject_df = aligned_df[aligned_df["subject_id"] == subject_id]
+            subject_session_ids = list(dict.fromkeys(subject_df["ses_idx"].tolist()))
+            per_subject_rows.append(
+                {
+                    "subject_id": normalize_subject_id(subject_id),
+                    "full_session_ids": [str(session_id) for session_id in subject_session_ids],
+                    "train_session_ids": [
+                        str(session_id)
+                        for session_id in subject_session_ids
+                        if str(session_id) in train_session_id_set
+                    ],
+                    "eval_session_ids": [
+                        str(session_id)
+                        for session_id in subject_session_ids
+                        if str(session_id) in eval_session_id_set
+                    ],
+                }
+            )
+
+    return {
+        "full_session_ids": [str(session_id) for session_id in full_session_ids],
+        "train_session_ids": [str(session_id) for session_id in train_session_ids],
+        "eval_session_ids": [str(session_id) for session_id in eval_session_ids],
+        "per_subject": per_subject_rows,
+    }
+
+
+def _build_multisubject_session_split_manifest(
+    df: pd.DataFrame,
+    *,
+    resolved_subject_ids: Iterable[int] | Iterable[str] | None,
+    ignore_policy: str,
+    eval_every_n: int,
+) -> dict[str, object]:
+    if "subject_id" not in df.columns:
+        raise ValueError(
+            "Multisubject loading requires a 'subject_id' column in the raw dataframe."
+        )
+
+    prepared_df = _make_multisubject_session_ids_unique(df)
+    subject_order = _resolve_multisubject_subject_order(prepared_df, resolved_subject_ids)
+    if not subject_order:
+        raise ValueError("No subject data found for multisubject loading.")
+
+    full_session_ids: list[str] = []
+    train_session_ids: list[str] = []
+    eval_session_ids: list[str] = []
+    per_subject_rows: list[dict[str, object]] = []
+
+    for subject_id in subject_order:
+        subject_df = prepared_df[prepared_df["subject_id"] == subject_id].copy()
+        if subject_df.empty:
+            continue
+        sort_columns = ["ses_idx"]
+        if "trial" in subject_df.columns:
+            sort_columns.append("trial")
+        subject_df = subject_df.sort_values(sort_columns).reset_index(drop=True)
+        subject_df = _align_raw_df_with_valid_sessions(
+            subject_df,
+            ignore_policy=ignore_policy,
+        )
+        if subject_df.empty:
+            continue
+
+        subject_session_ids = list(dict.fromkeys(subject_df["source_ses_idx"].tolist()))
+        subject_train_ids, subject_eval_ids = compute_train_eval_session_ids(
+            subject_session_ids,
+            eval_every_n=eval_every_n,
+        )
+        full_session_ids.extend(str(session_id) for session_id in subject_session_ids)
+        train_session_ids.extend(str(session_id) for session_id in subject_train_ids)
+        eval_session_ids.extend(str(session_id) for session_id in subject_eval_ids)
+        per_subject_rows.append(
+            {
+                "subject_id": normalize_subject_id(subject_id),
+                "full_session_ids": [str(session_id) for session_id in subject_session_ids],
+                "train_session_ids": [str(session_id) for session_id in subject_train_ids],
+                "eval_session_ids": [str(session_id) for session_id in subject_eval_ids],
+            }
+        )
+
+    if not full_session_ids:
+        raise ValueError("No multisubject data remains after filtering valid sessions.")
+
+    return {
+        "full_session_ids": full_session_ids,
+        "train_session_ids": train_session_ids,
+        "eval_session_ids": eval_session_ids,
+        "per_subject": per_subject_rows,
+    }
+
+
+def resolve_mice_snapshot_session_split_manifest(
+    *,
+    subject_ids: Optional[List] = None,
+    subject_start: Optional[int] = None,
+    subject_end: Optional[int] = None,
+    ignore_policy: str = "exclude",
+    eval_every_n: int = 2,
+    multisubject: bool = False,
+    mature_only: bool = True,
+    curricula: Optional[List[str]] = None,
+    cols_to_retain: Optional[List[str]] = None,
+) -> dict[str, object]:
+    """Rebuild the exact train/eval session membership used during training."""
+
+    df, selected_subject_ids = _load_snapshot_selection(
+        subject_ids=subject_ids,
+        subject_start=subject_start,
+        subject_end=subject_end,
+        mature_only=mature_only,
+        curricula=curricula,
+        cols_to_retain=cols_to_retain,
+    )
+
+    if multisubject:
+        split_manifest = _build_multisubject_session_split_manifest(
+            df,
+            resolved_subject_ids=selected_subject_ids,
+            ignore_policy=ignore_policy,
+            eval_every_n=eval_every_n,
+        )
+    else:
+        aligned_df = _align_raw_df_with_valid_sessions(df, ignore_policy=ignore_policy)
+        if aligned_df.empty:
+            raise ValueError("No snapshot sessions remain after applying ignore_policy.")
+        split_manifest = _build_session_split_manifest_from_aligned_df(
+            aligned_df,
+            eval_every_n=eval_every_n,
+        )
+
+    return {
+        "source": "snapshot_reconstruction",
+        "multisubject": bool(multisubject),
+        "eval_every_n": int(eval_every_n),
+        "selected_subject_ids": [
+            normalize_subject_id(subject_id) for subject_id in selected_subject_ids
+        ],
+        **split_manifest,
+    }
 
 
 def _build_multisubject_bundle(
@@ -661,32 +866,16 @@ class MiceSnapshotDatasetLoader(DatasetLoader):
         self.extras = extras
 
     def load(self) -> DatasetBundle:
-        from utils.load_mice_snapshot import load_mice_snapshot  # noqa: PLC0415
-
         if self.seed is not None:
             np.random.seed(self.seed)
 
-        snapshot_cols_to_retain = list(self.cols_to_retain) if self.cols_to_retain is not None else None
-        if snapshot_cols_to_retain is None:
-            snapshot_cols_to_retain = [
-                "trial",
-                "subject_id",
-                "ses_idx",
-                "animal_response",
-                "earned_reward",
-                "curriculum_name",
-            ]
-        elif "curriculum_name" not in snapshot_cols_to_retain:
-            snapshot_cols_to_retain.append("curriculum_name")
-
-        logger.info("Loading train dataset (mature_only=%s) …", self.mature_only)
-        df, subject_ids = load_mice_snapshot(
+        df, subject_ids = _load_snapshot_selection(
             subject_ids=self.subject_ids,
             subject_start=self.subject_start,
             subject_end=self.subject_end,
             mature_only=self.mature_only,
             curricula=self.curricula,
-            cols_to_retain=snapshot_cols_to_retain,
+            cols_to_retain=self.cols_to_retain,
         )
 
         if self.multisubject:
@@ -723,9 +912,9 @@ class MiceSnapshotDatasetLoader(DatasetLoader):
             dataset, eval_every_n=self.eval_every_n
         )
         df = _align_raw_df_with_valid_sessions(df, ignore_policy=self.ignore_policy)
-        train_session_ids, eval_session_ids = _ordered_split_session_ids_from_aligned_df(
+        split_manifest = _build_session_split_manifest_from_aligned_df(
             df,
-            eval_every_n=self.eval_every_n,
+            eval_every_n=int(self.eval_every_n),
         )
 
         metadata = {
@@ -740,8 +929,8 @@ class MiceSnapshotDatasetLoader(DatasetLoader):
             "num_sessions": (
                 int(df["ses_idx"].nunique()) if "ses_idx" in df.columns else None
             ),
-            "train_session_ids": train_session_ids,
-            "eval_session_ids": eval_session_ids,
+            "train_session_ids": split_manifest["train_session_ids"],
+            "eval_session_ids": split_manifest["eval_session_ids"],
             "multisubject": self.multisubject,
             "batch_size": self.batch_size,
             "batch_mode": self.batch_mode,

@@ -39,6 +39,9 @@ _DEFAULT_SUBJECT_BOOTSTRAP_SEED = 0
 _REWARD_CONDITIONS = ("rewarded", "unrewarded")
 _RUN_LENGTH_CONDITIONS = ("run_length_1", "run_length_gt1")
 _HISTORY_PATTERN_TYPES = ("detailed", "abstract")
+_SESSION_PARTITION_TRAIN = "train"
+_SESSION_PARTITION_EVAL = "eval"
+_SESSION_PARTITION_COMBINED = "combined"
 
 
 @dataclass
@@ -72,6 +75,7 @@ class ResolvedModelRun:
     trained_subject_ids: list[Any] | None = None
     resolved_subject_ids: list[Any] | None = None
     resolved_session_ids: list[str] | None = None
+    session_split_manifest: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serializable representation."""
@@ -639,6 +643,7 @@ def run_post_training_analysis(
     window_size: int = _DEFAULT_WINDOW_SIZE,
     output_dir: str | Path | None = None,
     save_animal_session_history: bool = False,
+    session_partitions: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     """Run the end-to-end standalone post-training generative analysis.
 
@@ -699,6 +704,29 @@ def run_post_training_analysis(
         time.perf_counter() - stage_started_at,
     )
 
+    normalized_session_partitions = _normalize_session_partitions(session_partitions)
+    if resolved_run.split == _TRAIN_SPLIT:
+        requires_partition_manifest = (
+            len(normalized_session_partitions) > 1
+            or normalized_session_partitions[0] != _SESSION_PARTITION_COMBINED
+        )
+        stage_started_at = time.perf_counter()
+        try:
+            resolved_run = _ensure_session_split_manifest(resolved_run)
+            logger.info(
+                "Completed session split manifest reconstruction in %.2fs",
+                time.perf_counter() - stage_started_at,
+            )
+        except Exception as exc:
+            if requires_partition_manifest:
+                raise
+            logger.warning(
+                "Skipping session split manifest persistence for %s because reconstruction "
+                "failed in the current environment: %s",
+                resolved_run.model_dir,
+                exc,
+            )
+
     result = run_post_training_analysis_from_histories(
         animal_sessions=animal_sessions,
         simulated_sessions=simulated_sessions,
@@ -706,6 +734,7 @@ def run_post_training_analysis(
         resolved_run=resolved_run,
         window_size=window_size,
         save_animal_session_history=save_animal_session_history,
+        session_partitions=normalized_session_partitions,
     )
     logger.info(
         "Finished post-training analysis in %.2fs",
@@ -722,12 +751,14 @@ def run_post_training_analysis_from_histories(
     resolved_run: ResolvedModelRun | Mapping[str, Any] | None = None,
     window_size: int = _DEFAULT_WINDOW_SIZE,
     save_animal_session_history: bool = False,
+    session_partitions: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     """Compute and save post-training analysis outputs from in-memory histories."""
 
     resolved_run_obj = (
         None if resolved_run is None else _coerce_resolved_run(resolved_run)
     )
+    normalized_session_partitions = _normalize_session_partitions(session_partitions)
     if output_dir is None:
         if resolved_run_obj is None:
             raise ValueError(
@@ -739,6 +770,25 @@ def run_post_training_analysis_from_histories(
         )
     else:
         resolved_output_dir = Path(output_dir).expanduser().resolve()
+
+    if (
+        len(normalized_session_partitions) > 1
+        or normalized_session_partitions[0] != _SESSION_PARTITION_COMBINED
+    ):
+        if resolved_run_obj is None:
+            raise ValueError(
+                "resolved_run is required when requesting session-partitioned analysis."
+            )
+        resolved_run_obj = _ensure_session_split_manifest(resolved_run_obj)
+        return _compute_and_save_partitioned_post_training_outputs(
+            animal_sessions=animal_sessions,
+            simulated_sessions=simulated_sessions,
+            output_dir=resolved_output_dir,
+            resolved_run=resolved_run_obj,
+            window_size=window_size,
+            save_animal_session_history=save_animal_session_history,
+            session_partitions=normalized_session_partitions,
+        )
 
     return _compute_and_save_post_training_outputs(
         animal_sessions=animal_sessions,
@@ -758,6 +808,7 @@ def run_post_training_analysis_from_saved_histories(
     output_dir: str | Path | None = None,
     window_size: int = _DEFAULT_WINDOW_SIZE,
     save_animal_session_history: bool = False,
+    session_partitions: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     """Recompute analysis outputs from saved simulated session histories."""
 
@@ -805,7 +856,236 @@ def run_post_training_analysis_from_saved_histories(
         resolved_run=resolved_run_obj,
         window_size=window_size,
         save_animal_session_history=save_animal_session_history,
+        session_partitions=session_partitions,
     )
+
+
+def _normalize_session_partition_name(value: str) -> str:
+    normalized = str(value).strip().lower()
+    if normalized in {"train", "training"}:
+        return _SESSION_PARTITION_TRAIN
+    if normalized == "eval":
+        return _SESSION_PARTITION_EVAL
+    if normalized in {"combined", "all", "together"}:
+        return _SESSION_PARTITION_COMBINED
+    raise ValueError(
+        f"Unsupported session partition {value!r}. Use 'train', 'eval', or 'combined'."
+    )
+
+
+def _normalize_session_partitions(
+    session_partitions: Sequence[str] | None,
+) -> tuple[str, ...]:
+    if session_partitions is None:
+        return (_SESSION_PARTITION_COMBINED,)
+    if isinstance(session_partitions, str):
+        requested = [session_partitions]
+    else:
+        requested = list(session_partitions)
+    if not requested:
+        raise ValueError("session_partitions must contain at least one partition.")
+
+    normalized_partitions: list[str] = []
+    seen: set[str] = set()
+    for partition in requested:
+        normalized = _normalize_session_partition_name(partition)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        normalized_partitions.append(normalized)
+    return tuple(normalized_partitions)
+
+
+def _normalize_session_split_manifest(
+    manifest: Mapping[str, Any],
+) -> dict[str, Any]:
+    per_subject_rows = []
+    for row in list(manifest.get("per_subject") or []):
+        if not isinstance(row, Mapping):
+            continue
+        per_subject_rows.append(
+            {
+                "subject_id": _normalize_identifier(row.get("subject_id")),
+                "full_session_ids": [str(session_id) for session_id in row.get("full_session_ids") or []],
+                "train_session_ids": [
+                    str(session_id) for session_id in row.get("train_session_ids") or []
+                ],
+                "eval_session_ids": [
+                    str(session_id) for session_id in row.get("eval_session_ids") or []
+                ],
+            }
+        )
+
+    return {
+        "source": str(manifest.get("source", "unknown")),
+        "multisubject": bool(manifest.get("multisubject", False)),
+        "eval_every_n": int(manifest.get("eval_every_n", 2)),
+        "selected_subject_ids": [
+            _normalize_identifier(subject_id)
+            for subject_id in manifest.get("selected_subject_ids") or []
+        ],
+        "full_session_ids": [
+            str(session_id) for session_id in manifest.get("full_session_ids") or []
+        ],
+        "train_session_ids": [
+            str(session_id) for session_id in manifest.get("train_session_ids") or []
+        ],
+        "eval_session_ids": [
+            str(session_id) for session_id in manifest.get("eval_session_ids") or []
+        ],
+        "per_subject": per_subject_rows,
+    }
+
+
+def _ensure_session_split_manifest(
+    resolved_run: ResolvedModelRun,
+) -> ResolvedModelRun:
+    if resolved_run.session_split_manifest is not None:
+        resolved_run.session_split_manifest = _normalize_session_split_manifest(
+            resolved_run.session_split_manifest
+        )
+        return resolved_run
+
+    if resolved_run.split != _TRAIN_SPLIT:
+        raise NotImplementedError(
+            "Session-partitioned post-training analysis is only supported for "
+            "resolved_run.split='train'."
+        )
+
+    data_cfg = _as_dict(resolved_run.run_config.get("data", {}))
+    data_type = str(data_cfg.get("type", "mice_snapshot")).strip().lower()
+    data_target = str(data_cfg.get("_target_", "")).strip().lower()
+    if data_type and data_type != "mice_snapshot" and "micesnapshotdatasetloader" not in data_target:
+        raise ValueError(
+            "Session split reconstruction currently supports mice_snapshot-backed "
+            f"runs only. Observed data.type={data_type!r}."
+        )
+
+    eval_every_n = int(data_cfg.get("eval_every_n", 2))
+    selection_subject_ids = (
+        list(resolved_run.trained_subject_ids)
+        if resolved_run.multisubject and resolved_run.trained_subject_ids is not None
+        else resolved_run.selection.get("subject_ids")
+    )
+    mice_loader_mod = importlib.import_module("data_loaders.mice")
+    split_manifest = mice_loader_mod.resolve_mice_snapshot_session_split_manifest(
+        subject_ids=selection_subject_ids,
+        subject_start=(
+            None if resolved_run.multisubject else resolved_run.selection.get("subject_start")
+        ),
+        subject_end=(
+            None if resolved_run.multisubject else resolved_run.selection.get("subject_end")
+        ),
+        ignore_policy=resolved_run.ignore_policy,
+        eval_every_n=eval_every_n,
+        multisubject=bool(resolved_run.multisubject),
+        mature_only=bool(resolved_run.mature_only),
+        curricula=list(resolved_run.curricula or []),
+        cols_to_retain=[
+            "trial",
+            "subject_id",
+            "ses_idx",
+            "animal_response",
+            "earned_reward",
+            "curriculum_name",
+        ],
+    )
+    resolved_run.session_split_manifest = _normalize_session_split_manifest(split_manifest)
+    return resolved_run
+
+
+def _filter_session_rows_by_session_ids(
+    session_rows,
+    *,
+    allowed_session_ids: Sequence[str],
+    prefer_source_session_ids: bool,
+):
+    allowed_session_id_set = {str(session_id) for session_id in allowed_session_ids}
+    filtered_records = []
+    for row in _iter_session_records(session_rows):
+        session_id = None
+        if prefer_source_session_ids:
+            session_id = row.get("source_ses_idx")
+        if session_id in (None, ""):
+            session_id = row.get("ses_idx")
+        if str(session_id) not in allowed_session_id_set:
+            continue
+        filtered_records.append(dict(row))
+    return _restore_input_container(session_rows, filtered_records)
+
+
+def _count_session_rows(session_rows) -> int:
+    return sum(1 for _ in _iter_session_records(session_rows))
+
+
+def _compute_and_save_partitioned_post_training_outputs(
+    *,
+    animal_sessions,
+    simulated_sessions,
+    output_dir: str | Path,
+    resolved_run: ResolvedModelRun,
+    window_size: int,
+    save_animal_session_history: bool,
+    session_partitions: Sequence[str],
+) -> dict[str, Any]:
+    resolved_run = _ensure_session_split_manifest(resolved_run)
+    manifest = _normalize_session_split_manifest(resolved_run.session_split_manifest or {})
+    analysis_output_dir = Path(output_dir).expanduser().resolve()
+    analysis_output_dir.mkdir(parents=True, exist_ok=True)
+
+    resolved_run_path = analysis_output_dir / "resolved_run.json"
+    resolved_run_path.write_text(json.dumps(resolved_run.to_dict(), indent=2))
+
+    partition_results: dict[str, Any] = {}
+    partition_summary: dict[str, Any] = {}
+    for partition in session_partitions:
+        if partition == _SESSION_PARTITION_COMBINED:
+            partition_animal_sessions = animal_sessions
+            partition_simulated_sessions = simulated_sessions
+        else:
+            allowed_session_ids = manifest[f"{partition}_session_ids"]
+            partition_animal_sessions = _filter_session_rows_by_session_ids(
+                animal_sessions,
+                allowed_session_ids=allowed_session_ids,
+                prefer_source_session_ids=False,
+            )
+            partition_simulated_sessions = _filter_session_rows_by_session_ids(
+                simulated_sessions,
+                allowed_session_ids=allowed_session_ids,
+                prefer_source_session_ids=True,
+            )
+
+        partition_result = _compute_and_save_post_training_outputs(
+            animal_sessions=partition_animal_sessions,
+            simulated_sessions=partition_simulated_sessions,
+            output_dir=analysis_output_dir / partition,
+            resolved_run=resolved_run,
+            window_size=window_size,
+            save_animal_session_history=save_animal_session_history,
+        )
+        partition_result["session_partition"] = partition
+        partition_results[partition] = partition_result
+        partition_summary[partition] = {
+            "output_dir": partition_result["output_dir"],
+            "num_animal_sessions": _count_session_rows(partition_animal_sessions),
+            "num_simulated_sessions": _count_session_rows(partition_simulated_sessions),
+        }
+
+    summary_path = analysis_output_dir / "session_partition_summary.json"
+    summary_payload = {
+        "output_dir": str(analysis_output_dir),
+        "resolved_run": str(resolved_run_path),
+        "session_partitions": list(session_partitions),
+        "partition_summary": partition_summary,
+    }
+    summary_path.write_text(json.dumps(_to_serializable(summary_payload), indent=2))
+
+    return {
+        "output_dir": str(analysis_output_dir),
+        "resolved_run": str(resolved_run_path),
+        "session_partition_summary": str(summary_path),
+        "partition_results": partition_results,
+    }
 
 
 def _compute_and_save_post_training_outputs(

@@ -1756,6 +1756,312 @@ model:
             self.assertTrue(Path(result["switch_stats"]).exists())
             self.assertTrue(Path(result["history_dependent_switch_stats"]).exists())
 
+    def test_run_post_training_analysis_from_histories_partitions_train_eval_and_combined(self):
+        resolved_run = generative_analysis.ResolvedModelRun(
+            model_dir="/tmp/model",
+            inputs_path="/tmp/model/inputs.yaml",
+            outputs_dir="/tmp/model/outputs",
+            model_type="gru",
+            split="train",
+            checkpoint_policy="final",
+            checkpoint_step=10,
+            checkpoint_label="final",
+            params_path="/tmp/model/outputs/params.json",
+            config_path="/tmp/model/outputs/gru_config.json",
+            seed=1,
+            multisubject=False,
+            mature_only=True,
+            ignore_policy="exclude",
+            curricula=["Uncoupled Baiting"],
+            features=None,
+            selection={"subject_start": 0, "subject_end": 1},
+            session_split_manifest={
+                "source": "persisted",
+                "multisubject": False,
+                "eval_every_n": 2,
+                "selected_subject_ids": ["m1"],
+                "full_session_ids": ["m1_s1", "m1_s2"],
+                "train_session_ids": ["m1_s1"],
+                "eval_session_ids": ["m1_s2"],
+                "per_subject": [
+                    {
+                        "subject_id": "m1",
+                        "full_session_ids": ["m1_s1", "m1_s2"],
+                        "train_session_ids": ["m1_s1"],
+                        "eval_session_ids": ["m1_s2"],
+                    }
+                ],
+            },
+        )
+        animal_sessions = [
+            self._session(
+                subject_id="m1",
+                ses_idx="m1_s1",
+                choice_history=[0, 0, 1],
+                reward_history=[1, 0, 1],
+            ),
+            self._session(
+                subject_id="m1",
+                ses_idx="m1_s2",
+                choice_history=[1, 1, 0],
+                reward_history=[0, 1, 0],
+            ),
+        ]
+        simulated_sessions = [
+            self._session(
+                subject_id="m1",
+                ses_idx="m1_s1__rollout_0",
+                source_ses_idx="m1_s1",
+                choice_history=[0, 0, 1],
+                reward_history=[1, 0, 1],
+            ),
+            self._session(
+                subject_id="m1",
+                ses_idx="m1_s1__rollout_1",
+                source_ses_idx="m1_s1",
+                choice_history=[0, 1, 1],
+                reward_history=[1, 1, 0],
+            ),
+            self._session(
+                subject_id="m1",
+                ses_idx="m1_s2__rollout_0",
+                source_ses_idx="m1_s2",
+                choice_history=[1, 1, 0],
+                reward_history=[0, 1, 0],
+            ),
+        ]
+
+        captured_calls: dict[str, dict[str, object]] = {}
+
+        def _fake_compute(
+            *,
+            animal_sessions,
+            simulated_sessions,
+            output_dir,
+            resolved_run,
+            window_size,
+            save_animal_session_history,
+        ):
+            partition = Path(output_dir).name
+            captured_calls[partition] = {
+                "animal_session_ids": [row["ses_idx"] for row in animal_sessions],
+                "simulated_source_session_ids": [
+                    row.get("source_ses_idx", row["ses_idx"]) for row in simulated_sessions
+                ],
+                "resolved_run_has_manifest": resolved_run.session_split_manifest is not None,
+                "window_size": window_size,
+                "save_animal_session_history": save_animal_session_history,
+            }
+            output_dir_path = Path(output_dir)
+            return {
+                "output_dir": str(output_dir_path),
+                "simulated_session_history": str(output_dir_path / "simulated.pkl"),
+                "switch_stats": str(output_dir_path / "switch.json"),
+                "history_dependent_switch_stats": str(output_dir_path / "history.json"),
+                "model_vs_animal_quantitative_summary": str(output_dir_path / "summary.json"),
+            }
+
+        with tempfile.TemporaryDirectory() as tmpdir, mock.patch.object(
+            generative_analysis,
+            "_compute_and_save_post_training_outputs",
+            side_effect=_fake_compute,
+        ) as mocked_compute, mock.patch.object(
+            generative_analysis.importlib,
+            "import_module",
+            side_effect=AssertionError("manifest reconstruction should not run"),
+        ):
+            result = generative_analysis.run_post_training_analysis_from_histories(
+                animal_sessions=animal_sessions,
+                simulated_sessions=simulated_sessions,
+                output_dir=Path(tmpdir),
+                resolved_run=resolved_run,
+                session_partitions=("train", "eval", "combined"),
+            )
+
+            self.assertEqual(mocked_compute.call_count, 3)
+            self.assertEqual(
+                captured_calls["train"]["animal_session_ids"],
+                ["m1_s1"],
+            )
+            self.assertEqual(
+                captured_calls["train"]["simulated_source_session_ids"],
+                ["m1_s1", "m1_s1"],
+            )
+            self.assertEqual(
+                captured_calls["eval"]["animal_session_ids"],
+                ["m1_s2"],
+            )
+            self.assertEqual(
+                captured_calls["eval"]["simulated_source_session_ids"],
+                ["m1_s2"],
+            )
+            self.assertEqual(
+                captured_calls["combined"]["animal_session_ids"],
+                ["m1_s1", "m1_s2"],
+            )
+            self.assertEqual(
+                captured_calls["combined"]["simulated_source_session_ids"],
+                ["m1_s1", "m1_s1", "m1_s2"],
+            )
+            self.assertTrue(Path(result["resolved_run"]).exists())
+            self.assertTrue(Path(result["session_partition_summary"]).exists())
+            self.assertEqual(
+                set(result["partition_results"].keys()),
+                {"train", "eval", "combined"},
+            )
+
+    def test_run_post_training_analysis_from_saved_histories_reconstructs_missing_manifest(self):
+        resolved_run = generative_analysis.ResolvedModelRun(
+            model_dir="/tmp/model",
+            inputs_path="/tmp/model/inputs.yaml",
+            outputs_dir="/tmp/model/outputs",
+            model_type="gru",
+            split="train",
+            checkpoint_policy="final",
+            checkpoint_step=10,
+            checkpoint_label="final",
+            params_path="/tmp/model/outputs/params.json",
+            config_path="/tmp/model/outputs/gru_config.json",
+            seed=1,
+            multisubject=False,
+            mature_only=True,
+            ignore_policy="exclude",
+            curricula=["Uncoupled Baiting"],
+            features=None,
+            selection={"subject_start": 0, "subject_end": 1},
+            run_config={"data": {"type": "mice_snapshot", "eval_every_n": 2}},
+        )
+        animal_sessions = [
+            self._session(
+                subject_id="m1",
+                ses_idx="m1_s1",
+                choice_history=[0, 0, 1],
+                reward_history=[1, 0, 1],
+            ),
+            self._session(
+                subject_id="m1",
+                ses_idx="m1_s2",
+                choice_history=[1, 1, 0],
+                reward_history=[0, 1, 0],
+            ),
+        ]
+        simulated_sessions = [
+            self._session(
+                subject_id="m1",
+                ses_idx="m1_s1__rollout_0",
+                source_ses_idx="m1_s1",
+                choice_history=[0, 0, 1],
+                reward_history=[1, 0, 1],
+            ),
+            self._session(
+                subject_id="m1",
+                ses_idx="m1_s2__rollout_0",
+                source_ses_idx="m1_s2",
+                choice_history=[1, 1, 0],
+                reward_history=[0, 1, 0],
+            ),
+        ]
+        reconstructed_manifest = {
+            "source": "snapshot_reconstruction",
+            "multisubject": False,
+            "eval_every_n": 2,
+            "selected_subject_ids": ["m1"],
+            "full_session_ids": ["m1_s1", "m1_s2"],
+            "train_session_ids": ["m1_s1"],
+            "eval_session_ids": ["m1_s2"],
+            "per_subject": [
+                {
+                    "subject_id": "m1",
+                    "full_session_ids": ["m1_s1", "m1_s2"],
+                    "train_session_ids": ["m1_s1"],
+                    "eval_session_ids": ["m1_s2"],
+                }
+            ],
+        }
+
+        class _FakeMiceLoaderModule:
+            @staticmethod
+            def resolve_mice_snapshot_session_split_manifest(**_kwargs):
+                return reconstructed_manifest
+
+        captured_calls: dict[str, dict[str, object]] = {}
+
+        def _fake_compute(
+            *,
+            animal_sessions,
+            simulated_sessions,
+            output_dir,
+            resolved_run,
+            window_size,
+            save_animal_session_history,
+        ):
+            partition = Path(output_dir).name
+            captured_calls[partition] = {
+                "animal_session_ids": [row["ses_idx"] for row in animal_sessions],
+                "simulated_source_session_ids": [
+                    row.get("source_ses_idx", row["ses_idx"]) for row in simulated_sessions
+                ],
+                "resolved_run_has_manifest": resolved_run.session_split_manifest is not None,
+            }
+            output_dir_path = Path(output_dir)
+            return {
+                "output_dir": str(output_dir_path),
+                "simulated_session_history": str(output_dir_path / "simulated.pkl"),
+                "switch_stats": str(output_dir_path / "switch.json"),
+                "history_dependent_switch_stats": str(output_dir_path / "history.json"),
+                "model_vs_animal_quantitative_summary": str(output_dir_path / "summary.json"),
+            }
+
+        def _fake_import_module(name):
+            if name == "data_loaders.mice":
+                return _FakeMiceLoaderModule()
+            return __import__(name)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            animal_path = root / "animal.pkl"
+            simulated_path = root / "simulated.pkl"
+            resolved_run_path = root / "resolved_run.json"
+            with animal_path.open("wb") as f:
+                pickle.dump(animal_sessions, f)
+            with simulated_path.open("wb") as f:
+                pickle.dump(simulated_sessions, f)
+            resolved_run_path.write_text(json.dumps(resolved_run.to_dict(), indent=2))
+
+            with mock.patch.object(
+                generative_analysis,
+                "_compute_and_save_post_training_outputs",
+                side_effect=_fake_compute,
+            ) as mocked_compute, mock.patch.object(
+                generative_analysis.importlib,
+                "import_module",
+                side_effect=_fake_import_module,
+            ):
+                result = generative_analysis.run_post_training_analysis_from_saved_histories(
+                    simulated_session_history_path=simulated_path,
+                    animal_session_history_path=animal_path,
+                    resolved_run_path=resolved_run_path,
+                    output_dir=root / "saved",
+                    session_partitions=("train", "eval", "combined"),
+                )
+
+            self.assertEqual(mocked_compute.call_count, 3)
+            saved_resolved_payload = json.loads(Path(result["resolved_run"]).read_text())
+            self.assertEqual(
+                saved_resolved_payload["session_split_manifest"]["train_session_ids"],
+                ["m1_s1"],
+            )
+            self.assertEqual(
+                captured_calls["train"]["simulated_source_session_ids"],
+                ["m1_s1"],
+            )
+            self.assertEqual(
+                captured_calls["eval"]["simulated_source_session_ids"],
+                ["m1_s2"],
+            )
+            self.assertTrue(captured_calls["combined"]["resolved_run_has_manifest"])
+            self.assertTrue(Path(result["session_partition_summary"]).exists())
+
 
 if __name__ == "__main__":
     unittest.main()

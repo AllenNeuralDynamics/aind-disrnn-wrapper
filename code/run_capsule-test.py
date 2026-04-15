@@ -26,4 +26,5 @@ result = run_post_training_analysis(
     window_size=10,
     save_animal_session_history=False,
     output_dir="/results",
+    session_partitions=("train", "eval", "combined"),
 )
