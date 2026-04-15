@@ -20,22 +20,24 @@ from post_training_analysis import run_post_training_analysis_from_saved_histori
 
 
 
-# # bari
+# bari
+result = run_post_training_analysis_from_saved_histories(
+    simulated_session_history_path="/data/generative_runs-multisubject_train10-baseline_rl/QLearning_L1F1_CK1_softmax/simulated_session_history.pkl",
+    animal_session_history_path="/data/generative_runs-multisubject_train10-baseline_rl/animal_session_history.pkl",
+    output_dir="/results",
+    window_size=10,
+    save_animal_session_history=False,
+)
+
+# # hattori
 # result = run_post_training_analysis_from_saved_histories(
-#     simulated_session_history_path="/data/generative_runs-multisubject_train10-baseline_rl/QLearning_L1F1_CK1_softmax/simulated_session_history.pkl",
+#     simulated_session_history_path="/data/generative_runs-multisubject_train10-baseline_rl/QLearning_L2F1_softmax/simulated_session_history.pkl",
 #     animal_session_history_path="/data/generative_runs-multisubject_train10-baseline_rl/animal_session_history.pkl",
 #     output_dir="/results",
 #     window_size=10,
 #     save_animal_session_history=False,
 # )
 
-# hattori
-result = run_post_training_analysis_from_saved_histories(
-    simulated_session_history_path="/data/generative_runs-multisubject_train10-baseline_rl/QLearning_L2F1_softmax/simulated_session_history.pkl",
-    animal_session_history_path="/data/generative_runs-multisubject_train10-baseline_rl/animal_session_history.pkl",
-    output_dir="/results",
-    window_size=10,
-    save_animal_session_history=False,
-)
+
 
 # print(result["model_vs_animal_quantitative_summary"])
