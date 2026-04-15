@@ -4713,24 +4713,24 @@ def _build_sorted_history_delta_rows(
         )
         if not valid_points:
             continue
-        animal_probabilities = [
-            float(point["animal_probability"])
+        delta_probabilities = [
+            float(point["delta_probability"])
             for point in valid_points
-            if point.get("animal_probability") is not None
+            if point.get("delta_probability") is not None
         ]
-        animal_mean = _mean(animal_probabilities) if animal_probabilities else math.nan
+        delta_mean = _mean(delta_probabilities) if delta_probabilities else math.nan
         rows.append(
             {
                 "label": str(pattern),
                 "points": valid_points,
-                "animal_mean": animal_mean,
+                "delta_mean": delta_mean,
             }
         )
     return sorted(
         rows,
         key=lambda row: (
-            math.isnan(float(row["animal_mean"])),
-            float(row["animal_mean"]),
+            math.isnan(float(row["delta_mean"])),
+            -float(row["delta_mean"]) if not math.isnan(float(row["delta_mean"])) else 0.0,
             str(row["label"]),
         ),
     )
