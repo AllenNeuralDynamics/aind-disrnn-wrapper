@@ -1348,8 +1348,50 @@ model:
         )
         self.assertEqual(
             generative_analysis._format_significance_label(None),
-            "n/a",
+            "",
         )
+
+    def test_build_delta_condition_summary_aggregates_significant_condition_stats(self):
+        rows = [
+            {
+                "label": "A",
+                "points": [
+                    {"delta_probability": value, "animal_n": 2}
+                    for value in [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
+                ],
+            },
+            {
+                "label": "B",
+                "points": [
+                    {"delta_probability": value, "animal_n": 1}
+                    for value in [0.2, 0.2, 0.2, 0.2, 0.2, 0.2]
+                ],
+            },
+            {
+                "label": "C",
+                "points": [
+                    {"delta_probability": value, "animal_n": 5}
+                    for value in [-0.1, 0.1]
+                ],
+            },
+        ]
+
+        summary = generative_analysis._build_delta_condition_summary(
+            rows,
+            animal_count_key="animal_n",
+        )
+
+        significant_summary = summary["significant_conditions_summary"]
+        self.assertEqual(significant_summary["n_significant_conditions"], 2)
+        self.assertAlmostEqual(
+            significant_summary["average_of_condition_medians"],
+            0.275,
+        )
+        self.assertAlmostEqual(
+            significant_summary["weighted_average_delta_probability"],
+            0.3,
+        )
+        self.assertAlmostEqual(significant_summary["total_animal_trial_count"], 18.0)
 
     def test_simulate_model_sessions_multisubject_gru_uses_subject_indices(self):
         self._assert_multisubject_simulation_uses_subject_indices("gru")
@@ -1561,16 +1603,26 @@ model:
             )
             self.assertIn("switch_triggered", summary_payload)
             self.assertIn("history_dependent", summary_payload)
+            self.assertIn(
+                "delta_significance_summary",
+                summary_payload["switch_triggered"],
+            )
+            self.assertIn(
+                "delta_significance_summary",
+                summary_payload["history_dependent"],
+            )
 
             switch_payload = json.loads(Path(result["switch_stats"]).read_text())
             self.assertIn("subject_aggregate", switch_payload)
             self.assertIn("quantitative_summary", switch_payload)
+            self.assertIn("delta_significance_summary", switch_payload)
 
             history_payload = json.loads(
                 Path(result["history_dependent_switch_stats"]).read_text()
             )
             self.assertIn("subject_aggregate", history_payload)
             self.assertIn("quantitative_summary", history_payload)
+            self.assertIn("delta_significance_summary", history_payload)
 
     def test_run_post_training_analysis_from_saved_histories_matches_direct_reanalysis(self):
         animal_sessions = [

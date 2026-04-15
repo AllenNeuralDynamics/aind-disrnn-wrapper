@@ -504,6 +504,7 @@ def compute_switch_stats(
         simulated_with_switches,
     )
     subject_aggregate = _build_switch_subject_aggregate(subject_level)
+    delta_significance_summary = _build_switch_delta_significance_summary(subject_level)
     quantitative_summary = _build_switch_quantitative_summary(
         animal_summary=animal_summary,
         simulated_summary=simulated_summary,
@@ -517,6 +518,7 @@ def compute_switch_stats(
         "comparison": _compare_switch_summaries(animal_summary, simulated_summary),
         "subject_level": subject_level,
         "subject_aggregate": subject_aggregate,
+        "delta_significance_summary": delta_significance_summary,
         "quantitative_summary": quantitative_summary,
     }
 
@@ -599,6 +601,11 @@ def compute_history_dependent_switch_stats(
         max_trials_back=max_trials_back,
         subject_min_trials=subject_min_trials,
     )
+    delta_significance_summary = _build_history_delta_significance_summary(
+        subject_level,
+        max_trials_back=max_trials_back,
+        subject_min_trials=subject_min_trials,
+    )
     quantitative_summary = _build_history_quantitative_summary(
         comparison=comparison,
         subject_aggregate=subject_aggregate,
@@ -617,6 +624,7 @@ def compute_history_dependent_switch_stats(
         "comparison": comparison,
         "subject_level": subject_level,
         "subject_aggregate": subject_aggregate,
+        "delta_significance_summary": delta_significance_summary,
         "quantitative_summary": quantitative_summary,
     }
 
@@ -878,10 +886,20 @@ def _compute_and_save_post_training_outputs(
     )
 
     combined_quantitative_summary = {
-        "switch_triggered": _as_dict(switch_stats.get("quantitative_summary", {})),
-        "history_dependent": _as_dict(
-            history_dependent_switch_stats.get("quantitative_summary", {})
-        ),
+        "switch_triggered": {
+            "quantitative_summary": _as_dict(switch_stats.get("quantitative_summary", {})),
+            "delta_significance_summary": _as_dict(
+                switch_stats.get("delta_significance_summary", {})
+            ),
+        },
+        "history_dependent": {
+            "quantitative_summary": _as_dict(
+                history_dependent_switch_stats.get("quantitative_summary", {})
+            ),
+            "delta_significance_summary": _as_dict(
+                history_dependent_switch_stats.get("delta_significance_summary", {})
+            ),
+        },
     }
     quantitative_summary_path.write_text(
         json.dumps(_to_serializable(combined_quantitative_summary), indent=2)
@@ -2640,6 +2658,164 @@ def _build_history_quantitative_summary(
     return summary
 
 
+def _build_switch_delta_significance_summary(
+    subject_level: Mapping[str, Any],
+) -> dict[str, Any]:
+    reward_stats = _as_dict(subject_level.get("post_switch_by_reward", {}))
+    reward_rows = [
+        {
+            "key": "rewarded",
+            "label": "Rewarded",
+            "points": _select_valid_subject_points(
+                list(_as_dict(reward_stats.get("rewarded", {})).get("points", []))
+            ),
+        },
+        {
+            "key": "unrewarded",
+            "label": "Unrewarded",
+            "points": _select_valid_subject_points(
+                list(_as_dict(reward_stats.get("unrewarded", {})).get("points", []))
+            ),
+        },
+    ]
+    reward_run_stats = _as_dict(
+        subject_level.get("post_switch_by_reward_and_run_length", {})
+    )
+    reward_run_rows = []
+    for reward_condition, run_condition, label in (
+        ("rewarded", "run_length_1", "Rewarded / Run=1"),
+        ("rewarded", "run_length_gt1", "Rewarded / Run>1"),
+        ("unrewarded", "run_length_1", "Unrewarded / Run=1"),
+        ("unrewarded", "run_length_gt1", "Unrewarded / Run>1"),
+    ):
+        reward_run_rows.append(
+            {
+                "key": f"{reward_condition}:{run_condition}",
+                "label": label,
+                "points": _select_valid_subject_points(
+                    list(
+                        _as_dict(
+                            _as_dict(reward_run_stats.get(reward_condition, {})).get(
+                                run_condition,
+                                {},
+                            )
+                        ).get("points", [])
+                    )
+                ),
+            }
+        )
+    return {
+        "test_name": "wilcoxon_signed_rank_two_sided",
+        "post_switch_by_reward": _build_delta_condition_summary(
+            reward_rows,
+            animal_count_key="animal_n",
+        ),
+        "post_switch_by_reward_and_run_length": _build_delta_condition_summary(
+            reward_run_rows,
+            animal_count_key="animal_n",
+        ),
+    }
+
+
+def _build_history_delta_significance_summary(
+    subject_level: Mapping[str, Any],
+    *,
+    max_trials_back: int,
+    subject_min_trials: int,
+) -> dict[str, Any]:
+    summary: dict[str, Any] = {"test_name": "wilcoxon_signed_rank_two_sided"}
+    for pattern_type in _HISTORY_PATTERN_TYPES:
+        pattern_group = _as_dict(subject_level.get(pattern_type, {}))
+        pattern_summary: dict[int, Any] = {}
+        for n_back in range(1, int(max_trials_back) + 1):
+            panel_group = _as_dict(pattern_group.get(n_back, {}))
+            rows = _build_sorted_history_delta_rows(
+                panel_group,
+                min_trials=subject_min_trials,
+            )
+            pattern_summary[n_back] = _build_delta_condition_summary(
+                rows,
+                animal_count_key="animal_total",
+            )
+        summary[pattern_type] = pattern_summary
+    return summary
+
+
+def _build_delta_condition_summary(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    animal_count_key: str,
+) -> dict[str, Any]:
+    condition_summaries: list[dict[str, Any]] = []
+    significant_condition_medians: list[float] = []
+    significant_condition_mean_deltas: list[float] = []
+    significant_condition_weights: list[float] = []
+
+    for row in rows:
+        valid_points = list(row.get("points", []))
+        deltas = _extract_point_delta_probabilities(valid_points)
+        test_result = _wilcoxon_signed_rank_against_zero(deltas)
+        p_value = test_result.get("p_value")
+        is_significant = p_value is not None and float(p_value) < 0.05
+        animal_trial_count = float(
+            sum(
+                float(point.get(animal_count_key, 0.0) or 0.0)
+                for point in valid_points
+                if point.get(animal_count_key) is not None
+            )
+        )
+        median_delta = _median(deltas) if deltas else None
+        mean_delta = _mean(deltas) if deltas else None
+        condition_summary = {
+            "key": row.get("key", row.get("label")),
+            "label": row.get("label"),
+            "n_subjects": len(valid_points),
+            "n_nonzero_subjects": int(test_result.get("n_nonzero", 0) or 0),
+            "p_value": p_value,
+            "is_significant": bool(is_significant),
+            "median_delta_probability": median_delta,
+            "mean_delta_probability": mean_delta,
+            "animal_trial_count": animal_trial_count,
+        }
+        condition_summaries.append(condition_summary)
+        if is_significant and median_delta is not None and mean_delta is not None:
+            significant_condition_medians.append(float(median_delta))
+            significant_condition_mean_deltas.append(float(mean_delta))
+            significant_condition_weights.append(animal_trial_count)
+
+    significant_summary = {
+        "n_significant_conditions": len(significant_condition_medians),
+        "average_of_condition_medians": (
+            _mean(significant_condition_medians)
+            if significant_condition_medians
+            else None
+        ),
+        "weighted_average_delta_probability": (
+            _weighted_mean(
+                significant_condition_mean_deltas,
+                significant_condition_weights,
+            )
+            if significant_condition_mean_deltas
+            and sum(significant_condition_weights) > 0
+            else None
+        ),
+        "total_animal_trial_count": (
+            float(sum(significant_condition_weights))
+            if significant_condition_weights
+            else 0.0
+        ),
+        "weighted_average_definition": (
+            "Condition-level mean delta probability weighted by total animal trials "
+            "in that condition across valid subjects."
+        ),
+    }
+    return {
+        "test_name": "wilcoxon_signed_rank_two_sided",
+        "conditions": condition_summaries,
+        "significant_conditions_summary": significant_summary,
+    }
+
+
 def _build_switch_pooled_reward_rows(
     *,
     animal_summary: Mapping[str, Any],
@@ -3887,6 +4063,12 @@ def _plot_post_switch_delta_by_reward(
 ) -> None:
     fig, ax = plt.subplots(figsize=(8.5, 6))
     reward_stats = _as_dict(_as_dict(switch_stats.get("subject_level", {})).get("post_switch_by_reward", {}))
+    delta_summary = _as_dict(
+        _as_dict(switch_stats.get("delta_significance_summary", {})).get(
+            "post_switch_by_reward",
+            {},
+        )
+    )
     rows = [
         {
             "label": "Rewarded",
@@ -3912,7 +4094,10 @@ def _plot_post_switch_delta_by_reward(
     _plot_delta_distribution_panel(
         ax=ax,
         rows=rows,
-        title="Subject Delta Probability By Reward",
+        title=_format_delta_plot_title(
+            "Subject Delta Probability By Reward",
+            delta_summary if show_significance else {},
+        ),
         plt=plt,
         curriculum_to_color=curriculum_to_color,
         show_significance=show_significance,
@@ -3935,6 +4120,12 @@ def _plot_post_switch_delta_by_reward_and_run_length(
     fig, ax = plt.subplots(figsize=(11, 6))
     reward_run_stats = _as_dict(
         _as_dict(switch_stats.get("subject_level", {})).get(
+            "post_switch_by_reward_and_run_length",
+            {},
+        )
+    )
+    delta_summary = _as_dict(
+        _as_dict(switch_stats.get("delta_significance_summary", {})).get(
             "post_switch_by_reward_and_run_length",
             {},
         )
@@ -3972,7 +4163,10 @@ def _plot_post_switch_delta_by_reward_and_run_length(
     _plot_delta_distribution_panel(
         ax=ax,
         rows=rows,
-        title="Subject Delta Probability By Reward And Run Length",
+        title=_format_delta_plot_title(
+            "Subject Delta Probability By Reward And Run Length",
+            delta_summary if show_significance else {},
+        ),
         plt=plt,
         curriculum_to_color=curriculum_to_color,
         show_significance=show_significance,
@@ -4284,8 +4478,9 @@ def _plot_history_pattern_comparison_figure(
             handles=[legend_handles[pattern] for pattern in sorted_patterns],
             labels=sorted_patterns,
             ncol=min(max(1, len(sorted_patterns)), 8),
+            y_anchor=-0.03,
         )
-        fig.tight_layout(rect=(0.0, 0.14, 1.0, 0.96))
+        fig.tight_layout(rect=(0.0, 0.18, 1.0, 0.96))
     else:
         fig.tight_layout(rect=(0.0, 0.02, 1.0, 0.96))
     fig.savefig(output_path)
@@ -4398,8 +4593,9 @@ def _plot_history_pattern_comparison_pooled_figure(
             handles=[legend_handles[pattern] for pattern in sorted_patterns],
             labels=sorted_patterns,
             ncol=min(max(1, len(sorted_patterns)), 8),
+            y_anchor=-0.03,
         )
-        fig.tight_layout(rect=(0.0, 0.14, 1.0, 0.96))
+        fig.tight_layout(rect=(0.0, 0.18, 1.0, 0.96))
     else:
         fig.tight_layout(rect=(0.0, 0.02, 1.0, 0.96))
     fig.savefig(output_path)
@@ -4423,6 +4619,12 @@ def _plot_history_pattern_delta_figure(
     )
     subject_level = _as_dict(
         _as_dict(history_stats.get("subject_level", {})).get(pattern_type, {})
+    )
+    delta_summary = _as_dict(
+        _as_dict(history_stats.get("delta_significance_summary", {})).get(
+            pattern_type,
+            {},
+        )
     )
     if max_trials_back == 3:
         fig = plt.figure(figsize=(13, 10))
@@ -4477,7 +4679,10 @@ def _plot_history_pattern_delta_figure(
         _plot_delta_distribution_panel(
             ax=axis,
             rows=rows,
-            title=f"{n_back} Trial{'s' if n_back > 1 else ''} Back",
+            title=_format_delta_plot_title(
+                f"{n_back} Trial{'s' if n_back > 1 else ''} Back",
+                _as_dict(delta_summary.get(n_back, {})) if show_significance else {},
+            ),
             plt=plt,
             curriculum_to_color=curriculum_to_color,
             xtick_rotation=28.0,
@@ -4750,15 +4955,15 @@ def _plot_delta_distribution_panel(
             finite_values.extend(deltas)
             if show_significance:
                 wilcoxon_result = _wilcoxon_signed_rank_against_zero(deltas)
-                annotation_specs.append(
-                    {
-                        "x": x_position,
-                        "y": max(max(deltas), 0.0),
-                        "label": _format_significance_label(
-                            wilcoxon_result.get("p_value")
-                        ),
-                    }
-                )
+                label = _format_significance_label(wilcoxon_result.get("p_value"))
+                if label:
+                    annotation_specs.append(
+                        {
+                            "x": x_position,
+                            "y": max(max(deltas), 0.0),
+                            "label": label,
+                        }
+                    )
 
     ax.axhline(0.0, color="black", linestyle="--", alpha=0.5, linewidth=1.2)
     _set_delta_distribution_ylim(
@@ -4960,14 +5165,14 @@ def _wilcoxon_normal_approximation_p_value(
 
 def _format_significance_label(p_value: float | None) -> str:
     if p_value is None:
-        return "n/a"
+        return ""
     if p_value < 0.001:
         return "***"
     if p_value < 0.01:
         return "**"
     if p_value < 0.05:
         return "*"
-    return "n.s."
+    return ""
 
 
 def _set_delta_distribution_ylim(
@@ -4997,6 +5202,8 @@ def _annotate_delta_significance(
     scale = max(y_max - y_min, abs(y_min), abs(y_max), 0.2)
     label_offset = 0.06 * scale
     for annotation in annotations:
+        if not str(annotation.get("label", "")):
+            continue
         ax.text(
             float(annotation["x"]),
             float(annotation["y"]) + label_offset,
@@ -5016,6 +5223,28 @@ def _add_delta_significance_note(fig, *, y: float = 0.985) -> None:
         ha="center",
         va="top",
         fontsize=9,
+    )
+
+
+def _format_delta_plot_title(
+    base_title: str,
+    delta_summary: Mapping[str, Any],
+) -> str:
+    significant_summary = _as_dict(
+        _as_dict(delta_summary).get("significant_conditions_summary", {})
+    )
+    average_of_condition_medians = significant_summary.get(
+        "average_of_condition_medians"
+    )
+    weighted_average_delta_probability = significant_summary.get(
+        "weighted_average_delta_probability"
+    )
+    if average_of_condition_medians is None or weighted_average_delta_probability is None:
+        return base_title
+    return (
+        f"{base_title}\n"
+        f"Sig cond median avg={float(average_of_condition_medians):.3f}, "
+        f"wt delta={float(weighted_average_delta_probability):.3f}"
     )
 
 
