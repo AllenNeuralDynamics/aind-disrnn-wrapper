@@ -2,6 +2,10 @@
 	"version": 1,
 	"attached_datasets": [
 		{
+			"id": "0ae5a5ec-2d2e-4726-bcf3-f22f814795ce",
+			"mount": "mice_multisubject_train10-baseline_rl_CTT-260415"
+		},
+		{
 			"id": "1172a0a1-c9a4-4ceb-9e62-ae08ffaf8ae2",
 			"mount": "mice_multisubject_train10-baseline_rl_Bari-260414"
 		},
@@ -56,10 +60,6 @@
 		{
 			"id": "ccf1dc32-9d83-425e-ae6d-70e183c58778",
 			"mount": "mice_snapshot_1"
-		},
-		{
-			"id": "e4bf5bc9-9685-40e6-96c0-ee6ee46b2448",
-			"mount": "mice_multisubject_train10-baseline_rl_CTT-260415"
 		},
 		{
 			"id": "ecf50edc-9090-4ade-bd90-7486b38de2ca",

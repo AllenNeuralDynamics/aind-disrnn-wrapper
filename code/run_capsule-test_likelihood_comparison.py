@@ -15,7 +15,7 @@ result = run_prediction_likelihood_comparison(
     [
         "/data/mice_multisubject_train10-baseline_rl_Bari-260414/1",
         "/data/mice_multisubject_train10-baseline_rl_Hattori-260414/1",
-        "/data/mice_multisubject_train10-baseline_rl_CTT-260415/1",
+        "/data/mice_multisubject_train10-baseline_rl_CTT-260415/mice_multisubject_train10-baseline_rl_CTT-260415/1",
         "/data/mice_multisubject_train10-gru-260323/13",
         "/data/mice_train10_test3-gru-260324/14",
         "/data/mice_multisubject_train10-disrnn-260323/3",
