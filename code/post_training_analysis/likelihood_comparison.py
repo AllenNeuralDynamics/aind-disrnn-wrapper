@@ -287,6 +287,9 @@ def run_prediction_likelihood_comparison(
     plots_dir.mkdir(parents=True, exist_ok=True)
     bar_plot_path = plots_dir / "prediction_likelihood_barplots.png"
     violin_plot_path = plots_dir / "prediction_likelihood_violins.png"
+    subject_comparison_plot_path = (
+        plots_dir / "prediction_likelihood_subject_comparison.png"
+    )
 
     _plot_pooled_likelihood_bars(
         pooled_metrics_df=pooled_metrics_df,
@@ -305,6 +308,15 @@ def run_prediction_likelihood_comparison(
         curriculum_palette=curriculum_palette,
         figure_title_session_counts=plot_title_session_counts,
         output_path=violin_plot_path,
+    )
+    _plot_subject_comparison_scatter(
+        session_metrics_df=session_metrics_df,
+        subject_metrics_df=subject_metrics_df,
+        model_order=resolved_labels,
+        splits_to_plot=splits_to_plot,
+        curriculum_palette=curriculum_palette,
+        figure_title_session_counts=plot_title_session_counts,
+        output_path=subject_comparison_plot_path,
     )
 
     summary_payload = {
@@ -332,6 +344,7 @@ def run_prediction_likelihood_comparison(
             "subject_metrics_pickle": str(subject_metrics_pickle_path),
             "bar_plot": str(bar_plot_path),
             "violin_plot": str(violin_plot_path),
+            "subject_comparison_plot": str(subject_comparison_plot_path),
         },
     }
     summary_path = resolved_output_dir / "summary.json"
@@ -349,6 +362,7 @@ def run_prediction_likelihood_comparison(
         "subject_metrics_pickle": str(subject_metrics_pickle_path),
         "bar_plot": str(bar_plot_path),
         "violin_plot": str(violin_plot_path),
+        "subject_comparison_plot": str(subject_comparison_plot_path),
     }
 
 
@@ -1780,7 +1794,356 @@ def _build_plot_title_session_counts(
                 for model_label in model_order
             )
         )
-    return " | ".join(title_parts)
+    return "\n".join(title_parts)
+
+
+def _plot_subject_comparison_scatter(
+    *,
+    session_metrics_df: Any,
+    subject_metrics_df: Any,
+    model_order: Sequence[str],
+    splits_to_plot: Sequence[str],
+    curriculum_palette: Mapping[str, str],
+    figure_title_session_counts: str,
+    output_path: Path,
+    n_bootstrap: int = 1000,
+) -> None:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
+
+    first_model_label = str(model_order[0]) if model_order else "First model"
+    comparison_labels = [str(model_label) for model_label in model_order[1:]]
+
+    figure_title = f"Subject Comparison vs {first_model_label}"
+    if figure_title_session_counts:
+        figure_title = f"{figure_title}\n{figure_title_session_counts}"
+
+    if not comparison_labels or not splits_to_plot:
+        fig, ax = plt.subplots(figsize=(6.4, 4.8))
+        fig.suptitle(figure_title, y=0.995)
+        ax.text(
+            0.5,
+            0.5,
+            "Need at least two models with supported splits.",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+        )
+        ax.set_axis_off()
+        fig.tight_layout(rect=(0, 0, 1, 0.88))
+        fig.savefig(output_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        return
+
+    n_rows = max(1, len(splits_to_plot))
+    n_cols = max(1, len(comparison_labels))
+    fig, axes = plt.subplots(
+        n_rows,
+        n_cols,
+        figsize=(max(6.0, 4.8 * n_cols), max(4.8, 4.8 * n_rows)),
+        squeeze=False,
+        sharex=True,
+        sharey=True,
+    )
+    fig.suptitle(figure_title, y=0.995)
+
+    for row_index, split_name in enumerate(splits_to_plot):
+        for col_index, comparison_model_label in enumerate(comparison_labels):
+            ax = axes[row_index, col_index]
+            points_df = _build_subject_comparison_points(
+                session_metrics_df=session_metrics_df,
+                subject_metrics_df=subject_metrics_df,
+                split_name=split_name,
+                first_model_label=first_model_label,
+                comparison_model_label=comparison_model_label,
+                n_bootstrap=n_bootstrap,
+            )
+            if points_df.empty:
+                ax.text(
+                    0.5,
+                    0.5,
+                    "No overlapping subject data",
+                    ha="center",
+                    va="center",
+                    transform=ax.transAxes,
+                )
+                ax.set_title(
+                    f"{_BAR_SPLIT_TITLES.get(split_name, split_name.replace('_', ' ').title())}\n"
+                    f"{comparison_model_label} vs {first_model_label}"
+                )
+                ax.set_xlabel(first_model_label)
+                ax.set_ylabel(comparison_model_label)
+                ax.grid(color="0.9", linewidth=1.0)
+                ax.set_axisbelow(True)
+                continue
+
+            min_value = min(
+                float(points_df["x_low"].min()),
+                float(points_df["y_low"].min()),
+            )
+            max_value = max(
+                float(points_df["x_high"].max()),
+                float(points_df["y_high"].max()),
+            )
+            padding = max(0.02, (max_value - min_value) * 0.06)
+            axis_min = max(0.0, min_value - padding)
+            axis_max = min(1.0, max_value + padding)
+            if axis_max <= axis_min:
+                axis_max = min(1.0, axis_min + 0.1)
+
+            for point in points_df.to_dict(orient="records"):
+                color = curriculum_palette.get(
+                    str(point["curriculum_name"]),
+                    _DEFAULT_CURRICULUM_COLORS["Unknown"],
+                )
+                ax.errorbar(
+                    float(point["x"]),
+                    float(point["y"]),
+                    xerr=[
+                        [max(0.0, float(point["x"]) - float(point["x_low"]))],
+                        [max(0.0, float(point["x_high"]) - float(point["x"]))],
+                    ],
+                    yerr=[
+                        [max(0.0, float(point["y"]) - float(point["y_low"]))],
+                        [max(0.0, float(point["y_high"]) - float(point["y"]))],
+                    ],
+                    fmt="none",
+                    ecolor=color,
+                    elinewidth=0.9,
+                    capsize=2,
+                    alpha=0.35,
+                    zorder=2,
+                )
+                ax.scatter(
+                    float(point["x"]),
+                    float(point["y"]),
+                    s=48,
+                    color=color,
+                    edgecolor="white",
+                    linewidth=0.6,
+                    alpha=0.8,
+                    zorder=3,
+                )
+
+            ax.plot(
+                [axis_min, axis_max],
+                [axis_min, axis_max],
+                color="dimgray",
+                linestyle="--",
+                linewidth=1.4,
+                zorder=1,
+            )
+            ax.set_xlim(axis_min, axis_max)
+            ax.set_ylim(axis_min, axis_max)
+            ax.set_aspect("equal", adjustable="box")
+            ax.set_title(
+                f"{_BAR_SPLIT_TITLES.get(split_name, split_name.replace('_', ' ').title())}\n"
+                f"{comparison_model_label} vs {first_model_label}"
+            )
+            ax.set_xlabel(first_model_label)
+            ax.set_ylabel(comparison_model_label)
+            ax.grid(color="0.9", linewidth=1.0)
+            ax.set_axisbelow(True)
+
+    legend_handles = [
+        Line2D(
+            [0],
+            [0],
+            marker="o",
+            linestyle="",
+            markerfacecolor=color,
+            markeredgecolor=color,
+            label=curriculum_name,
+        )
+        for curriculum_name, color in curriculum_palette.items()
+    ]
+    legend_handles.append(
+        Line2D(
+            [0],
+            [0],
+            color="dimgray",
+            linestyle="--",
+            linewidth=1.5,
+            label="Diagonal reference",
+        )
+    )
+    fig.legend(
+        handles=legend_handles,
+        loc="upper center",
+        ncol=min(len(legend_handles), 5),
+    )
+    fig.tight_layout(rect=(0, 0, 1, 0.90))
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _build_subject_comparison_points(
+    *,
+    session_metrics_df: Any,
+    subject_metrics_df: Any,
+    split_name: str,
+    first_model_label: str,
+    comparison_model_label: str,
+    n_bootstrap: int,
+) -> Any:
+    pd = _import_pandas()
+
+    first_subject_df = subject_metrics_df[
+        (subject_metrics_df["split"] == split_name)
+        & (subject_metrics_df["model_label"] == first_model_label)
+    ].copy()
+    comparison_subject_df = subject_metrics_df[
+        (subject_metrics_df["split"] == split_name)
+        & (subject_metrics_df["model_label"] == comparison_model_label)
+    ].copy()
+    if first_subject_df.empty or comparison_subject_df.empty:
+        return pd.DataFrame(
+            columns=[
+                "subject_id",
+                "curriculum_name",
+                "x",
+                "y",
+                "x_low",
+                "x_high",
+                "y_low",
+                "y_high",
+            ]
+        )
+
+    comparison_by_subject = {
+        _normalize_identifier(row["subject_id"]): row
+        for row in comparison_subject_df.to_dict(orient="records")
+        if row.get("likelihood") is not None and not _is_nan(row.get("likelihood"))
+    }
+    rows: list[dict[str, Any]] = []
+    for first_row in first_subject_df.to_dict(orient="records"):
+        subject_id = _normalize_identifier(first_row["subject_id"])
+        comparison_row = comparison_by_subject.get(subject_id)
+        if comparison_row is None:
+            continue
+        x_value = first_row.get("likelihood")
+        y_value = comparison_row.get("likelihood")
+        if x_value is None or y_value is None or _is_nan(x_value) or _is_nan(y_value):
+            continue
+
+        first_session_df = session_metrics_df[
+            (session_metrics_df["split"] == split_name)
+            & (session_metrics_df["model_label"] == first_model_label)
+            & (session_metrics_df["subject_id"] == subject_id)
+        ].copy()
+        comparison_session_df = session_metrics_df[
+            (session_metrics_df["split"] == split_name)
+            & (session_metrics_df["model_label"] == comparison_model_label)
+            & (session_metrics_df["subject_id"] == subject_id)
+        ].copy()
+
+        x_low, x_high = _bootstrap_subject_likelihood_interval(
+            first_session_df,
+            n_bootstrap=n_bootstrap,
+            random_seed=_stable_bootstrap_seed(first_model_label, split_name, subject_id),
+        )
+        y_low, y_high = _bootstrap_subject_likelihood_interval(
+            comparison_session_df,
+            n_bootstrap=n_bootstrap,
+            random_seed=_stable_bootstrap_seed(
+                comparison_model_label,
+                split_name,
+                subject_id,
+            ),
+        )
+        if _is_nan(x_low) or _is_nan(x_high):
+            x_low = float(x_value)
+            x_high = float(x_value)
+        if _is_nan(y_low) or _is_nan(y_high):
+            y_low = float(y_value)
+            y_high = float(y_value)
+        rows.append(
+            {
+                "subject_id": subject_id,
+                "curriculum_name": _resolve_comparison_curriculum_name(
+                    first_row.get("curriculum_name"),
+                    comparison_row.get("curriculum_name"),
+                ),
+                "x": float(x_value),
+                "y": float(y_value),
+                "x_low": float(x_low),
+                "x_high": float(x_high),
+                "y_low": float(y_low),
+                "y_high": float(y_high),
+            }
+        )
+
+    return pd.DataFrame(rows)
+
+
+def _bootstrap_subject_likelihood_interval(
+    session_metrics_df: Any,
+    *,
+    n_bootstrap: int,
+    random_seed: int,
+) -> tuple[float, float]:
+    import numpy as np
+
+    if session_metrics_df.empty:
+        return math.nan, math.nan
+
+    log_likelihoods = session_metrics_df["total_log_likelihood"].astype(float).to_numpy()
+    total_trials = session_metrics_df["total_trials"].astype(int).to_numpy()
+    observed_likelihood = _optional_normalized_likelihood_from_log_stats(
+        float(log_likelihoods.sum()),
+        int(total_trials.sum()),
+    )
+    if observed_likelihood is None or _is_nan(observed_likelihood):
+        return math.nan, math.nan
+    if len(log_likelihoods) <= 1:
+        return float(observed_likelihood), float(observed_likelihood)
+
+    rng = np.random.default_rng(random_seed)
+    sample_indices = rng.integers(
+        0,
+        len(log_likelihoods),
+        size=(max(1, int(n_bootstrap)), len(log_likelihoods)),
+    )
+    sampled_log_likelihoods = log_likelihoods[sample_indices].sum(axis=1)
+    sampled_total_trials = total_trials[sample_indices].sum(axis=1)
+    valid_mask = sampled_total_trials > 0
+    if not np.any(valid_mask):
+        return float(observed_likelihood), float(observed_likelihood)
+    bootstrap_likelihoods = np.exp(
+        sampled_log_likelihoods[valid_mask] / sampled_total_trials[valid_mask]
+    )
+    low, high = np.quantile(bootstrap_likelihoods, [0.025, 0.975])
+    return float(low), float(high)
+
+
+def _stable_bootstrap_seed(*parts: Any) -> int:
+    seed = 17
+    modulus = 2**32 - 5
+    for part in parts:
+        for character in str(part):
+            seed = (seed * 131 + ord(character)) % modulus
+    return int(seed)
+
+
+def _resolve_comparison_curriculum_name(*curriculum_values: Any) -> str:
+    normalized_values = []
+    for curriculum_value in curriculum_values:
+        if curriculum_value is None or _is_nan(curriculum_value):
+            continue
+        curriculum_name = str(curriculum_value).strip()
+        if not curriculum_name or curriculum_name == "Unknown":
+            continue
+        normalized_values.append(curriculum_name)
+
+    if not normalized_values:
+        return "Unknown"
+    unique_values = list(dict.fromkeys(normalized_values))
+    if len(unique_values) == 1:
+        return unique_values[0]
+    return "Mixed"
 
 
 def _build_curriculum_palette(subject_metrics_df: Any) -> dict[str, str]:

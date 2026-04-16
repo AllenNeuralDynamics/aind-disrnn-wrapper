@@ -10,7 +10,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import numpy as np
+try:
+    import numpy as np
+except ModuleNotFoundError:  # pragma: no cover - local desktop Python may be minimal
+    np = None
 
 try:
     import pandas as pd
@@ -29,6 +32,7 @@ from post_training_analysis.likelihood_comparison import (
     _make_completed_split_result,
     _make_dataframe,
     _plot_pooled_likelihood_bars,
+    _plot_subject_comparison_scatter,
     _plot_subject_likelihood_violins,
     _pooled_metric_from_session_metrics,
     _resolve_likelihood_run,
@@ -38,10 +42,16 @@ from post_training_analysis.likelihood_comparison import (
     _session_sem,
     run_prediction_likelihood_comparison,
 )
-from utils.gru_evaluation import add_gru_model_results
+try:
+    from utils.gru_evaluation import add_gru_model_results
+except ModuleNotFoundError:  # pragma: no cover - local desktop Python may be minimal
+    add_gru_model_results = None
 
 
-@unittest.skipIf(pd is None, "pandas is not installed")
+@unittest.skipIf(
+    pd is None or np is None or add_gru_model_results is None,
+    "pandas, numpy, or GRU evaluation dependencies are not installed",
+)
 class TestLikelihoodComparison(unittest.TestCase):
     def _write_gru_run_dir(self, root: Path, *, label: str) -> Path:
         model_dir = root / label
@@ -800,7 +810,7 @@ seed: 13
 
         self.assertEqual(
             title,
-            "Train sessions: model_b=2, model_a=3 | Eval sessions: 1",
+            "Train sessions: model_b=2, model_a=3\nEval sessions: 1",
         )
 
     def test_plot_helpers_preserve_model_order_and_reference_lines(self):
@@ -987,6 +997,206 @@ seed: 13
         self.assertTrue(violin_path.exists())
         self.assertEqual(palette["Mixed"], "#7f7f7f")
         self.assertEqual(palette["Unknown"], "#bdbdbd")
+
+    def test_subject_comparison_scatter_plot_includes_diagonal_reference(self):
+        try:
+            import matplotlib.pyplot as plt
+        except ModuleNotFoundError:
+            self.skipTest("matplotlib is not installed")
+
+        session_metrics_df = pd.DataFrame.from_records(
+            [
+                {
+                    "model_index": 0,
+                    "model_label": "model_b",
+                    "model_dir": "/tmp/model_b",
+                    "model_type": "gru",
+                    "multisubject": False,
+                    "split": "train",
+                    "subject_id": 101,
+                    "session_id": "m1_s1",
+                    "curriculum_name": "Curriculum A",
+                    "total_log_likelihood": math.log(0.82) * 2,
+                    "total_trials": 2,
+                    "likelihood": 0.82,
+                },
+                {
+                    "model_index": 0,
+                    "model_label": "model_b",
+                    "model_dir": "/tmp/model_b",
+                    "model_type": "gru",
+                    "multisubject": False,
+                    "split": "train",
+                    "subject_id": 101,
+                    "session_id": "m1_s2",
+                    "curriculum_name": "Curriculum A",
+                    "total_log_likelihood": math.log(0.78) * 2,
+                    "total_trials": 2,
+                    "likelihood": 0.78,
+                },
+                {
+                    "model_index": 1,
+                    "model_label": "model_a",
+                    "model_dir": "/tmp/model_a",
+                    "model_type": "baseline_rl",
+                    "multisubject": False,
+                    "split": "train",
+                    "subject_id": 101,
+                    "session_id": "m1_s1",
+                    "curriculum_name": "Curriculum A",
+                    "total_log_likelihood": math.log(0.75) * 2,
+                    "total_trials": 2,
+                    "likelihood": 0.75,
+                },
+                {
+                    "model_index": 1,
+                    "model_label": "model_a",
+                    "model_dir": "/tmp/model_a",
+                    "model_type": "baseline_rl",
+                    "multisubject": False,
+                    "split": "train",
+                    "subject_id": 101,
+                    "session_id": "m1_s2",
+                    "curriculum_name": "Curriculum A",
+                    "total_log_likelihood": math.log(0.72) * 2,
+                    "total_trials": 2,
+                    "likelihood": 0.72,
+                },
+            ]
+        )
+        subject_metrics_df = pd.DataFrame.from_records(
+            [
+                {
+                    "model_index": 0,
+                    "model_label": "model_b",
+                    "model_dir": "/tmp/model_b",
+                    "model_type": "gru",
+                    "multisubject": False,
+                    "split": "train",
+                    "subject_id": 101,
+                    "subject_index": 0,
+                    "curriculum_name": "Curriculum A",
+                    "num_sessions": 2,
+                    "total_log_likelihood": math.log(0.82) * 2 + math.log(0.78) * 2,
+                    "total_trials": 4,
+                    "likelihood": math.exp((math.log(0.82) * 2 + math.log(0.78) * 2) / 4),
+                },
+                {
+                    "model_index": 1,
+                    "model_label": "model_a",
+                    "model_dir": "/tmp/model_a",
+                    "model_type": "baseline_rl",
+                    "multisubject": False,
+                    "split": "train",
+                    "subject_id": 101,
+                    "subject_index": 0,
+                    "curriculum_name": "Curriculum A",
+                    "num_sessions": 2,
+                    "total_log_likelihood": math.log(0.75) * 2 + math.log(0.72) * 2,
+                    "total_trials": 4,
+                    "likelihood": math.exp((math.log(0.75) * 2 + math.log(0.72) * 2) / 4),
+                },
+            ]
+        )
+        palette = _build_curriculum_palette(subject_metrics_df)
+        pooled_metrics_df = pd.DataFrame.from_records(
+            [
+                {
+                    "model_index": 0,
+                    "model_label": "model_b",
+                    "model_dir": "/tmp/model_b",
+                    "model_type": "gru",
+                    "multisubject": False,
+                    "split": "train",
+                    "status": "completed",
+                    "skip_reason": None,
+                    "num_sessions": 2,
+                    "num_subjects": 1,
+                    "total_log_likelihood": -1.0,
+                    "total_trials": 4,
+                    "pooled_trial_likelihood": 0.80,
+                    "session_sem": 0.04,
+                },
+                {
+                    "model_index": 1,
+                    "model_label": "model_a",
+                    "model_dir": "/tmp/model_a",
+                    "model_type": "baseline_rl",
+                    "multisubject": False,
+                    "split": "train",
+                    "status": "completed",
+                    "skip_reason": None,
+                    "num_sessions": 2,
+                    "num_subjects": 1,
+                    "total_log_likelihood": -1.2,
+                    "total_trials": 4,
+                    "pooled_trial_likelihood": 0.74,
+                    "session_sem": 0.02,
+                },
+                {
+                    "model_index": 0,
+                    "model_label": "model_b",
+                    "model_dir": "/tmp/model_b",
+                    "model_type": "gru",
+                    "multisubject": False,
+                    "split": "eval",
+                    "status": "completed",
+                    "skip_reason": None,
+                    "num_sessions": 1,
+                    "num_subjects": 1,
+                    "total_log_likelihood": -0.3,
+                    "total_trials": 2,
+                    "pooled_trial_likelihood": 0.86,
+                    "session_sem": 0.0,
+                },
+                {
+                    "model_index": 1,
+                    "model_label": "model_a",
+                    "model_dir": "/tmp/model_a",
+                    "model_type": "baseline_rl",
+                    "multisubject": False,
+                    "split": "eval",
+                    "status": "completed",
+                    "skip_reason": None,
+                    "num_sessions": 1,
+                    "num_subjects": 1,
+                    "total_log_likelihood": -0.4,
+                    "total_trials": 2,
+                    "pooled_trial_likelihood": 0.81,
+                    "session_sem": 0.0,
+                },
+            ]
+        )
+        scatter_path = Path(tempfile.mkdtemp(prefix="likelihood_scatter_test_")) / "scatter.png"
+
+        with mock.patch("matplotlib.pyplot.close"):
+            _plot_subject_comparison_scatter(
+                session_metrics_df=session_metrics_df,
+                subject_metrics_df=subject_metrics_df,
+                model_order=["model_b", "model_a"],
+                splits_to_plot=["train"],
+                curriculum_palette=palette,
+                figure_title_session_counts=_build_plot_title_session_counts(
+                    pooled_metrics_df,
+                    model_order=["model_b", "model_a"],
+                ),
+                output_path=scatter_path,
+                n_bootstrap=200,
+            )
+            scatter_fig = plt.gcf()
+            self.assertEqual(len(scatter_fig.axes), 1)
+            self.assertEqual(scatter_fig.axes[0].get_xlabel(), "model_b")
+            self.assertEqual(scatter_fig.axes[0].get_ylabel(), "model_a")
+            self.assertTrue(scatter_fig.axes[0].lines)
+            self.assertEqual(
+                list(scatter_fig.axes[0].lines[0].get_xdata()),
+                list(scatter_fig.axes[0].lines[0].get_ydata()),
+            )
+            self.assertIn("Train sessions", scatter_fig._suptitle.get_text())
+            self.assertIn("\nEval sessions", scatter_fig._suptitle.get_text())
+            plt.close(scatter_fig)
+
+        self.assertTrue(scatter_path.exists())
 
     def test_run_prediction_likelihood_comparison_reuses_precomputed_session_metrics(self):
         try:
@@ -1248,6 +1458,7 @@ seed: 13
                 "subject_metrics_pickle",
                 "bar_plot",
                 "violin_plot",
+                "subject_comparison_plot",
             ):
                 self.assertTrue(Path(result[key]).exists(), key)
 
