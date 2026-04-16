@@ -1508,7 +1508,7 @@ def _plot_pooled_likelihood_bars(
     figure_title = "Prediction Likelihood Across Models"
     if figure_title_session_counts:
         figure_title = f"{figure_title}\n{figure_title_session_counts}"
-    fig.suptitle(figure_title, y=0.94)
+    fig.suptitle(figure_title, y=0.93)
     for axis_index, split_name in enumerate(splits_to_plot):
         ax = axes[0, axis_index]
         split_rows = pooled_metrics_df[pooled_metrics_df["split"] == split_name].copy()
@@ -1612,9 +1612,9 @@ def _plot_pooled_likelihood_bars(
             bbox_to_anchor=(0.5, 0.01),
             ncol=min(len(handles), 4),
         )
-        fig.tight_layout(rect=(0, 0.10, 1, 0.93))
+        fig.tight_layout(rect=(0, 0.10, 1, 0.945))
     else:
-        fig.tight_layout(rect=(0, 0.04, 1, 0.93))
+        fig.tight_layout(rect=(0, 0.04, 1, 0.945))
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
@@ -1648,10 +1648,10 @@ def _plot_subject_likelihood_violins(
     )
     x_positions = np.arange(len(model_order), dtype=float)
     rng = np.random.default_rng(0)
-    figure_title = "Subject Prediction Likelihood Across Models"
+    figure_title = "Subject Prediction Likelihood Across Models (paired t-test)"
     if figure_title_session_counts:
         figure_title = f"{figure_title}\n{figure_title_session_counts}"
-    fig.suptitle(figure_title, y=0.94)
+    fig.suptitle(figure_title, y=0.93)
 
     for axis_index, split_name in enumerate(splits_to_plot):
         ax = axes[0, axis_index]
@@ -1693,8 +1693,15 @@ def _plot_subject_likelihood_violins(
                 body.set_alpha(0.45)
 
             q1, median, q3 = np.quantile(values, [0.25, 0.5, 0.75])
-            ax.vlines(position, q1, q3, color="#2f2f2f", linewidth=2.0, zorder=3)
-            ax.hlines([q1, median, q3], position - 0.1, position + 0.1, color="#2f2f2f", linewidth=1.5, zorder=3)
+            ax.vlines(position, q1, q3, color="#111111", linewidth=2.8, zorder=6)
+            ax.hlines(
+                [q1, median, q3],
+                position - 0.12,
+                position + 0.12,
+                color="#111111",
+                linewidth=2.2,
+                zorder=6,
+            )
 
             jitter = rng.uniform(-0.12, 0.12, size=len(model_df))
             dot_x = np.full(len(model_df), float(position)) + jitter
@@ -1770,9 +1777,9 @@ def _plot_subject_likelihood_violins(
             bbox_to_anchor=(0.5, 0.01),
             ncol=min(len(legend_handles), 5),
         )
-        fig.tight_layout(rect=(0, 0.10, 1, 0.93))
+        fig.tight_layout(rect=(0, 0.10, 1, 0.945))
     else:
-        fig.tight_layout(rect=(0, 0.04, 1, 0.93))
+        fig.tight_layout(rect=(0, 0.04, 1, 0.945))
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
@@ -1889,7 +1896,7 @@ def _plot_subject_comparison_scatter(
 
     if not comparison_labels or not splits_to_plot:
         fig, ax = plt.subplots(figsize=(6.4, 4.8))
-        fig.suptitle(figure_title, y=0.94)
+        fig.suptitle(figure_title, y=0.93)
         ax.text(
             0.5,
             0.5,
@@ -1914,7 +1921,7 @@ def _plot_subject_comparison_scatter(
         sharex=False,
         sharey=False,
     )
-    fig.suptitle(figure_title, y=0.94)
+    fig.suptitle(figure_title, y=0.93)
 
     for row_index, split_name in enumerate(splits_to_plot):
         for col_index, comparison_model_label in enumerate(comparison_labels):
@@ -2006,7 +2013,7 @@ def _plot_subject_comparison_scatter(
                 ax,
                 axis_min=axis_min,
                 axis_max=axis_max,
-                tick_values=(0.6, 0.7, 0.8),
+                tick_values=(0.6, 0.7, 0.8, 0.9),
             )
             ax.set_title(
                 f"{_BAR_SPLIT_TITLES.get(split_name, split_name.replace('_', ' ').title())}\n"
@@ -2252,10 +2259,11 @@ def _annotate_paired_t_tests_on_violin_plot(
                 fontweight="bold",
                 clip_on=True,
             )
+        p_line = p_value_text if p_value_text.startswith("p") else f"p={p_value_text}"
         ax.text(
             float(position),
             float(text_y),
-            f"p={p_value_text}\nn={n_subjects}",
+            f"{p_line}\nn={n_subjects}",
             ha="center",
             va="center",
             fontsize=7,
@@ -2317,7 +2325,7 @@ def _format_p_value_for_annotation(p_value: float | None) -> str:
     if p_value is None:
         return "n/a"
     if p_value < 0.001:
-        return "<=0.001"
+        return "p<=0.001"
     if p_value < 0.01:
         return f"{float(p_value):.4f}"
     return f"{float(p_value):.3f}"

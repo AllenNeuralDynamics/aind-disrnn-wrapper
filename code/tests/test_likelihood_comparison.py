@@ -1034,7 +1034,7 @@ seed: 13
                 ["0.800", "0.740"],
             )
             self.assertEqual(tuple(bar_fig.axes[0].get_ylim()), (0.6, 0.9))
-            self.assertAlmostEqual(float(bar_fig._suptitle.get_position()[1]), 0.94, places=6)
+            self.assertAlmostEqual(float(bar_fig._suptitle.get_position()[1]), 0.93, places=6)
             self.assertEqual(
                 bar_fig.axes[0].patches[0].get_facecolor(),
                 mcolors.to_rgba("#4e79a7"),
@@ -1095,7 +1095,8 @@ seed: 13
                 for text in violin_fig.axes[0].texts
             }
             self.assertAlmostEqual(text_positions.get("p=n/a\nn=1", 0.0), 0.535, places=6)
-            self.assertAlmostEqual(float(violin_fig._suptitle.get_position()[1]), 0.94, places=6)
+            self.assertAlmostEqual(float(violin_fig._suptitle.get_position()[1]), 0.93, places=6)
+            self.assertIn("(paired t-test)", violin_fig._suptitle.get_text())
             self.assertIn("Train sessions", violin_fig._suptitle.get_text())
             plt.close(violin_fig)
 
@@ -1392,11 +1393,11 @@ seed: 13
             self.assertEqual(tuple(scatter_fig.axes[0].get_ylim()), (0.56, 0.9))
             self.assertEqual(
                 list(scatter_fig.axes[0].get_xticks()),
-                [0.6, 0.7, 0.8],
+                [0.6, 0.7, 0.8, 0.9],
             )
             self.assertEqual(
                 list(scatter_fig.axes[0].get_yticks()),
-                [0.6, 0.7, 0.8],
+                [0.6, 0.7, 0.8, 0.9],
             )
             self.assertTrue(
                 all(label.get_visible() for label in scatter_fig.axes[0].get_xticklabels())
