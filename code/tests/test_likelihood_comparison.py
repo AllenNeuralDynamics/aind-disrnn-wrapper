@@ -1034,6 +1034,7 @@ seed: 13
                 ["0.800", "0.740"],
             )
             self.assertEqual(tuple(bar_fig.axes[0].get_ylim()), (0.6, 0.9))
+            self.assertAlmostEqual(float(bar_fig._suptitle.get_position()[1]), 0.94, places=6)
             self.assertEqual(
                 bar_fig.axes[0].patches[0].get_facecolor(),
                 mcolors.to_rgba("#4e79a7"),
@@ -1088,6 +1089,13 @@ seed: 13
                     for text in violin_fig.axes[0].texts
                 )
             )
+            text_positions = {
+                text.get_text(): float(text.get_position()[1])
+                for text in violin_fig.axes[0].texts
+            }
+            self.assertAlmostEqual(text_positions.get("ns", 0.0), 0.875, places=6)
+            self.assertAlmostEqual(text_positions.get("p=n/a\nn=1", 0.0), 0.535, places=6)
+            self.assertAlmostEqual(float(violin_fig._suptitle.get_position()[1]), 0.95, places=6)
             self.assertIn("Train sessions", violin_fig._suptitle.get_text())
             plt.close(violin_fig)
 
@@ -1380,9 +1388,15 @@ seed: 13
                 scatter_fig.axes[0].get_title(),
                 "Train\nmodel_a (1) vs model_b (1)",
             )
+            self.assertEqual(tuple(scatter_fig.axes[0].get_xlim()), (0.56, 0.9))
+            self.assertEqual(tuple(scatter_fig.axes[0].get_ylim()), (0.56, 0.9))
             self.assertEqual(
                 list(scatter_fig.axes[0].get_xticks()),
+                [0.6, 0.7, 0.8],
+            )
+            self.assertEqual(
                 list(scatter_fig.axes[0].get_yticks()),
+                [0.6, 0.7, 0.8],
             )
             self.assertTrue(
                 all(label.get_visible() for label in scatter_fig.axes[0].get_xticklabels())

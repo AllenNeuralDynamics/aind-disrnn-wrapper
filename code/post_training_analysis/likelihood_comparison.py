@@ -1508,7 +1508,7 @@ def _plot_pooled_likelihood_bars(
     figure_title = "Prediction Likelihood Across Models"
     if figure_title_session_counts:
         figure_title = f"{figure_title}\n{figure_title_session_counts}"
-    fig.suptitle(figure_title, y=0.965)
+    fig.suptitle(figure_title, y=0.94)
     for axis_index, split_name in enumerate(splits_to_plot):
         ax = axes[0, axis_index]
         split_rows = pooled_metrics_df[pooled_metrics_df["split"] == split_name].copy()
@@ -1612,9 +1612,9 @@ def _plot_pooled_likelihood_bars(
             bbox_to_anchor=(0.5, 0.01),
             ncol=min(len(handles), 4),
         )
-        fig.tight_layout(rect=(0, 0.10, 1, 0.91))
+        fig.tight_layout(rect=(0, 0.10, 1, 0.93))
     else:
-        fig.tight_layout(rect=(0, 0.04, 1, 0.91))
+        fig.tight_layout(rect=(0, 0.04, 1, 0.93))
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
@@ -1651,12 +1651,12 @@ def _plot_subject_likelihood_violins(
     figure_title = "Subject Prediction Likelihood Across Models"
     if figure_title_session_counts:
         figure_title = f"{figure_title}\n{figure_title_session_counts}"
-    fig.suptitle(figure_title, y=0.995)
+    fig.suptitle(figure_title, y=0.95)
 
     for axis_index, split_name in enumerate(splits_to_plot):
         ax = axes[0, axis_index]
         split_df = subject_metrics_df[subject_metrics_df["split"] == split_name].copy()
-        annotation_positions_by_label: dict[str, tuple[float, float]] = {}
+        split_values_for_annotations: list[float] = []
         if split_df.empty:
             ax.text(
                 0.5,
@@ -1677,9 +1677,7 @@ def _plot_subject_likelihood_violins(
             values = model_df["likelihood"].dropna().astype(float).to_numpy()
             if len(values) == 0:
                 continue
-            annotation_positions_by_label[str(model_label)] = _resolve_violin_annotation_positions(
-                values
-            )
+            split_values_for_annotations.extend(values.tolist())
 
             violin = ax.violinplot(
                 dataset=[values],
@@ -1736,7 +1734,10 @@ def _plot_subject_likelihood_violins(
             split_name=split_name,
             model_order=model_order,
             paired_t_tests_df=paired_t_tests_df,
-            annotation_positions_by_label=annotation_positions_by_label,
+            annotation_positions_by_label=_resolve_uniform_violin_annotation_positions(
+                model_order=model_order,
+                split_values=split_values_for_annotations,
+            ),
         )
 
     legend_handles = [
@@ -1768,9 +1769,9 @@ def _plot_subject_likelihood_violins(
             loc="upper center",
             ncol=min(len(legend_handles), 5),
         )
-        fig.tight_layout(rect=(0, 0, 1, 0.82))
+        fig.tight_layout(rect=(0, 0, 1, 0.90))
     else:
-        fig.tight_layout(rect=(0, 0, 1, 0.84))
+        fig.tight_layout(rect=(0, 0, 1, 0.91))
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
@@ -1846,16 +1847,19 @@ def _set_matching_axis_ticks(
     axis_min: float,
     axis_max: float,
     n_ticks: int = 4,
+    tick_values: Sequence[float] | None = None,
 ) -> None:
     import numpy as np
 
-    if axis_max <= axis_min:
-        tick_values = np.array([axis_min], dtype=float)
+    if tick_values is not None:
+        resolved_tick_values = [float(value) for value in tick_values]
+    elif axis_max <= axis_min:
+        resolved_tick_values = np.array([axis_min], dtype=float).tolist()
     else:
-        tick_values = np.linspace(axis_min, axis_max, num=max(2, int(n_ticks)))
-        tick_values = np.unique(np.round(tick_values, 3))
-    ax.set_xticks(tick_values.tolist())
-    ax.set_yticks(tick_values.tolist())
+        resolved_tick_values = np.linspace(axis_min, axis_max, num=max(2, int(n_ticks)))
+        resolved_tick_values = np.unique(np.round(resolved_tick_values, 3)).tolist()
+    ax.set_xticks(resolved_tick_values)
+    ax.set_yticks(resolved_tick_values)
 
 
 def _plot_subject_comparison_scatter(
@@ -1884,7 +1888,7 @@ def _plot_subject_comparison_scatter(
 
     if not comparison_labels or not splits_to_plot:
         fig, ax = plt.subplots(figsize=(6.4, 4.8))
-        fig.suptitle(figure_title, y=0.965)
+        fig.suptitle(figure_title, y=0.94)
         ax.text(
             0.5,
             0.5,
@@ -1909,7 +1913,7 @@ def _plot_subject_comparison_scatter(
         sharex=False,
         sharey=False,
     )
-    fig.suptitle(figure_title, y=0.965)
+    fig.suptitle(figure_title, y=0.94)
 
     for row_index, split_name in enumerate(splits_to_plot):
         for col_index, comparison_model_label in enumerate(comparison_labels):
@@ -1945,19 +1949,8 @@ def _plot_subject_comparison_scatter(
                 ax.tick_params(axis="both", labelbottom=True, labelleft=True)
                 continue
 
-            min_value = min(
-                float(points_df["x_low"].min()),
-                float(points_df["y_low"].min()),
-            )
-            max_value = max(
-                float(points_df["x_high"].max()),
-                float(points_df["y_high"].max()),
-            )
-            padding = max(0.02, (max_value - min_value) * 0.06)
-            axis_min = max(0.0, min_value - padding)
-            axis_max = min(1.0, max_value + padding)
-            if axis_max <= axis_min:
-                axis_max = min(1.0, axis_min + 0.1)
+            axis_min = 0.56
+            axis_max = 0.90
 
             comparison_superior_count, first_model_superior_count = _subject_superiority_counts(
                 points_df
@@ -2012,6 +2005,7 @@ def _plot_subject_comparison_scatter(
                 ax,
                 axis_min=axis_min,
                 axis_max=axis_max,
+                tick_values=(0.6, 0.7, 0.8),
             )
             ax.set_title(
                 f"{_BAR_SPLIT_TITLES.get(split_name, split_name.replace('_', ' ').title())}\n"
@@ -2267,21 +2261,24 @@ def _annotate_paired_t_tests_on_violin_plot(
         )
 
 
-def _resolve_violin_annotation_positions(values: Sequence[float]) -> tuple[float, float]:
+def _resolve_uniform_violin_annotation_positions(
+    *,
+    model_order: Sequence[str],
+    split_values: Sequence[float],
+) -> dict[str, tuple[float, float]]:
     import numpy as np
 
-    finite_values = np.asarray(list(values), dtype=float)
+    finite_values = np.asarray(list(split_values), dtype=float)
     finite_values = finite_values[np.isfinite(finite_values)]
     if finite_values.size == 0:
-        return (0.885, 0.845)
-
-    max_value = float(finite_values.max())
-    min_value = float(finite_values.min())
-    symbol_y = min(0.885, max_value + 0.015)
-    text_y = max(0.515, min_value - 0.02)
-    if text_y >= symbol_y - 0.03:
-        text_y = max(0.515, symbol_y - 0.04)
-    return (symbol_y, text_y)
+        symbol_y = 0.875
+    else:
+        symbol_y = min(0.885, float(finite_values.max()) + 0.015)
+    text_y = 0.535
+    return {
+        str(model_label): (float(symbol_y), float(text_y))
+        for model_label in model_order
+    }
 
 
 def _subject_superiority_counts(points_df: Any) -> tuple[int, int]:
