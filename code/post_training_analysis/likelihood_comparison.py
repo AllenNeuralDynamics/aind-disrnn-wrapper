@@ -1557,7 +1557,7 @@ def _plot_pooled_likelihood_bars(
                 continue
             ax.text(
                 float(x_position),
-                min(0.99, float(height) + float(error) + label_offset),
+                min(0.895, float(height) + float(error) + label_offset),
                 f"{float(height):.3f}",
                 ha="center",
                 va="bottom",
@@ -1577,7 +1577,7 @@ def _plot_pooled_likelihood_bars(
         ax.set_ylabel("Prediction Likelihood")
         ax.grid(axis="y", color="0.9", linewidth=1.0)
         ax.set_axisbelow(True)
-        ax.set_ylim(bottom=0.6, top=1.0)
+        ax.set_ylim(bottom=0.6, top=0.9)
         ax.tick_params(axis="y", labelleft=True)
 
     handles = []
@@ -1606,9 +1606,9 @@ def _plot_pooled_likelihood_bars(
         labels.append("First-model reference")
     if handles:
         fig.legend(handles, labels, loc="upper center", ncol=min(len(handles), 4))
-        fig.tight_layout(rect=(0, 0, 1, 0.82))
+        fig.tight_layout(rect=(0, 0, 1, 0.76))
     else:
-        fig.tight_layout(rect=(0, 0, 1, 0.84))
+        fig.tight_layout(rect=(0, 0, 1, 0.78))
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
@@ -1817,14 +1817,34 @@ def _build_plot_title_session_counts(
         if len(supported_counts) == len(model_order) and len(set(supported_counts)) == 1:
             title_parts.append(f"all models={supported_counts[0]}")
             continue
-        title_parts.append(
-            ", ".join(
-                f"{model_label}="
-                f"{count_by_label[model_label] if count_by_label[model_label] is not None else 'n/a'}"
-                for model_label in model_order
+        formatted_entries = [
+            f"{model_label}="
+            f"{count_by_label[model_label] if count_by_label[model_label] is not None else 'n/a'}"
+            for model_label in model_order
+        ]
+        for start_index in range(0, len(formatted_entries), 3):
+            title_parts.append(
+                ", ".join(formatted_entries[start_index : start_index + 3])
             )
-        )
     return "\n".join(title_parts)
+
+
+def _set_matching_axis_ticks(
+    ax,
+    *,
+    axis_min: float,
+    axis_max: float,
+    n_ticks: int = 4,
+) -> None:
+    import numpy as np
+
+    if axis_max <= axis_min:
+        tick_values = np.array([axis_min], dtype=float)
+    else:
+        tick_values = np.linspace(axis_min, axis_max, num=max(2, int(n_ticks)))
+        tick_values = np.unique(np.round(tick_values, 3))
+    ax.set_xticks(tick_values.tolist())
+    ax.set_yticks(tick_values.tolist())
 
 
 def _plot_subject_comparison_scatter(
@@ -1875,8 +1895,8 @@ def _plot_subject_comparison_scatter(
         n_cols,
         figsize=(max(6.0, 4.8 * n_cols), max(4.8, 4.8 * n_rows)),
         squeeze=False,
-        sharex=True,
-        sharey=True,
+        sharex=False,
+        sharey=False,
     )
     fig.suptitle(figure_title, y=0.995)
 
@@ -1951,7 +1971,7 @@ def _plot_subject_comparison_scatter(
                 ax.scatter(
                     float(point["x"]),
                     float(point["y"]),
-                    s=26,
+                    s=64 if float(point["y"]) > float(point["x"]) else 26,
                     marker="*" if float(point["y"]) > float(point["x"]) else "o",
                     color=color,
                     edgecolor="white",
@@ -1971,6 +1991,11 @@ def _plot_subject_comparison_scatter(
             ax.set_xlim(axis_min, axis_max)
             ax.set_ylim(axis_min, axis_max)
             ax.set_aspect("equal", adjustable="box")
+            _set_matching_axis_ticks(
+                ax,
+                axis_min=axis_min,
+                axis_max=axis_max,
+            )
             ax.set_title(
                 f"{_BAR_SPLIT_TITLES.get(split_name, split_name.replace('_', ' ').title())}\n"
                 f"{comparison_model_label} vs {first_model_label}"
@@ -2006,10 +2031,10 @@ def _plot_subject_comparison_scatter(
     fig.legend(
         handles=legend_handles,
         loc="upper center",
-        bbox_to_anchor=(0.5, 0.965),
+        bbox_to_anchor=(0.5, 0.985),
         ncol=min(len(legend_handles), 5),
     )
-    fig.tight_layout(rect=(0, 0, 1, 0.80))
+    fig.tight_layout(rect=(0, 0, 1, 0.74))
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
@@ -2200,8 +2225,18 @@ def _annotate_paired_t_tests_on_violin_plot(
         n_subjects = int(test_row.get("n_subjects") or 0)
         ax.text(
             float(position),
-            0.895,
-            f"{significance_label}\np={p_value_text}\nn={n_subjects}",
+            0.902,
+            significance_label,
+            ha="center",
+            va="bottom",
+            fontsize=10,
+            fontweight="bold",
+            clip_on=False,
+        )
+        ax.text(
+            float(position),
+            0.888,
+            f"p={p_value_text}\nn={n_subjects}",
             ha="center",
             va="top",
             fontsize=8,

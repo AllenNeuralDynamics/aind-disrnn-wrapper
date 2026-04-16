@@ -769,6 +769,38 @@ seed: 13
                     "session_sem": 0.02,
                 },
                 {
+                    "model_index": 2,
+                    "model_label": "model_c",
+                    "model_dir": "/tmp/model_c",
+                    "model_type": "disrnn",
+                    "multisubject": False,
+                    "split": "train",
+                    "status": "completed",
+                    "skip_reason": None,
+                    "num_sessions": 4,
+                    "num_subjects": 2,
+                    "total_log_likelihood": -1.1,
+                    "total_trials": 8,
+                    "pooled_trial_likelihood": 0.77,
+                    "session_sem": 0.02,
+                },
+                {
+                    "model_index": 3,
+                    "model_label": "model_d",
+                    "model_dir": "/tmp/model_d",
+                    "model_type": "gru",
+                    "multisubject": False,
+                    "split": "train",
+                    "status": "completed",
+                    "skip_reason": None,
+                    "num_sessions": 5,
+                    "num_subjects": 2,
+                    "total_log_likelihood": -1.3,
+                    "total_trials": 10,
+                    "pooled_trial_likelihood": 0.73,
+                    "session_sem": 0.03,
+                },
+                {
                     "model_index": 0,
                     "model_label": "model_b",
                     "model_dir": "/tmp/model_b",
@@ -800,17 +832,49 @@ seed: 13
                     "pooled_trial_likelihood": 0.76,
                     "session_sem": 0.0,
                 },
+                {
+                    "model_index": 2,
+                    "model_label": "model_c",
+                    "model_dir": "/tmp/model_c",
+                    "model_type": "disrnn",
+                    "multisubject": False,
+                    "split": "eval",
+                    "status": "completed",
+                    "skip_reason": None,
+                    "num_sessions": 1,
+                    "num_subjects": 1,
+                    "total_log_likelihood": -0.55,
+                    "total_trials": 2,
+                    "pooled_trial_likelihood": 0.79,
+                    "session_sem": 0.0,
+                },
+                {
+                    "model_index": 3,
+                    "model_label": "model_d",
+                    "model_dir": "/tmp/model_d",
+                    "model_type": "gru",
+                    "multisubject": False,
+                    "split": "eval",
+                    "status": "completed",
+                    "skip_reason": None,
+                    "num_sessions": 1,
+                    "num_subjects": 1,
+                    "total_log_likelihood": -0.65,
+                    "total_trials": 2,
+                    "pooled_trial_likelihood": 0.74,
+                    "session_sem": 0.0,
+                },
             ]
         )
 
         title = _build_plot_title_session_counts(
             pooled_metrics_df,
-            model_order=["model_b", "model_a"],
+            model_order=["model_b", "model_a", "model_c", "model_d"],
         )
 
         self.assertEqual(
             title,
-            "Train sessions:\nmodel_b=2, model_a=3\nEval sessions:\nall models=1",
+            "Train sessions:\nmodel_b=2, model_a=3, model_c=4\nmodel_d=5\nEval sessions:\nall models=1",
         )
 
     def test_plot_helpers_preserve_model_order_and_reference_lines(self):
@@ -969,7 +1033,7 @@ seed: 13
                 [text.get_text() for text in bar_fig.axes[0].texts],
                 ["0.800", "0.740"],
             )
-            self.assertEqual(tuple(bar_fig.axes[0].get_ylim()), (0.6, 1.0))
+            self.assertEqual(tuple(bar_fig.axes[0].get_ylim()), (0.6, 0.9))
             self.assertEqual(
                 bar_fig.axes[0].patches[0].get_facecolor(),
                 mcolors.to_rgba("#4e79a7"),
@@ -1090,6 +1154,62 @@ seed: 13
                     "total_trials": 2,
                     "likelihood": 0.72,
                 },
+                {
+                    "model_index": 0,
+                    "model_label": "model_b",
+                    "model_dir": "/tmp/model_b",
+                    "model_type": "gru",
+                    "multisubject": False,
+                    "split": "train",
+                    "subject_id": 202,
+                    "session_id": "m2_s1",
+                    "curriculum_name": "Curriculum B",
+                    "total_log_likelihood": math.log(0.70) * 2,
+                    "total_trials": 2,
+                    "likelihood": 0.70,
+                },
+                {
+                    "model_index": 0,
+                    "model_label": "model_b",
+                    "model_dir": "/tmp/model_b",
+                    "model_type": "gru",
+                    "multisubject": False,
+                    "split": "train",
+                    "subject_id": 202,
+                    "session_id": "m2_s2",
+                    "curriculum_name": "Curriculum B",
+                    "total_log_likelihood": math.log(0.68) * 2,
+                    "total_trials": 2,
+                    "likelihood": 0.68,
+                },
+                {
+                    "model_index": 1,
+                    "model_label": "model_a",
+                    "model_dir": "/tmp/model_a",
+                    "model_type": "baseline_rl",
+                    "multisubject": False,
+                    "split": "train",
+                    "subject_id": 202,
+                    "session_id": "m2_s1",
+                    "curriculum_name": "Curriculum B",
+                    "total_log_likelihood": math.log(0.76) * 2,
+                    "total_trials": 2,
+                    "likelihood": 0.76,
+                },
+                {
+                    "model_index": 1,
+                    "model_label": "model_a",
+                    "model_dir": "/tmp/model_a",
+                    "model_type": "baseline_rl",
+                    "multisubject": False,
+                    "split": "train",
+                    "subject_id": 202,
+                    "session_id": "m2_s2",
+                    "curriculum_name": "Curriculum B",
+                    "total_log_likelihood": math.log(0.74) * 2,
+                    "total_trials": 2,
+                    "likelihood": 0.74,
+                },
             ]
         )
         subject_metrics_df = pd.DataFrame.from_records(
@@ -1123,6 +1243,36 @@ seed: 13
                     "total_log_likelihood": math.log(0.75) * 2 + math.log(0.72) * 2,
                     "total_trials": 4,
                     "likelihood": math.exp((math.log(0.75) * 2 + math.log(0.72) * 2) / 4),
+                },
+                {
+                    "model_index": 0,
+                    "model_label": "model_b",
+                    "model_dir": "/tmp/model_b",
+                    "model_type": "gru",
+                    "multisubject": False,
+                    "split": "train",
+                    "subject_id": 202,
+                    "subject_index": 1,
+                    "curriculum_name": "Curriculum B",
+                    "num_sessions": 2,
+                    "total_log_likelihood": math.log(0.70) * 2 + math.log(0.68) * 2,
+                    "total_trials": 4,
+                    "likelihood": math.exp((math.log(0.70) * 2 + math.log(0.68) * 2) / 4),
+                },
+                {
+                    "model_index": 1,
+                    "model_label": "model_a",
+                    "model_dir": "/tmp/model_a",
+                    "model_type": "baseline_rl",
+                    "multisubject": False,
+                    "split": "train",
+                    "subject_id": 202,
+                    "subject_index": 1,
+                    "curriculum_name": "Curriculum B",
+                    "num_sessions": 2,
+                    "total_log_likelihood": math.log(0.76) * 2 + math.log(0.74) * 2,
+                    "total_trials": 4,
+                    "likelihood": math.exp((math.log(0.76) * 2 + math.log(0.74) * 2) / 4),
                 },
             ]
         )
@@ -1220,6 +1370,10 @@ seed: 13
                 list(scatter_fig.axes[0].lines[0].get_xdata()),
                 list(scatter_fig.axes[0].lines[0].get_ydata()),
             )
+            self.assertEqual(
+                list(scatter_fig.axes[0].get_xticks()),
+                list(scatter_fig.axes[0].get_yticks()),
+            )
             self.assertTrue(
                 all(label.get_visible() for label in scatter_fig.axes[0].get_xticklabels())
             )
@@ -1232,7 +1386,9 @@ seed: 13
                 if hasattr(collection, "get_sizes") and len(collection.get_sizes()) > 0
             ]
             self.assertTrue(scatter_collections)
-            self.assertAlmostEqual(float(scatter_collections[-1].get_sizes()[0]), 26.0, places=6)
+            marker_sizes = sorted(float(collection.get_sizes()[0]) for collection in scatter_collections)
+            self.assertIn(26.0, marker_sizes)
+            self.assertIn(64.0, marker_sizes)
             self.assertIn("Train sessions", scatter_fig._suptitle.get_text())
             self.assertIn("\nEval sessions", scatter_fig._suptitle.get_text())
             plt.close(scatter_fig)
