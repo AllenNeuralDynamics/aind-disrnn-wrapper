@@ -28,6 +28,7 @@ result = run_prediction_likelihood_comparison(
         "GRU_no_subj_emb",
         "disrnn_subj_emb",
     ],          # optional
+    precomputed_session_metrics_path=None,
     include_heldout=False,       # optional
 )
 
