@@ -810,7 +810,7 @@ seed: 13
 
         self.assertEqual(
             title,
-            "Train sessions: model_b=2, model_a=3\nEval sessions: 1",
+            "Train sessions:\nmodel_b=2, model_a=3\nEval sessions:\nall models=1",
         )
 
     def test_plot_helpers_preserve_model_order_and_reference_lines(self):
@@ -912,14 +912,33 @@ seed: 13
                     "model_type": "baseline_rl",
                     "multisubject": False,
                     "split": "train",
-                    "subject_id": 202,
+                    "subject_id": 101,
                     "subject_index": 0,
-                    "curriculum_name": "Curriculum B",
+                    "curriculum_name": "Curriculum A",
                     "num_sessions": 1,
                     "total_log_likelihood": -0.5,
                     "total_trials": 2,
                     "likelihood": 0.75,
                 },
+            ]
+        )
+        paired_t_tests_df = pd.DataFrame.from_records(
+            [
+                {
+                    "split": "train",
+                    "reference_model_label": "model_b",
+                    "comparison_model_label": "model_a",
+                    "n_subjects": 1,
+                    "statistic": None,
+                    "p_value": None,
+                    "significance_label": "",
+                    "mean_reference": 0.9,
+                    "mean_comparison": 0.75,
+                    "mean_difference": -0.15,
+                    "status": "skipped",
+                    "method": None,
+                    "note": "At least two paired subjects are required.",
+                }
             ]
         )
         palette = _build_curriculum_palette(subject_metrics_df)
@@ -950,6 +969,7 @@ seed: 13
                 [text.get_text() for text in bar_fig.axes[0].texts],
                 ["0.800", "0.740"],
             )
+            self.assertEqual(tuple(bar_fig.axes[0].get_ylim()), (0.6, 1.0))
             self.assertEqual(
                 bar_fig.axes[0].patches[0].get_facecolor(),
                 mcolors.to_rgba("#4e79a7"),
@@ -974,6 +994,7 @@ seed: 13
                     pooled_metrics_df,
                     model_order=["model_b", "model_a"],
                 ),
+                paired_t_tests_df=paired_t_tests_df,
                 output_path=violin_path,
             )
             violin_fig = plt.gcf()
@@ -982,6 +1003,10 @@ seed: 13
                 ["model_b", "model_a"],
             )
             self.assertEqual(len(violin_fig.axes[0].lines) >= 2, True)
+            self.assertEqual(tuple(violin_fig.axes[0].get_ylim()), (0.5, 0.9))
+            self.assertTrue(
+                all(label.get_visible() for label in violin_fig.axes[0].get_yticklabels())
+            )
             scatter_collections = [
                 collection
                 for collection in violin_fig.axes[0].collections
@@ -990,6 +1015,9 @@ seed: 13
             ]
             self.assertTrue(scatter_collections)
             self.assertAlmostEqual(scatter_collections[0].get_alpha(), 0.45, places=6)
+            self.assertTrue(
+                any("p=n/a" in text.get_text() for text in violin_fig.axes[0].texts)
+            )
             self.assertIn("Train sessions", violin_fig._suptitle.get_text())
             plt.close(violin_fig)
 
@@ -1192,6 +1220,19 @@ seed: 13
                 list(scatter_fig.axes[0].lines[0].get_xdata()),
                 list(scatter_fig.axes[0].lines[0].get_ydata()),
             )
+            self.assertTrue(
+                all(label.get_visible() for label in scatter_fig.axes[0].get_xticklabels())
+            )
+            self.assertTrue(
+                all(label.get_visible() for label in scatter_fig.axes[0].get_yticklabels())
+            )
+            scatter_collections = [
+                collection
+                for collection in scatter_fig.axes[0].collections
+                if hasattr(collection, "get_sizes") and len(collection.get_sizes()) > 0
+            ]
+            self.assertTrue(scatter_collections)
+            self.assertAlmostEqual(float(scatter_collections[-1].get_sizes()[0]), 26.0, places=6)
             self.assertIn("Train sessions", scatter_fig._suptitle.get_text())
             self.assertIn("\nEval sessions", scatter_fig._suptitle.get_text())
             plt.close(scatter_fig)
@@ -1459,6 +1500,8 @@ seed: 13
                 "bar_plot",
                 "violin_plot",
                 "subject_comparison_plot",
+                "paired_t_tests_csv",
+                "paired_t_tests_json",
             ):
                 self.assertTrue(Path(result[key]).exists(), key)
 

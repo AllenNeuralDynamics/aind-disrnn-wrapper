@@ -290,6 +290,21 @@ def run_prediction_likelihood_comparison(
     subject_comparison_plot_path = (
         plots_dir / "prediction_likelihood_subject_comparison.png"
     )
+    paired_t_tests_csv_path = resolved_output_dir / "paired_t_tests.csv"
+    paired_t_tests_json_path = resolved_output_dir / "paired_t_tests.json"
+    paired_t_tests_df = _compute_paired_t_test_results(
+        subject_metrics_df=subject_metrics_df,
+        model_order=resolved_labels,
+        splits_to_plot=splits_to_plot,
+    )
+    paired_t_tests_df.to_csv(paired_t_tests_csv_path, index=False)
+    paired_t_tests_json_path.write_text(
+        json.dumps(
+            paired_t_tests_df.to_dict(orient="records"),
+            indent=2,
+            default=_json_default,
+        )
+    )
 
     _plot_pooled_likelihood_bars(
         pooled_metrics_df=pooled_metrics_df,
@@ -307,6 +322,7 @@ def run_prediction_likelihood_comparison(
         reference_lines=reference_lines,
         curriculum_palette=curriculum_palette,
         figure_title_session_counts=plot_title_session_counts,
+        paired_t_tests_df=paired_t_tests_df,
         output_path=violin_plot_path,
     )
     _plot_subject_comparison_scatter(
@@ -345,6 +361,8 @@ def run_prediction_likelihood_comparison(
             "bar_plot": str(bar_plot_path),
             "violin_plot": str(violin_plot_path),
             "subject_comparison_plot": str(subject_comparison_plot_path),
+            "paired_t_tests_csv": str(paired_t_tests_csv_path),
+            "paired_t_tests_json": str(paired_t_tests_json_path),
         },
     }
     summary_path = resolved_output_dir / "summary.json"
@@ -363,6 +381,8 @@ def run_prediction_likelihood_comparison(
         "bar_plot": str(bar_plot_path),
         "violin_plot": str(violin_plot_path),
         "subject_comparison_plot": str(subject_comparison_plot_path),
+        "paired_t_tests_csv": str(paired_t_tests_csv_path),
+        "paired_t_tests_json": str(paired_t_tests_json_path),
     }
 
 
@@ -1537,7 +1557,7 @@ def _plot_pooled_likelihood_bars(
                 continue
             ax.text(
                 float(x_position),
-                float(height) + float(error) + label_offset,
+                min(0.99, float(height) + float(error) + label_offset),
                 f"{float(height):.3f}",
                 ha="center",
                 va="bottom",
@@ -1557,7 +1577,8 @@ def _plot_pooled_likelihood_bars(
         ax.set_ylabel("Prediction Likelihood")
         ax.grid(axis="y", color="0.9", linewidth=1.0)
         ax.set_axisbelow(True)
-        ax.set_ylim(bottom=0.0, top=max(1.0, max_height + label_offset * 3.0))
+        ax.set_ylim(bottom=0.6, top=1.0)
+        ax.tick_params(axis="y", labelleft=True)
 
     handles = []
     labels = []
@@ -1585,9 +1606,9 @@ def _plot_pooled_likelihood_bars(
         labels.append("First-model reference")
     if handles:
         fig.legend(handles, labels, loc="upper center", ncol=min(len(handles), 4))
-        fig.tight_layout(rect=(0, 0, 1, 0.90))
+        fig.tight_layout(rect=(0, 0, 1, 0.82))
     else:
-        fig.tight_layout(rect=(0, 0, 1, 0.92))
+        fig.tight_layout(rect=(0, 0, 1, 0.84))
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
@@ -1601,6 +1622,7 @@ def _plot_subject_likelihood_violins(
     reference_lines: Mapping[str, float],
     curriculum_palette: Mapping[str, str],
     figure_title_session_counts: str,
+    paired_t_tests_df: Any,
     output_path: Path,
 ) -> None:
     import matplotlib
@@ -1640,6 +1662,7 @@ def _plot_subject_likelihood_violins(
             ax.set_title(_BAR_SPLIT_TITLES.get(split_name, split_name.replace("_", " ").title()))
             ax.set_xticks(x_positions)
             ax.set_xticklabels(list(model_order), rotation=35, ha="right")
+            ax.tick_params(axis="y", labelleft=True)
             continue
 
         for position, model_label in enumerate(model_order):
@@ -1696,7 +1719,14 @@ def _plot_subject_likelihood_violins(
         ax.set_ylabel("Prediction Likelihood")
         ax.grid(axis="y", color="0.9", linewidth=1.0)
         ax.set_axisbelow(True)
-        ax.set_ylim(bottom=0.0)
+        ax.set_ylim(bottom=0.5, top=0.9)
+        ax.tick_params(axis="y", labelleft=True)
+        _annotate_paired_t_tests_on_violin_plot(
+            ax,
+            split_name=split_name,
+            model_order=model_order,
+            paired_t_tests_df=paired_t_tests_df,
+        )
 
     legend_handles = [
         Line2D(
@@ -1727,9 +1757,9 @@ def _plot_subject_likelihood_violins(
             loc="upper center",
             ncol=min(len(legend_handles), 5),
         )
-        fig.tight_layout(rect=(0, 0, 1, 0.90))
+        fig.tight_layout(rect=(0, 0, 1, 0.82))
     else:
-        fig.tight_layout(rect=(0, 0, 1, 0.92))
+        fig.tight_layout(rect=(0, 0, 1, 0.84))
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
@@ -1783,12 +1813,12 @@ def _build_plot_title_session_counts(
         ]
         if not supported_counts:
             continue
+        title_parts.append(f"{title_label}:")
         if len(supported_counts) == len(model_order) and len(set(supported_counts)) == 1:
-            title_parts.append(f"{title_label}: {supported_counts[0]}")
+            title_parts.append(f"all models={supported_counts[0]}")
             continue
         title_parts.append(
-            f"{title_label}: "
-            + ", ".join(
+            ", ".join(
                 f"{model_label}="
                 f"{count_by_label[model_label] if count_by_label[model_label] is not None else 'n/a'}"
                 for model_label in model_order
@@ -1878,6 +1908,7 @@ def _plot_subject_comparison_scatter(
                 ax.set_ylabel(comparison_model_label)
                 ax.grid(color="0.9", linewidth=1.0)
                 ax.set_axisbelow(True)
+                ax.tick_params(axis="both", labelbottom=True, labelleft=True)
                 continue
 
             min_value = min(
@@ -1920,7 +1951,8 @@ def _plot_subject_comparison_scatter(
                 ax.scatter(
                     float(point["x"]),
                     float(point["y"]),
-                    s=48,
+                    s=26,
+                    marker="*" if float(point["y"]) > float(point["x"]) else "o",
                     color=color,
                     edgecolor="white",
                     linewidth=0.6,
@@ -1947,6 +1979,7 @@ def _plot_subject_comparison_scatter(
             ax.set_ylabel(comparison_model_label)
             ax.grid(color="0.9", linewidth=1.0)
             ax.set_axisbelow(True)
+            ax.tick_params(axis="both", labelbottom=True, labelleft=True)
 
     legend_handles = [
         Line2D(
@@ -1973,11 +2006,229 @@ def _plot_subject_comparison_scatter(
     fig.legend(
         handles=legend_handles,
         loc="upper center",
+        bbox_to_anchor=(0.5, 0.965),
         ncol=min(len(legend_handles), 5),
     )
-    fig.tight_layout(rect=(0, 0, 1, 0.90))
+    fig.tight_layout(rect=(0, 0, 1, 0.80))
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
+
+
+def _compute_paired_t_test_results(
+    *,
+    subject_metrics_df: Any,
+    model_order: Sequence[str],
+    splits_to_plot: Sequence[str],
+) -> Any:
+    pd = _import_pandas()
+
+    if subject_metrics_df.empty or len(model_order) <= 1 or not splits_to_plot:
+        return pd.DataFrame(
+            columns=[
+                "split",
+                "reference_model_label",
+                "comparison_model_label",
+                "n_subjects",
+                "statistic",
+                "p_value",
+                "significance_label",
+                "mean_reference",
+                "mean_comparison",
+                "mean_difference",
+                "status",
+                "method",
+                "note",
+            ]
+        )
+
+    first_model_label = str(model_order[0])
+    rows: list[dict[str, Any]] = []
+    for split_name in splits_to_plot:
+        reference_df = subject_metrics_df[
+            (subject_metrics_df["split"] == split_name)
+            & (subject_metrics_df["model_label"] == first_model_label)
+        ].copy()
+        reference_by_subject = {
+            _normalize_identifier(row["subject_id"]): row
+            for row in reference_df.to_dict(orient="records")
+            if row.get("likelihood") is not None and not _is_nan(row.get("likelihood"))
+        }
+
+        for comparison_model_label in model_order[1:]:
+            comparison_df = subject_metrics_df[
+                (subject_metrics_df["split"] == split_name)
+                & (subject_metrics_df["model_label"] == comparison_model_label)
+            ].copy()
+            paired_reference_values: list[float] = []
+            paired_comparison_values: list[float] = []
+            for comparison_row in comparison_df.to_dict(orient="records"):
+                subject_id = _normalize_identifier(comparison_row["subject_id"])
+                reference_row = reference_by_subject.get(subject_id)
+                if reference_row is None:
+                    continue
+                reference_value = reference_row.get("likelihood")
+                comparison_value = comparison_row.get("likelihood")
+                if (
+                    reference_value is None
+                    or comparison_value is None
+                    or _is_nan(reference_value)
+                    or _is_nan(comparison_value)
+                ):
+                    continue
+                paired_reference_values.append(float(reference_value))
+                paired_comparison_values.append(float(comparison_value))
+
+            t_test_result = _paired_t_test(
+                paired_reference_values,
+                paired_comparison_values,
+            )
+            rows.append(
+                {
+                    "split": split_name,
+                    "reference_model_label": first_model_label,
+                    "comparison_model_label": str(comparison_model_label),
+                    "n_subjects": int(len(paired_reference_values)),
+                    "statistic": t_test_result["statistic"],
+                    "p_value": t_test_result["p_value"],
+                    "significance_label": _format_significance_label(
+                        t_test_result["p_value"]
+                    ),
+                    "mean_reference": (
+                        None
+                        if not paired_reference_values
+                        else float(sum(paired_reference_values) / len(paired_reference_values))
+                    ),
+                    "mean_comparison": (
+                        None
+                        if not paired_comparison_values
+                        else float(
+                            sum(paired_comparison_values) / len(paired_comparison_values)
+                        )
+                    ),
+                    "mean_difference": (
+                        None
+                        if not paired_reference_values
+                        else float(
+                            sum(
+                                comparison_value - reference_value
+                                for reference_value, comparison_value in zip(
+                                    paired_reference_values,
+                                    paired_comparison_values,
+                                )
+                            )
+                            / len(paired_reference_values)
+                        )
+                    ),
+                    "status": t_test_result["status"],
+                    "method": t_test_result["method"],
+                    "note": t_test_result["note"],
+                }
+            )
+
+    return pd.DataFrame(rows)
+
+
+def _paired_t_test(
+    reference_values: Sequence[float],
+    comparison_values: Sequence[float],
+) -> dict[str, Any]:
+    if len(reference_values) != len(comparison_values):
+        raise ValueError("Paired t-test requires aligned reference/comparison values.")
+    if len(reference_values) < 2:
+        return {
+            "statistic": None,
+            "p_value": None,
+            "status": "skipped",
+            "method": None,
+            "note": "At least two paired subjects are required.",
+        }
+
+    import importlib
+
+    try:
+        scipy_stats = importlib.import_module("scipy.stats")
+        result = scipy_stats.ttest_rel(
+            comparison_values,
+            reference_values,
+            alternative="two-sided",
+            nan_policy="omit",
+        )
+        statistic = None if _is_nan(result.statistic) else float(result.statistic)
+        p_value = None if _is_nan(result.pvalue) else float(result.pvalue)
+        return {
+            "statistic": statistic,
+            "p_value": p_value,
+            "status": "completed",
+            "method": "scipy",
+            "note": None,
+        }
+    except ModuleNotFoundError:
+        return {
+            "statistic": None,
+            "p_value": None,
+            "status": "unavailable",
+            "method": None,
+            "note": "scipy is not installed.",
+        }
+
+
+def _annotate_paired_t_tests_on_violin_plot(
+    ax,
+    *,
+    split_name: str,
+    model_order: Sequence[str],
+    paired_t_tests_df: Any,
+) -> None:
+    if paired_t_tests_df.empty or len(model_order) <= 1:
+        return
+
+    split_tests_df = paired_t_tests_df[
+        paired_t_tests_df["split"] == split_name
+    ].copy()
+    if split_tests_df.empty:
+        return
+
+    for position, comparison_model_label in enumerate(model_order[1:], start=1):
+        model_tests_df = split_tests_df[
+            split_tests_df["comparison_model_label"] == comparison_model_label
+        ]
+        if model_tests_df.empty:
+            continue
+        test_row = model_tests_df.iloc[0]
+        significance_label = str(test_row.get("significance_label") or "ns")
+        p_value_text = _format_p_value_for_annotation(test_row.get("p_value"))
+        n_subjects = int(test_row.get("n_subjects") or 0)
+        ax.text(
+            float(position),
+            0.895,
+            f"{significance_label}\np={p_value_text}\nn={n_subjects}",
+            ha="center",
+            va="top",
+            fontsize=8,
+            clip_on=False,
+        )
+
+
+def _format_significance_label(p_value: float | None) -> str:
+    if p_value is None:
+        return ""
+    if p_value < 0.001:
+        return "***"
+    if p_value < 0.01:
+        return "**"
+    if p_value < 0.05:
+        return "*"
+    return ""
+
+
+def _format_p_value_for_annotation(p_value: float | None) -> str:
+    if p_value is None:
+        return "n/a"
+    if p_value < 0.001:
+        return "<=0.001"
+    if p_value < 0.01:
+        return f"{float(p_value):.4f}"
+    return f"{float(p_value):.3f}"
 
 
 def _build_subject_comparison_points(
