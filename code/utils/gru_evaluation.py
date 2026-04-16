@@ -53,7 +53,15 @@ def add_gru_model_results(
     if "ses_idx" not in output_df.columns or "trial" not in output_df.columns:
         raise ValueError("GRU output dataframe requires 'ses_idx' and 'trial' columns.")
 
-    output_df = output_df.sort_values(["ses_idx", "trial"]).copy()
+    session_order = list(dict.fromkeys(output_df["ses_idx"].tolist()))
+    output_df["_session_order"] = output_df["ses_idx"].map(
+        {session_id: index for index, session_id in enumerate(session_order)}
+    )
+    sort_columns = ["_session_order"]
+    if "trial" in output_df.columns:
+        sort_columns.append("trial")
+    output_df = output_df.sort_values(sort_columns).copy()
+    output_df = output_df.drop(columns=["_session_order"])
 
     states = np.asarray(network_states)
     logits = np.asarray(yhat)
@@ -67,7 +75,6 @@ def add_gru_model_results(
             f"states={states.shape} logits={logits.shape}"
         )
 
-    session_order = list(dict.fromkeys(output_df["ses_idx"].tolist()))
     if len(session_order) != states.shape[1]:
         raise ValueError(
             "Session mismatch between dataframe and GRU outputs: "

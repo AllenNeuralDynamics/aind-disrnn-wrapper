@@ -10,6 +10,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import numpy as np
+
 try:
     import pandas as pd
 except ModuleNotFoundError:  # pragma: no cover - local desktop Python may be minimal
@@ -36,6 +38,7 @@ from post_training_analysis.likelihood_comparison import (
     _session_sem,
     run_prediction_likelihood_comparison,
 )
+from utils.gru_evaluation import add_gru_model_results
 
 
 @unittest.skipIf(pd is None, "pandas is not installed")
@@ -422,6 +425,71 @@ seed: 13
             expected_likelihood,
             places=6,
         )
+
+    def test_gru_results_alignment_preserves_non_lexicographic_session_order(self):
+        run = self._make_run(model_type="gru", multisubject=True)
+        raw_df = pd.DataFrame.from_records(
+            [
+                {
+                    "ses_idx": "subject_b__session_1",
+                    "trial": 0,
+                    "subject_id": "subject_b",
+                    "animal_response": 1,
+                    "earned_reward": 1,
+                },
+                {
+                    "ses_idx": "subject_b__session_1",
+                    "trial": 1,
+                    "subject_id": "subject_b",
+                    "animal_response": 1,
+                    "earned_reward": 0,
+                },
+                {
+                    "ses_idx": "subject_a__session_1",
+                    "trial": 0,
+                    "subject_id": "subject_a",
+                    "animal_response": 0,
+                    "earned_reward": 1,
+                },
+                {
+                    "ses_idx": "subject_a__session_1",
+                    "trial": 1,
+                    "subject_id": "subject_a",
+                    "animal_response": 0,
+                    "earned_reward": 0,
+                },
+            ]
+        )
+
+        network_states = np.zeros((2, 2, 3), dtype=float)
+        yhat = np.array(
+            [
+                [[-5.0, 5.0], [5.0, -5.0]],
+                [[-4.0, 4.0], [4.0, -4.0]],
+            ],
+            dtype=float,
+        )
+
+        output_df = add_gru_model_results(
+            raw_df,
+            network_states,
+            yhat,
+            ignore_policy="exclude",
+        )
+        session_metrics_df = _session_metrics_from_output_df(
+            run,
+            split_name="eval",
+            output_df=output_df,
+            raw_df=raw_df,
+            metadata={},
+            n_action_logits=2,
+        )
+
+        pooled_likelihood = math.exp(
+            float(session_metrics_df["total_log_likelihood"].sum())
+            / float(session_metrics_df["total_trials"].sum())
+        )
+        self.assertGreater(pooled_likelihood, 0.99)
 
     def test_pooled_metric_session_sem_matches_session_likelihood_sem(self):
         run = self._make_run(model_type="gru")
