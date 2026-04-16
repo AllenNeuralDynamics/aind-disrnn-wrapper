@@ -1651,7 +1651,7 @@ def _plot_subject_likelihood_violins(
     figure_title = "Subject Prediction Likelihood Across Models"
     if figure_title_session_counts:
         figure_title = f"{figure_title}\n{figure_title_session_counts}"
-    fig.suptitle(figure_title, y=0.95)
+    fig.suptitle(figure_title, y=0.94)
 
     for axis_index, split_name in enumerate(splits_to_plot):
         ax = axes[0, axis_index]
@@ -1766,12 +1766,13 @@ def _plot_subject_likelihood_violins(
     if legend_handles:
         fig.legend(
             handles=legend_handles,
-            loc="upper center",
+            loc="lower center",
+            bbox_to_anchor=(0.5, 0.01),
             ncol=min(len(legend_handles), 5),
         )
-        fig.tight_layout(rect=(0, 0, 1, 0.90))
+        fig.tight_layout(rect=(0, 0.10, 1, 0.93))
     else:
-        fig.tight_layout(rect=(0, 0, 1, 0.91))
+        fig.tight_layout(rect=(0, 0.04, 1, 0.93))
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
@@ -2233,30 +2234,31 @@ def _annotate_paired_t_tests_on_violin_plot(
         if model_tests_df.empty:
             continue
         test_row = model_tests_df.iloc[0]
-        significance_label = str(test_row.get("significance_label") or "ns")
+        significance_label = str(test_row.get("significance_label") or "")
         p_value_text = _format_p_value_for_annotation(test_row.get("p_value"))
         n_subjects = int(test_row.get("n_subjects") or 0)
         symbol_y, text_y = annotation_positions_by_label.get(
             str(comparison_model_label),
             (0.885, 0.845),
         )
-        ax.text(
-            float(position),
-            float(symbol_y),
-            significance_label,
-            ha="center",
-            va="center",
-            fontsize=10,
-            fontweight="bold",
-            clip_on=True,
-        )
+        if significance_label:
+            ax.text(
+                float(position),
+                float(symbol_y),
+                significance_label,
+                ha="center",
+                va="center",
+                fontsize=10,
+                fontweight="bold",
+                clip_on=True,
+            )
         ax.text(
             float(position),
             float(text_y),
             f"p={p_value_text}\nn={n_subjects}",
             ha="center",
             va="center",
-            fontsize=8,
+            fontsize=7,
             clip_on=True,
         )
 

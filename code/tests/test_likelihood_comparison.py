@@ -1080,6 +1080,7 @@ seed: 13
             ]
             self.assertTrue(scatter_collections)
             self.assertAlmostEqual(scatter_collections[0].get_alpha(), 0.45, places=6)
+            self.assertFalse(any(text.get_text() == "ns" for text in violin_fig.axes[0].texts))
             self.assertTrue(
                 any("p=n/a" in text.get_text() for text in violin_fig.axes[0].texts)
             )
@@ -1093,9 +1094,8 @@ seed: 13
                 text.get_text(): float(text.get_position()[1])
                 for text in violin_fig.axes[0].texts
             }
-            self.assertAlmostEqual(text_positions.get("ns", 0.0), 0.875, places=6)
             self.assertAlmostEqual(text_positions.get("p=n/a\nn=1", 0.0), 0.535, places=6)
-            self.assertAlmostEqual(float(violin_fig._suptitle.get_position()[1]), 0.95, places=6)
+            self.assertAlmostEqual(float(violin_fig._suptitle.get_position()[1]), 0.94, places=6)
             self.assertIn("Train sessions", violin_fig._suptitle.get_text())
             plt.close(violin_fig)
 
