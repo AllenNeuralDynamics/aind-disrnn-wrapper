@@ -30,7 +30,7 @@ result = run_prediction_likelihood_comparison(
         "GRU_no_subj_emb",
         "disrnn_subj_emb",
     ],          # optional
-    precomputed_session_metrics_path=None,
+    precomputed_session_metrics_path="/code/session_metrics.pkl",
     include_heldout=False,       # optional
 )
 
