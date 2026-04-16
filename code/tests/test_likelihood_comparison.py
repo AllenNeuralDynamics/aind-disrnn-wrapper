@@ -1082,6 +1082,12 @@ seed: 13
             self.assertTrue(
                 any("p=n/a" in text.get_text() for text in violin_fig.axes[0].texts)
             )
+            self.assertTrue(
+                all(
+                    0.5 <= float(text.get_position()[1]) <= 0.9
+                    for text in violin_fig.axes[0].texts
+                )
+            )
             self.assertIn("Train sessions", violin_fig._suptitle.get_text())
             plt.close(violin_fig)
 
@@ -1369,6 +1375,10 @@ seed: 13
             self.assertEqual(
                 list(scatter_fig.axes[0].lines[0].get_xdata()),
                 list(scatter_fig.axes[0].lines[0].get_ydata()),
+            )
+            self.assertEqual(
+                scatter_fig.axes[0].get_title(),
+                "Train\nmodel_a (1) vs model_b (1)",
             )
             self.assertEqual(
                 list(scatter_fig.axes[0].get_xticks()),
