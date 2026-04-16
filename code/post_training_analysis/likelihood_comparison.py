@@ -84,6 +84,11 @@ _DEFAULT_CURRICULUM_COLORS = {
     "Mixed": "#7f7f7f",
     "Unknown": "#bdbdbd",
 }
+_MODEL_TYPE_COLORS = {
+    "baseline_rl": "#59a14f",
+    "gru": "#4e79a7",
+    "disrnn": "#f28e2b",
+}
 _BAR_SPLIT_TITLES = {
     "train": "Train",
     "eval": "Eval",
@@ -124,6 +129,7 @@ def run_prediction_likelihood_comparison(
     output_dir: str | Path | None = None,
     model_labels: Sequence[str] | None = None,
     include_heldout: bool = True,
+    precomputed_session_metrics_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Compare next-trial prediction likelihood across trained model runs."""
 
@@ -156,6 +162,9 @@ def run_prediction_likelihood_comparison(
         else Path(resolved_model_dirs[0]).resolve() / "outputs" / "likelihood_comparison"
     )
     resolved_output_dir.mkdir(parents=True, exist_ok=True)
+    precomputed_session_metrics_df = _load_precomputed_session_metrics(
+        precomputed_session_metrics_path
+    )
 
     pooled_rows: list[dict[str, Any]] = []
     session_df_chunks: list[Any] = []
@@ -163,19 +172,33 @@ def run_prediction_likelihood_comparison(
     model_summaries: list[dict[str, Any]] = []
 
     for run in resolved_runs:
-        hydra_config, bundle = _load_training_bundle_for_run(run)
-        split_results = _evaluate_resolved_run_splits(
+        reused_session_metrics_df = _reuse_precomputed_session_metrics_for_run(
             run,
-            bundle,
-            hydra_config=hydra_config,
+            precomputed_session_metrics_df=precomputed_session_metrics_df,
             include_heldout=include_heldout,
         )
+        if reused_session_metrics_df is not None:
+            split_results = _split_results_from_session_metrics(
+                run,
+                session_metrics_df=reused_session_metrics_df,
+            )
+            result_source = "precomputed_session_metrics"
+        else:
+            hydra_config, bundle = _load_training_bundle_for_run(run)
+            split_results = _evaluate_resolved_run_splits(
+                run,
+                bundle,
+                hydra_config=hydra_config,
+                include_heldout=include_heldout,
+            )
+            result_source = "evaluated"
 
         model_summary = {
             "model_dir": run.model_dir,
             "model_label": run.model_label,
             "model_type": run.model_type,
             "multisubject": run.multisubject,
+            "result_source": result_source,
             "splits": {},
         }
 
@@ -255,6 +278,10 @@ def run_prediction_likelihood_comparison(
         splits_to_plot=splits_to_plot,
     )
     curriculum_palette = _build_curriculum_palette(subject_metrics_df)
+    plot_title_session_counts = _build_plot_title_session_counts(
+        pooled_metrics_df,
+        model_order=resolved_labels,
+    )
 
     plots_dir = resolved_output_dir / "plots"
     plots_dir.mkdir(parents=True, exist_ok=True)
@@ -266,14 +293,17 @@ def run_prediction_likelihood_comparison(
         model_order=resolved_labels,
         splits_to_plot=splits_to_plot,
         reference_lines=reference_lines,
+        figure_title_session_counts=plot_title_session_counts,
         output_path=bar_plot_path,
     )
     _plot_subject_likelihood_violins(
+        pooled_metrics_df=pooled_metrics_df,
         subject_metrics_df=subject_metrics_df,
         model_order=resolved_labels,
         splits_to_plot=splits_to_plot,
         reference_lines=reference_lines,
         curriculum_palette=curriculum_palette,
+        figure_title_session_counts=plot_title_session_counts,
         output_path=violin_plot_path,
     )
 
@@ -281,6 +311,11 @@ def run_prediction_likelihood_comparison(
         "output_dir": str(resolved_output_dir),
         "checkpoint_policy": checkpoint_policy,
         "include_heldout": bool(include_heldout),
+        "precomputed_session_metrics_path": (
+            str(Path(precomputed_session_metrics_path).expanduser().resolve())
+            if precomputed_session_metrics_path is not None
+            else None
+        ),
         "model_dirs": resolved_model_dirs,
         "model_labels": resolved_labels,
         "splits_plotted": list(splits_to_plot),
@@ -484,6 +519,98 @@ def _evaluate_resolved_run_splits(
             run,
         )
 
+    return split_results
+
+
+def _load_precomputed_session_metrics(precomputed_session_metrics_path: str | Path | None) -> Any:
+    if precomputed_session_metrics_path is None:
+        return _make_dataframe([], _SESSION_METRIC_COLUMNS)
+
+    pd = _import_pandas()
+
+    resolved_path = Path(precomputed_session_metrics_path).expanduser().resolve()
+    if not resolved_path.exists():
+        raise FileNotFoundError(
+            f"Precomputed session metrics file was not found: {resolved_path}"
+        )
+
+    loaded_df = pd.read_pickle(resolved_path)
+    precomputed_session_metrics_df = _make_dataframe(
+        pd.DataFrame(loaded_df).to_dict(orient="records"),
+        _SESSION_METRIC_COLUMNS,
+    )
+    if "model_dir" not in precomputed_session_metrics_df.columns:
+        raise ValueError(
+            "Precomputed session metrics must include a 'model_dir' column."
+        )
+    if not precomputed_session_metrics_df.empty:
+        precomputed_session_metrics_df["model_dir"] = precomputed_session_metrics_df[
+            "model_dir"
+        ].map(lambda value: str(Path(str(value)).expanduser().resolve()))
+    return precomputed_session_metrics_df
+
+
+def _reuse_precomputed_session_metrics_for_run(
+    run: ResolvedLikelihoodRun,
+    *,
+    precomputed_session_metrics_df: Any,
+    include_heldout: bool,
+) -> Any | None:
+    if precomputed_session_metrics_df.empty:
+        return None
+
+    cached_rows = precomputed_session_metrics_df[
+        precomputed_session_metrics_df["model_dir"] == run.model_dir
+    ].copy()
+    if cached_rows.empty:
+        return None
+
+    cached_rows = _make_dataframe(
+        cached_rows.to_dict(orient="records"),
+        _SESSION_METRIC_COLUMNS,
+    )
+    cached_rows["model_index"] = int(run.model_index)
+    cached_rows["model_label"] = run.model_label
+    cached_rows["model_dir"] = run.model_dir
+    cached_rows["model_type"] = run.model_type
+    cached_rows["multisubject"] = bool(run.multisubject)
+    cached_rows["subject_id"] = cached_rows["subject_id"].map(_normalize_identifier)
+    cached_rows["session_id"] = cached_rows["session_id"].map(
+        lambda value: str(_normalize_identifier(value))
+    )
+    cached_rows["split"] = cached_rows["split"].astype(str)
+    if not include_heldout:
+        cached_rows = cached_rows[cached_rows["split"] != "heldout_test"].copy()
+    return _sort_metrics_dataframe(
+        cached_rows,
+        split_column="split",
+        sort_columns=("model_index", "split", "subject_id", "session_id"),
+    )
+
+
+def _split_results_from_session_metrics(
+    run: ResolvedLikelihoodRun,
+    *,
+    session_metrics_df: Any,
+) -> dict[str, dict[str, Any]]:
+    split_results: dict[str, dict[str, Any]] = {}
+    for split_name in _SPLIT_ORDER:
+        split_session_metrics_df = session_metrics_df[
+            session_metrics_df["split"] == split_name
+        ].copy()
+        if split_session_metrics_df.empty:
+            continue
+        subject_metrics_df = _aggregate_subject_metrics(
+            split_session_metrics_df,
+            run=run,
+            split_name=split_name,
+        )
+        split_results[split_name] = _make_completed_split_result(
+            run,
+            split_name=split_name,
+            session_metrics_df=split_session_metrics_df,
+            subject_metrics_df=subject_metrics_df,
+        )
     return split_results
 
 
@@ -1271,6 +1398,8 @@ def _resolve_splits_to_plot(pooled_metrics_df: Any) -> list[str]:
         return []
     plotted_splits = []
     for split_name in _SPLIT_ORDER:
+        if split_name == "combined":
+            continue
         split_rows = pooled_metrics_df[pooled_metrics_df["split"] == split_name]
         if split_rows.empty:
             continue
@@ -1318,6 +1447,7 @@ def _plot_pooled_likelihood_bars(
     model_order: Sequence[str],
     splits_to_plot: Sequence[str],
     reference_lines: Mapping[str, float],
+    figure_title_session_counts: str,
     output_path: Path,
 ) -> None:
     import matplotlib
@@ -1325,6 +1455,7 @@ def _plot_pooled_likelihood_bars(
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     from matplotlib.lines import Line2D
+    from matplotlib.patches import Patch
     import numpy as np
 
     n_panels = max(1, len(splits_to_plot))
@@ -1336,7 +1467,14 @@ def _plot_pooled_likelihood_bars(
         sharey=True,
     )
     x_positions = np.arange(len(model_order), dtype=float)
-    bar_color = "#4c78a8"
+    model_type_by_label = _resolve_model_type_by_label(
+        pooled_metrics_df,
+        model_order=model_order,
+    )
+    figure_title = "Prediction Likelihood Across Models"
+    if figure_title_session_counts:
+        figure_title = f"{figure_title}\n{figure_title_session_counts}"
+    fig.suptitle(figure_title, y=0.995)
     for axis_index, split_name in enumerate(splits_to_plot):
         ax = axes[0, axis_index]
         split_rows = pooled_metrics_df[pooled_metrics_df["split"] == split_name].copy()
@@ -1347,8 +1485,13 @@ def _plot_pooled_likelihood_bars(
         }
         heights = []
         errors = []
+        bar_colors = []
         for model_label in model_order:
             row = value_by_label.get(model_label)
+            model_type = model_type_by_label.get(model_label)
+            bar_colors.append(
+                _MODEL_TYPE_COLORS.get(model_type, _DEFAULT_CURRICULUM_COLORS["Unknown"])
+            )
             if row is None:
                 heights.append(np.nan)
                 errors.append(0.0)
@@ -1363,10 +1506,29 @@ def _plot_pooled_likelihood_bars(
             heights,
             yerr=errors,
             capsize=4,
-            color=bar_color,
+            color=bar_colors,
             edgecolor="white",
             linewidth=1.0,
         )
+        max_height = 0.0
+        for x_position, height, error in zip(x_positions, heights, errors):
+            if _is_nan(height):
+                continue
+            max_height = max(max_height, float(height) + float(error))
+        if split_name in reference_lines:
+            max_height = max(max_height, float(reference_lines[split_name]))
+        label_offset = max(0.015, max_height * 0.04) if max_height > 0 else 0.03
+        for x_position, height, error in zip(x_positions, heights, errors):
+            if _is_nan(height):
+                continue
+            ax.text(
+                float(x_position),
+                float(height) + float(error) + label_offset,
+                f"{float(height):.3f}",
+                ha="center",
+                va="bottom",
+                fontsize=9,
+            )
         if split_name in reference_lines:
             ax.axhline(
                 float(reference_lines[split_name]),
@@ -1381,31 +1543,50 @@ def _plot_pooled_likelihood_bars(
         ax.set_ylabel("Prediction Likelihood")
         ax.grid(axis="y", color="0.9", linewidth=1.0)
         ax.set_axisbelow(True)
-        ax.set_ylim(bottom=0.0)
+        ax.set_ylim(bottom=0.0, top=max(1.0, max_height + label_offset * 3.0))
 
     handles = []
     labels = []
+    present_model_types = list(
+        dict.fromkeys(
+            model_type
+            for model_type in (model_type_by_label.get(label) for label in model_order)
+            if model_type in _MODEL_TYPE_COLORS
+        )
+    )
+    handles.extend(
+        [
+            Patch(
+                facecolor=_MODEL_TYPE_COLORS[model_type],
+                edgecolor="none",
+            )
+            for model_type in present_model_types
+        ]
+    )
+    labels.extend(present_model_types)
     if reference_lines:
         handles.append(
             Line2D([0], [0], color="dimgray", linestyle="--", linewidth=1.5)
         )
         labels.append("First-model reference")
     if handles:
-        fig.legend(handles, labels, loc="upper center", ncol=len(handles))
-        fig.tight_layout(rect=(0, 0, 1, 0.95))
+        fig.legend(handles, labels, loc="upper center", ncol=min(len(handles), 4))
+        fig.tight_layout(rect=(0, 0, 1, 0.90))
     else:
-        fig.tight_layout()
+        fig.tight_layout(rect=(0, 0, 1, 0.92))
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
 
 def _plot_subject_likelihood_violins(
     *,
+    pooled_metrics_df: Any,
     subject_metrics_df: Any,
     model_order: Sequence[str],
     splits_to_plot: Sequence[str],
     reference_lines: Mapping[str, float],
     curriculum_palette: Mapping[str, str],
+    figure_title_session_counts: str,
     output_path: Path,
 ) -> None:
     import matplotlib
@@ -1425,6 +1606,10 @@ def _plot_subject_likelihood_violins(
     )
     x_positions = np.arange(len(model_order), dtype=float)
     rng = np.random.default_rng(0)
+    figure_title = "Subject Prediction Likelihood Across Models"
+    if figure_title_session_counts:
+        figure_title = f"{figure_title}\n{figure_title_session_counts}"
+    fig.suptitle(figure_title, y=0.995)
 
     for axis_index, split_name in enumerate(splits_to_plot):
         ax = axes[0, axis_index]
@@ -1480,7 +1665,7 @@ def _plot_subject_likelihood_violins(
                 color=dot_colors,
                 edgecolor="white",
                 linewidth=0.5,
-                alpha=0.95,
+                alpha=0.45,
                 zorder=4,
             )
 
@@ -1528,11 +1713,74 @@ def _plot_subject_likelihood_violins(
             loc="upper center",
             ncol=min(len(legend_handles), 5),
         )
-        fig.tight_layout(rect=(0, 0, 1, 0.94))
+        fig.tight_layout(rect=(0, 0, 1, 0.90))
     else:
-        fig.tight_layout()
+        fig.tight_layout(rect=(0, 0, 1, 0.92))
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
+
+
+def _resolve_model_type_by_label(
+    pooled_metrics_df: Any,
+    *,
+    model_order: Sequence[str],
+) -> dict[str, str]:
+    model_type_by_label: dict[str, str] = {}
+    for model_label in model_order:
+        model_rows = pooled_metrics_df[pooled_metrics_df["model_label"] == model_label]
+        if model_rows.empty:
+            continue
+        model_type_by_label[model_label] = str(model_rows.iloc[0]["model_type"])
+    return model_type_by_label
+
+
+def _build_plot_title_session_counts(
+    pooled_metrics_df: Any,
+    *,
+    model_order: Sequence[str],
+) -> str:
+    split_labels = {
+        "train": "Train sessions",
+        "eval": "Eval sessions",
+    }
+    title_parts: list[str] = []
+    for split_name, title_label in split_labels.items():
+        split_rows = pooled_metrics_df[pooled_metrics_df["split"] == split_name].copy()
+        if split_rows.empty:
+            continue
+
+        count_by_label: dict[str, int | None] = {}
+        for model_label in model_order:
+            label_rows = split_rows[split_rows["model_label"] == model_label]
+            if label_rows.empty:
+                count_by_label[model_label] = None
+                continue
+            first_row = label_rows.iloc[0]
+            if first_row.get("status") != "completed":
+                count_by_label[model_label] = None
+                continue
+            count_value = first_row.get("num_sessions")
+            count_by_label[model_label] = (
+                None if count_value is None or _is_nan(count_value) else int(count_value)
+            )
+
+        supported_counts = [
+            count_value for count_value in count_by_label.values() if count_value is not None
+        ]
+        if not supported_counts:
+            continue
+        if len(supported_counts) == len(model_order) and len(set(supported_counts)) == 1:
+            title_parts.append(f"{title_label}: {supported_counts[0]}")
+            continue
+        title_parts.append(
+            f"{title_label}: "
+            + ", ".join(
+                f"{model_label}="
+                f"{count_by_label[model_label] if count_by_label[model_label] is not None else 'n/a'}"
+                for model_label in model_order
+            )
+        )
+    return " | ".join(title_parts)
 
 
 def _build_curriculum_palette(subject_metrics_df: Any) -> dict[str, str]:
