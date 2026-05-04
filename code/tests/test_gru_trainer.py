@@ -110,13 +110,24 @@ class TestGruTrainer(unittest.TestCase):
         full_session_ids = []
         train_session_ids = []
         eval_session_ids = []
+        session_max_index_by_subject_index = []
+        session_context_rows = []
 
         for subject_id in ordered_subject_ids:
             subject_df = raw_df[raw_df["subject_id"] == subject_id].copy()
             subject_df = subject_df.sort_values(["ses_idx", "trial"]).reset_index(drop=True)
             session_ids = list(dict.fromkeys(subject_df["ses_idx"].tolist()))
+            source_session_ids = list(dict.fromkeys(subject_df["source_ses_idx"].tolist()))
+            session_index_by_session_id = {
+                str(session_id): int(index)
+                for index, session_id in enumerate(session_ids, start=1)
+            }
             train_ids, eval_ids = compute_train_eval_session_ids(session_ids, eval_every_n=2)
             subject_df["subject_index"] = subject_id_to_index[subject_id]
+            subject_df["subject_session_index"] = subject_df["ses_idx"].map(
+                lambda session_id: session_index_by_session_id[str(session_id)]
+            )
+            subject_df["subject_max_session_index"] = int(len(session_ids))
 
             dataset = dl.create_disrnn_dataset(
                 subject_df,
@@ -134,6 +145,17 @@ class TestGruTrainer(unittest.TestCase):
             full_session_ids.extend(session_ids)
             train_session_ids.extend(train_ids)
             eval_session_ids.extend(eval_ids)
+            session_max_index_by_subject_index.append(int(len(session_ids)))
+            session_context_rows.append(
+                {
+                    "subject_id": subject_id,
+                    "subject_index": int(subject_id_to_index[subject_id]),
+                    "ordered_session_ids": [str(session_id) for session_id in session_ids],
+                    "ordered_source_session_ids": [
+                        str(session_id) for session_id in source_session_ids
+                    ],
+                }
+            )
 
         merged_dataset = merge_datasets_with_subject_index(full_datasets, subject_indices)
         merged_train = merge_datasets_with_subject_index(train_datasets, subject_indices)
@@ -159,6 +181,11 @@ class TestGruTrainer(unittest.TestCase):
                 "subject_id_to_index": subject_id_to_index,
                 "index_to_subject_id": index_to_subject_id,
                 "num_subjects": len(ordered_subject_ids),
+                "session_max_index_by_subject_index": session_max_index_by_subject_index,
+                "session_context": {
+                    "indexing": "1_based",
+                    "per_subject": session_context_rows,
+                },
                 "num_trials": len(merged_raw_df),
                 "num_sessions": len(full_session_ids),
                 "train_session_ids": train_session_ids,
@@ -332,6 +359,71 @@ class TestGruTrainer(unittest.TestCase):
             self.assertTrue(plot_paths["subject_embedding_state_space"])
             self.assertTrue(Path(plot_paths["subject_embedding_state_space"]).exists())
 
+    def test_multisubject_scalar_session_conditioning_saves_session_context_artifact(self):
+        trainer = GruTrainer(
+            architecture={
+                "multisubject": True,
+                "hidden_size": 8,
+                "num_layers": 1,
+                "subject_embedding_size": 3,
+                "session_encoding_type": "scalar",
+                "session_integration_type": "direct",
+            },
+            training={
+                "lr": 1e-3,
+                "n_steps": 0,
+                "loss": "categorical",
+                "loss_param": 1,
+                "max_grad_norm": 1.0,
+                "checkpoint_every_n_steps": 0,
+                "checkpoint_run_heldout_eval": False,
+                "save_output_df": False,
+            },
+            output_dir=str(self.output_dir / "scalar_session"),
+            seed=42,
+        )
+
+        output = trainer.fit(self.multisubject_bundle)
+
+        subject_artifacts = output["subject_artifacts"]
+        self.assertIn("session_context_map", subject_artifacts)
+        self.assertTrue(Path(subject_artifacts["session_context_map"]).exists())
+        saved_cfg = json.loads((self.output_dir / "scalar_session" / "gru_config.json").read_text())
+        self.assertEqual(saved_cfg["architecture"]["session_encoding_type"], "scalar")
+        self.assertEqual(saved_cfg["architecture"]["session_integration_type"], "direct")
+
+    def test_multisubject_fourier_pre_mlp_session_conditioning_persists_config(self):
+        trainer = GruTrainer(
+            architecture={
+                "multisubject": True,
+                "hidden_size": 8,
+                "num_layers": 1,
+                "subject_embedding_size": 3,
+                "session_encoding_type": "fourier",
+                "session_integration_type": "pre_mlp",
+                "session_fourier_k": 3,
+            },
+            training={
+                "lr": 1e-3,
+                "n_steps": 0,
+                "loss": "categorical",
+                "loss_param": 1,
+                "max_grad_norm": 1.0,
+                "checkpoint_every_n_steps": 0,
+                "checkpoint_run_heldout_eval": False,
+                "save_output_df": False,
+            },
+            output_dir=str(self.output_dir / "fourier_session"),
+            seed=42,
+        )
+
+        trainer.fit(self.multisubject_bundle)
+
+        saved_cfg = json.loads((self.output_dir / "fourier_session" / "gru_config.json").read_text())
+        self.assertEqual(saved_cfg["architecture"]["session_encoding_type"], "fourier")
+        self.assertEqual(saved_cfg["architecture"]["session_integration_type"], "pre_mlp")
+        self.assertEqual(saved_cfg["architecture"]["session_fourier_k"], 3)
+
     def test_multisubject_requires_subject_embedding_size(self):
         trainer = GruTrainer(
             architecture={"multisubject": True, "hidden_size": 8, "num_layers": 1},
@@ -477,6 +569,70 @@ class TestGruTrainer(unittest.TestCase):
                 max_n_subjects=2,
                 context="test",
             )
+
+    def test_validate_multisubject_dataset_inputs_validates_session_indices(self):
+        class _DummyDataset:
+            def __init__(self, xs):
+                self._xs = xs
+
+            def get_all(self):
+                return self._xs, np.zeros((self._xs.shape[0], self._xs.shape[1], 1))
+
+        xs = np.array([[[0.0, 3.0, 1.0, 0.0]]])
+
+        with self.assertRaisesRegex(ValueError, "out-of-range session ids"):
+            _validate_multisubject_dataset_inputs(
+                _DummyDataset(xs),
+                max_n_subjects=1,
+                context="test",
+                session_conditioning_enabled=True,
+                session_max_index_by_subject_index=[2],
+            )
+
+    def test_session_conditioning_requires_multisubject_mode(self):
+        trainer = GruTrainer(
+            architecture={
+                "hidden_size": 8,
+                "num_layers": 1,
+                "session_encoding_type": "scalar",
+            },
+            training={
+                "lr": 1e-3,
+                "n_steps": 0,
+                "loss": "categorical",
+                "loss_param": 1,
+                "max_grad_norm": 1.0,
+            },
+            output_dir=str(self.output_dir / "invalid_single_subject"),
+            seed=42,
+        )
+
+        with self.assertRaisesRegex(ValueError, "requires multisubject mode"):
+            trainer.fit(self.bundle)
+
+    def test_session_conditioning_rejects_invalid_fourier_k(self):
+        trainer = GruTrainer(
+            architecture={
+                "multisubject": True,
+                "hidden_size": 8,
+                "num_layers": 1,
+                "subject_embedding_size": 3,
+                "session_encoding_type": "fourier",
+                "session_fourier_k": 0,
+            },
+            training={
+                "lr": 1e-3,
+                "n_steps": 0,
+                "loss": "categorical",
+                "loss_param": 1,
+                "max_grad_norm": 1.0,
+            },
+            output_dir=str(self.output_dir / "invalid_fourier"),
+            seed=42,
+        )
+
+        with self.assertRaisesRegex(ValueError, "session_fourier_k must be > 0"):
+            trainer.fit(self.multisubject_bundle)
 
     def test_heldout_eval_rejects_multisubject_gru(self):
         hydra_config = OmegaConf.create(

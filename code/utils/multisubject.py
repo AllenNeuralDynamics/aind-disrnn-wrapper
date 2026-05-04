@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 import json
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
@@ -109,16 +109,24 @@ def merge_datasets_with_subject_index(
     dataset_list: Sequence[Any],
     subject_indices: Sequence[int],
     *,
+    session_indices_per_dataset: Sequence[Sequence[int] | np.ndarray] | None = None,
     batch_size: int | None = None,
     batch_mode: str | None = None,
     subject_feature_name: str = "Subject ID",
+    session_feature_name: str = "Session Index",
 ) -> Any:
-    """Merge per-subject datasets and prepend a dense subject index feature."""
+    """Merge per-subject datasets and prepend subject/session index features."""
     if not dataset_list:
         raise ValueError("dataset_list must contain at least one dataset.")
     if len(dataset_list) != len(subject_indices):
         raise ValueError(
             "dataset_list and subject_indices must have the same length."
+        )
+    if session_indices_per_dataset is not None and len(session_indices_per_dataset) != len(
+        dataset_list
+    ):
+        raise ValueError(
+            "session_indices_per_dataset must be None or have the same length as dataset_list."
         )
 
     first_dataset = dataset_list[0]
@@ -133,7 +141,9 @@ def merge_datasets_with_subject_index(
     merged_x_chunks: list[np.ndarray] = []
     merged_y_chunks: list[np.ndarray] = []
 
-    for dataset, subject_index in zip(dataset_list, subject_indices):
+    for dataset_index, (dataset, subject_index) in enumerate(
+        zip(dataset_list, subject_indices)
+    ):
         xs, ys = dataset.get_all()
         if list(dataset.x_names) != base_x_names:
             raise ValueError("All datasets must share the same x_names.")
@@ -150,7 +160,27 @@ def merge_datasets_with_subject_index(
             fill_value=int(subject_index),
             dtype=xs.dtype,
         )
-        xs_with_subject = np.concatenate((subject_feature, xs), axis=2)
+        feature_chunks = [subject_feature]
+
+        if session_indices_per_dataset is not None:
+            session_indices = np.asarray(session_indices_per_dataset[dataset_index], dtype=xs.dtype)
+            if session_indices.ndim != 1:
+                raise ValueError(
+                    "Each session_indices_per_dataset entry must be 1D with one value per session."
+                )
+            if int(session_indices.shape[0]) != int(n_sessions):
+                raise ValueError(
+                    "session_indices_per_dataset entry length must match the dataset session "
+                    f"count. Expected {n_sessions}, got {session_indices.shape[0]}."
+                )
+            session_feature = np.broadcast_to(
+                session_indices.reshape(1, n_sessions, 1),
+                (n_timesteps, n_sessions, 1),
+            ).astype(xs.dtype, copy=False)
+            feature_chunks.append(session_feature)
+
+        feature_chunks.append(xs)
+        xs_with_subject = np.concatenate(feature_chunks, axis=2)
 
         if n_timesteps < max_n_timesteps:
             pad_timesteps = max_n_timesteps - n_timesteps
@@ -179,15 +209,213 @@ def merge_datasets_with_subject_index(
     merged_ys = np.concatenate(merged_y_chunks, axis=1)
 
     dataset_class = first_dataset.__class__
+    merged_x_names = [subject_feature_name]
+    if session_indices_per_dataset is not None:
+        merged_x_names.append(session_feature_name)
+    merged_x_names.extend(base_x_names)
     return dataset_class(
         merged_xs,
         merged_ys,
         y_type=base_y_type,
         n_classes=base_n_classes,
-        x_names=[subject_feature_name] + base_x_names,
+        x_names=merged_x_names,
         y_names=base_y_names,
         batch_size=batch_size,
         batch_mode=merged_batch_mode,
+    )
+
+
+def save_session_context_map(
+    path: str | Path,
+    *,
+    session_context: dict[str, Any],
+) -> Path:
+    """Persist per-subject session ordering as a JSON artifact."""
+    output_path = Path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w") as f:
+        json.dump(session_context, f, indent=2, default=_json_default)
+    return output_path
+
+
+def load_session_context_map(path: str | Path) -> dict[str, Any]:
+    """Load a persisted session-context artifact."""
+    with Path(path).open("r") as f:
+        payload = json.load(f)
+    if not isinstance(payload, dict):
+        raise ValueError(f"Expected mapping-style session context in {path}")
+    return payload
+
+
+def _ordered_session_context_rows(session_context: Mapping[str, Any]) -> list[dict[str, Any]]:
+    if not isinstance(session_context, Mapping):
+        raise ValueError("session_context must be a mapping.")
+    rows = session_context.get("per_subject", [])
+    if not isinstance(rows, list):
+        raise ValueError("session_context.per_subject must be a list.")
+    normalized_rows: list[dict[str, Any]] = []
+    for raw_row in rows:
+        if not isinstance(raw_row, Mapping):
+            raise ValueError("Each session_context.per_subject entry must be a mapping.")
+        normalized_rows.append(dict(raw_row))
+    return normalized_rows
+
+
+def ordered_session_ids_from_session_context(
+    session_context: Mapping[str, Any],
+) -> list[str]:
+    """Return merged full-session order from session-context metadata."""
+    ordered_session_ids: list[str] = []
+    for row in _ordered_session_context_rows(session_context):
+        ordered_session_ids.extend(
+            [str(session_id) for session_id in row.get("ordered_session_ids") or []]
+        )
+    return ordered_session_ids
+
+
+def merged_session_index_lookup_from_session_context(
+    session_context: Mapping[str, Any],
+) -> dict[str, int]:
+    """Return merged-session-id -> 1-based per-subject session index."""
+    lookup: dict[str, int] = {}
+    for row in _ordered_session_context_rows(session_context):
+        ordered_session_ids = [str(session_id) for session_id in row.get("ordered_session_ids") or []]
+        for session_index, session_id in enumerate(ordered_session_ids, start=1):
+            lookup[session_id] = int(session_index)
+    return lookup
+
+
+def subject_session_index_lookup_from_session_context(
+    session_context: Mapping[str, Any],
+) -> tuple[dict[tuple[Any, str], int], dict[tuple[Any, str], int]]:
+    """Return subject/session lookups for merged and source session identifiers."""
+    merged_lookup: dict[tuple[Any, str], int] = {}
+    source_lookup: dict[tuple[Any, str], int] = {}
+    for row in _ordered_session_context_rows(session_context):
+        subject_id = normalize_subject_id(row.get("subject_id"))
+        ordered_session_ids = [str(session_id) for session_id in row.get("ordered_session_ids") or []]
+        ordered_source_session_ids = [
+            str(session_id)
+            for session_id in (
+                row.get("ordered_source_session_ids") or row.get("ordered_session_ids") or []
+            )
+        ]
+        if len(ordered_source_session_ids) != len(ordered_session_ids):
+            raise ValueError(
+                "session_context ordered_source_session_ids must align 1:1 with "
+                "ordered_session_ids."
+            )
+        for session_index, (merged_session_id, source_session_id) in enumerate(
+            zip(ordered_session_ids, ordered_source_session_ids),
+            start=1,
+        ):
+            merged_lookup[(subject_id, merged_session_id)] = int(session_index)
+            source_lookup[(subject_id, source_session_id)] = int(session_index)
+    return merged_lookup, source_lookup
+
+
+def session_indices_for_split(
+    metadata: Mapping[str, Any],
+    *,
+    split_name: str,
+) -> list[int]:
+    """Return 1-based per-subject session indices aligned to a merged dataset split."""
+    session_context = metadata.get("session_context")
+    if not isinstance(session_context, Mapping):
+        raise ValueError(
+            "session_indices_for_split requires metadata.session_context for multisubject runs."
+        )
+    session_id_to_index = merged_session_index_lookup_from_session_context(session_context)
+    if split_name == "full":
+        ordered_session_ids = ordered_session_ids_from_session_context(session_context)
+    elif split_name == "train":
+        ordered_session_ids = [str(session_id) for session_id in metadata.get("train_session_ids") or []]
+    elif split_name == "eval":
+        ordered_session_ids = [str(session_id) for session_id in metadata.get("eval_session_ids") or []]
+    else:
+        raise ValueError(f"Unsupported split_name={split_name!r}.")
+
+    missing_session_ids = [
+        session_id for session_id in ordered_session_ids if str(session_id) not in session_id_to_index
+    ]
+    if missing_session_ids:
+        raise ValueError(
+            "Session-context metadata is missing session ids required for split "
+            f"{split_name!r}: {missing_session_ids}"
+        )
+    return [int(session_id_to_index[str(session_id)]) for session_id in ordered_session_ids]
+
+
+def prepend_session_index_to_multisubject_dataset(
+    dataset: Any,
+    *,
+    session_indices: Sequence[int],
+    session_feature_name: str = "Session Index",
+) -> Any:
+    """Insert a session-index feature after the prepended subject index feature."""
+    xs, ys = dataset.get_all()
+    xs = np.asarray(xs)
+    ys = np.asarray(ys)
+    if xs.ndim != 3:
+        raise ValueError(f"Expected dataset xs to be 3D, got shape={xs.shape}.")
+    if xs.shape[2] < 1:
+        raise ValueError("Multisubject datasets must include a prepended subject-index feature.")
+
+    resolved_session_indices = np.asarray(session_indices, dtype=xs.dtype)
+    if resolved_session_indices.ndim != 1:
+        raise ValueError("session_indices must be a 1D sequence with one value per session.")
+    if int(resolved_session_indices.shape[0]) != int(xs.shape[1]):
+        raise ValueError(
+            "session_indices length must match the dataset session count. "
+            f"Expected {xs.shape[1]}, got {resolved_session_indices.shape[0]}."
+        )
+
+    session_feature = np.broadcast_to(
+        resolved_session_indices.reshape(1, xs.shape[1], 1),
+        (xs.shape[0], xs.shape[1], 1),
+    ).astype(xs.dtype, copy=False)
+    pad_mask = np.asarray(xs[..., 0] < 0)
+    session_feature = np.array(session_feature, copy=True)
+    session_feature[pad_mask] = -1
+
+    dataset_class = dataset.__class__
+    return dataset_class(
+        np.concatenate((xs[:, :, :1], session_feature, xs[:, :, 1:]), axis=2),
+        ys,
+        y_type=getattr(dataset, "y_type", "categorical"),
+        n_classes=getattr(dataset, "n_classes", None),
+        x_names=[list(dataset.x_names)[0], session_feature_name, *list(dataset.x_names)[1:]],
+        y_names=list(dataset.y_names),
+        batch_size=getattr(dataset, "batch_size", None),
+        batch_mode=getattr(dataset, "batch_mode", "random"),
+    )
+
+
+def prepend_session_index_to_multisubject_split_datasets(
+    *,
+    dataset: Any,
+    dataset_train: Any,
+    dataset_eval: Any,
+    metadata: Mapping[str, Any],
+    session_feature_name: str = "Session Index",
+) -> tuple[Any, Any, Any]:
+    """Return full/train/eval datasets with a prepended session-index feature."""
+    return (
+        prepend_session_index_to_multisubject_dataset(
+            dataset,
+            session_indices=session_indices_for_split(metadata, split_name="full"),
+            session_feature_name=session_feature_name,
+        ),
+        prepend_session_index_to_multisubject_dataset(
+            dataset_train,
+            session_indices=session_indices_for_split(metadata, split_name="train"),
+            session_feature_name=session_feature_name,
+        ),
+        prepend_session_index_to_multisubject_dataset(
+            dataset_eval,
+            session_indices=session_indices_for_split(metadata, split_name="eval"),
+            session_feature_name=session_feature_name,
+        ),
     )
 
 

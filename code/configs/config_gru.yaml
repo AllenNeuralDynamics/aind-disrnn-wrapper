@@ -112,6 +112,9 @@ model:
     num_layers: 1
     subject_embedding_size: 4
     subject_embedding_init: zeros   # zeros | small_random | subject_count_scaled_random
+    session_encoding_type: none      # none | scalar | fourier
+    session_integration_type: direct # direct | pre_mlp
+    session_fourier_k: 4             # used only for fourier
   training:
     lr: 1e-3
     n_steps: 20

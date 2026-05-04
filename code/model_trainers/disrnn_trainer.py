@@ -6,7 +6,7 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, Mapping
+from typing import Any, Callable, Dict, Mapping, Sequence
 from dataclasses import asdict
 
 import jax
@@ -25,6 +25,7 @@ from disentangled_rnns.library import disrnn, multisubject_disrnn, plotting, rnn
 from base.interfaces import ModelTrainer
 from base.types import DatasetBundle
 from models import multisubject_disrnn as local_multisubject_disrnn
+from models.session_conditioning import resolve_session_conditioning_from_architecture
 from utils.disrnn_evaluation import plot_disrnn_examples_for_split
 from utils.disrnn_evaluation import (
     HeldoutEvalConfig,
@@ -42,7 +43,9 @@ from utils.multisubject import (
     convert_local_params_to_upstream_multisubject,
     extract_subject_embeddings_from_params,
     normalize_subject_id,
+    prepend_session_index_to_multisubject_split_datasets,
     save_subject_index_map,
+    save_session_context_map,
     subject_embeddings_to_dataframe,
 )
 from utils.run_helpers import resolve_disrnn_penalties
@@ -122,6 +125,88 @@ def _log_dataset_split_details(
     )
 
 
+def _maybe_prepend_session_indices_to_datasets(
+    *,
+    dataset: Any,
+    dataset_train: Any,
+    dataset_eval: Any,
+    session_conditioning_enabled: bool,
+    metadata: Mapping[str, Any],
+) -> tuple[Any, Any, Any]:
+    if not session_conditioning_enabled:
+        return dataset, dataset_train, dataset_eval
+    return prepend_session_index_to_multisubject_split_datasets(
+        dataset=dataset,
+        dataset_train=dataset_train,
+        dataset_eval=dataset_eval,
+        metadata=metadata,
+    )
+
+
+def _validate_multisubject_dataset_inputs(
+    dataset: Any,
+    *,
+    max_n_subjects: int,
+    session_conditioning_enabled: bool,
+    session_max_index_by_subject_index: Sequence[int] | None,
+    context: str,
+) -> None:
+    xs, _ = dataset.get_all()
+    xs = np.asarray(xs)
+    min_feature_count = 3 if session_conditioning_enabled else 2
+    if xs.ndim != 3:
+        raise ValueError(
+            f"Multisubject disRNN {context} expects dataset inputs to be 3D, got shape={xs.shape}."
+        )
+    if xs.shape[2] < min_feature_count:
+        raise ValueError(
+            f"Multisubject disRNN {context} requires {min_feature_count} input features "
+            "including prepended subject/session indices."
+        )
+
+    subject_ids = np.asarray(np.rint(xs[..., 0]), dtype=int)
+    invalid_subject_mask = (subject_ids < -1) | (subject_ids >= int(max_n_subjects))
+    if np.any(invalid_subject_mask):
+        bad_values = np.unique(subject_ids[invalid_subject_mask]).tolist()
+        raise ValueError(
+            "Multisubject disRNN "
+            f"{context} encountered out-of-range subject ids {bad_values}."
+        )
+
+    if not session_conditioning_enabled:
+        return
+    if session_max_index_by_subject_index is None:
+        raise ValueError(
+            "Multisubject disRNN session conditioning validation requires "
+            "session_max_index_by_subject_index."
+        )
+
+    session_max = np.asarray(session_max_index_by_subject_index, dtype=int)
+    session_ids = np.asarray(np.rint(xs[..., 1]), dtype=int)
+    valid_subject_mask = subject_ids >= 0
+    if np.any(valid_subject_mask):
+        valid_session_ids = session_ids[valid_subject_mask]
+        subject_specific_max = session_max[subject_ids[valid_subject_mask]]
+        invalid_session_mask = np.logical_or(
+            valid_session_ids < 1,
+            valid_session_ids > subject_specific_max,
+        )
+        if np.any(invalid_session_mask):
+            bad_values = np.unique(valid_session_ids[invalid_session_mask]).tolist()
+            raise ValueError(
+                "Multisubject disRNN "
+                f"{context} encountered out-of-range session ids {bad_values}."
+            )
+
+    invalid_padded_session_mask = np.logical_and(subject_ids < 0, session_ids != -1)
+    if np.any(invalid_padded_session_mask):
+        bad_values = np.unique(session_ids[invalid_padded_session_mask]).tolist()
+        raise ValueError(
+            "Multisubject disRNN "
+            f"{context} expected padded rows to use session id -1, got {bad_values}."
+        )
+
+
 class DisrnnTrainer(ModelTrainer):
     """Trainer that reproduces the legacy disRNN pipeline."""
 
@@ -181,9 +266,19 @@ class DisrnnTrainer(ModelTrainer):
                 raise ValueError(
                     "Multisubject disRNN requires architecture.subject_embedding_size > 0."
                 )
+            session_conditioning_cfg = resolve_session_conditioning_from_architecture(
+                architecture=self.architecture,
+                metadata=metadata,
+                multisubject=is_multisubject,
+                max_n_subjects=num_subjects,
+                context="DisrnnTrainer",
+            )
+            packed_context_feature_count = (
+                2 if bool(session_conditioning_cfg["enabled"]) else 1
+            )
 
             config = local_multisubject_disrnn.MultisubjectDisRnnConfig(
-                obs_size=int(dataset._xs.shape[2] - 1),
+                obs_size=int(dataset._xs.shape[2] - packed_context_feature_count),
                 output_size=output_size,
                 x_names=dataset.x_names,
                 y_names=dataset.y_names,
@@ -207,6 +302,16 @@ class DisrnnTrainer(ModelTrainer):
                 subject_embedding_init=str(
                     self.architecture.get("subject_embedding_init", "zeros")
                 ),
+                session_encoding_type=str(
+                    session_conditioning_cfg["session_encoding_type"]
+                ),
+                session_integration_type=str(
+                    session_conditioning_cfg["session_integration_type"]
+                ),
+                session_fourier_k=int(session_conditioning_cfg["session_fourier_k"]),
+                session_max_index_by_subject_index=list(
+                    session_conditioning_cfg["session_max_index_by_subject_index"]
+                ),
                 use_global_subject_bottleneck=bool(
                     self.architecture.get("use_global_subject_bottleneck", True)
                 ),
@@ -219,6 +324,13 @@ class DisrnnTrainer(ModelTrainer):
                 ),
             )
         else:
+            resolve_session_conditioning_from_architecture(
+                architecture=self.architecture,
+                metadata=metadata,
+                multisubject=is_multisubject,
+                max_n_subjects=None,
+                context="DisrnnTrainer",
+            )
             config = disrnn.DisRnnConfig(
                 obs_size=dataset._xs.shape[2],
                 output_size=output_size,
@@ -310,10 +422,22 @@ class DisrnnTrainer(ModelTrainer):
         )
         subject_embeddings_path = self.output_dir / "subject_embeddings.pkl"
         subject_embeddings_df.to_pickle(subject_embeddings_path)
-        return {
+        artifacts = {
             "subject_index_map": str(subject_index_map_path),
             "subject_embeddings": str(subject_embeddings_path),
         }
+        if str(self.architecture.get("session_encoding_type", "none")).strip().lower() != "none":
+            session_context = metadata.get("session_context")
+            if not isinstance(session_context, dict):
+                raise ValueError(
+                    "Session-conditioned multisubject disRNN export requires metadata.session_context."
+                )
+            session_context_map_path = save_session_context_map(
+                self.output_dir / "session_context_map.json",
+                session_context=session_context,
+            )
+            artifacts["session_context_map"] = str(session_context_map_path)
+        return artifacts
 
     def _resolve_subject_curricula(
         self,
@@ -842,6 +966,26 @@ class DisrnnTrainer(ModelTrainer):
         }
         is_multisubject = _is_multisubject_mode(self.architecture, metadata)
         output["multisubject"] = bool(is_multisubject)
+        max_n_subjects = None
+        if is_multisubject:
+            max_n_subjects = int(
+                metadata.get("num_subjects")
+                or len(metadata.get("subject_ids", []))
+            )
+        session_conditioning_cfg = resolve_session_conditioning_from_architecture(
+            architecture=self.architecture,
+            metadata=metadata,
+            multisubject=is_multisubject,
+            max_n_subjects=max_n_subjects,
+            context="DisrnnTrainer",
+        )
+        dataset, dataset_train, dataset_eval = _maybe_prepend_session_indices_to_datasets(
+            dataset=dataset,
+            dataset_train=dataset_train,
+            dataset_eval=dataset_eval,
+            session_conditioning_enabled=bool(session_conditioning_cfg["enabled"]),
+            metadata=metadata,
+        )
 
         _log_dataset_split_details(
             dataset=dataset,
@@ -849,6 +993,34 @@ class DisrnnTrainer(ModelTrainer):
             dataset_eval=dataset_eval,
         )
         _log_heldout_dataset_details(self.heldout_data)
+        if is_multisubject and max_n_subjects is not None:
+            _validate_multisubject_dataset_inputs(
+                dataset,
+                max_n_subjects=max_n_subjects,
+                session_conditioning_enabled=bool(session_conditioning_cfg["enabled"]),
+                session_max_index_by_subject_index=session_conditioning_cfg[
+                    "session_max_index_by_subject_index"
+                ],
+                context="full dataset",
+            )
+            _validate_multisubject_dataset_inputs(
+                dataset_train,
+                max_n_subjects=max_n_subjects,
+                session_conditioning_enabled=bool(session_conditioning_cfg["enabled"]),
+                session_max_index_by_subject_index=session_conditioning_cfg[
+                    "session_max_index_by_subject_index"
+                ],
+                context="training split",
+            )
+            _validate_multisubject_dataset_inputs(
+                dataset_eval,
+                max_n_subjects=max_n_subjects,
+                session_conditioning_enabled=bool(session_conditioning_cfg["enabled"]),
+                session_max_index_by_subject_index=session_conditioning_cfg[
+                    "session_max_index_by_subject_index"
+                ],
+                context="eval split",
+            )
 
         key = jax.random.PRNGKey(self.seed)
         warmup_key, training_key = jax.random.split(key)

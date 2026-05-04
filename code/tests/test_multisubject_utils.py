@@ -21,6 +21,10 @@ from utils.multisubject import (
     expand_saved_multisubject_checkpoint,
     extract_subject_embeddings_from_params,
     merge_datasets_with_subject_index,
+    ordered_session_ids_from_session_context,
+    prepend_session_index_to_multisubject_dataset,
+    save_session_context_map,
+    session_indices_for_split,
 )
 
 
@@ -104,6 +108,109 @@ class TestMultisubjectUtils(unittest.TestCase):
         self.assertTrue(np.allclose(merged_xs[:, 1, 0], 1.0))
         self.assertTrue(np.allclose(merged_xs[:, 0, 1:], dataset_a.get_all()[0][:, 0, :]))
         self.assertTrue(np.allclose(merged_xs[:, 1, 1:], dataset_b.get_all()[0][:, 0, :]))
+
+    def test_merge_datasets_with_subject_and_session_indices(self):
+        dataset = _DummyDataset(
+            xs=np.array(
+                [
+                    [[0.0, 1.0], [1.0, 0.0]],
+                    [[1.0, 0.0], [0.0, 1.0]],
+                ]
+            ),
+            ys=np.array(
+                [
+                    [[0.0], [1.0]],
+                    [[1.0], [0.0]],
+                ]
+            ),
+        )
+
+        merged = merge_datasets_with_subject_index(
+            [dataset],
+            [3],
+            session_indices_per_dataset=[[1, 2]],
+            batch_size=None,
+            batch_mode="random",
+        )
+        merged_xs, _ = merged.get_all()
+
+        self.assertEqual(merged.x_names[:2], ["Subject ID", "Session Index"])
+        self.assertTrue(np.allclose(merged_xs[:, :, 0], 3.0))
+        self.assertTrue(np.allclose(merged_xs[:, 0, 1], 1.0))
+        self.assertTrue(np.allclose(merged_xs[:, 1, 1], 2.0))
+
+    def test_prepend_session_index_to_multisubject_dataset_marks_padding(self):
+        dataset = _DummyDataset(
+            xs=np.array(
+                [
+                    [[0.0, 1.0, 0.0], [1.0, 2.0, 3.0]],
+                    [[-1.0, -1.0, -1.0], [1.0, 4.0, 5.0]],
+                ]
+            ),
+            ys=np.zeros((2, 2, 1)),
+            x_names=["Subject ID", "x1", "x2"],
+        )
+
+        conditioned = prepend_session_index_to_multisubject_dataset(
+            dataset,
+            session_indices=[1, 2],
+        )
+        conditioned_xs, _ = conditioned.get_all()
+
+        self.assertEqual(conditioned.x_names[:2], ["Subject ID", "Session Index"])
+        self.assertEqual(float(conditioned_xs[1, 0, 1]), -1.0)
+        self.assertEqual(float(conditioned_xs[0, 1, 1]), 2.0)
+
+    def test_session_indices_for_split_uses_full_history_order(self):
+        session_context = {
+            "indexing": "1_based",
+            "per_subject": [
+                {
+                    "subject_id": "m1",
+                    "subject_index": 0,
+                    "ordered_session_ids": ["m1__s1", "m1__s2", "m1__s3"],
+                    "ordered_source_session_ids": ["s1", "s2", "s3"],
+                },
+                {
+                    "subject_id": "m2",
+                    "subject_index": 1,
+                    "ordered_session_ids": ["m2__s1", "m2__s2"],
+                    "ordered_source_session_ids": ["s1", "s2"],
+                },
+            ],
+        }
+        metadata = {
+            "session_context": session_context,
+            "train_session_ids": ["m1__s1", "m1__s3", "m2__s2"],
+            "eval_session_ids": ["m1__s2", "m2__s1"],
+        }
+
+        self.assertEqual(
+            ordered_session_ids_from_session_context(session_context),
+            ["m1__s1", "m1__s2", "m1__s3", "m2__s1", "m2__s2"],
+        )
+        self.assertEqual(session_indices_for_split(metadata, split_name="train"), [1, 3, 2])
+        self.assertEqual(session_indices_for_split(metadata, split_name="eval"), [2, 1])
+
+    def test_save_session_context_map_round_trips_json(self):
+        with tempfile.TemporaryDirectory(prefix="session_context_map_") as tmpdir:
+            path = Path(tmpdir) / "session_context_map.json"
+            payload = {
+                "indexing": "1_based",
+                "per_subject": [
+                    {
+                        "subject_id": "m1",
+                        "subject_index": 0,
+                        "ordered_session_ids": ["m1__s1"],
+                        "ordered_source_session_ids": ["s1"],
+                    }
+                ],
+            }
+
+            saved_path = save_session_context_map(path, session_context=payload)
+            loaded_payload = json.loads(saved_path.read_text())
+
+            self.assertEqual(loaded_payload, payload)
 
     def test_local_upstream_conversion_preserves_effective_embeddings(self):
         params_local = {

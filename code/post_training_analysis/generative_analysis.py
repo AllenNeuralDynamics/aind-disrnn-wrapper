@@ -68,6 +68,7 @@ class ResolvedModelRun:
     output_summary_path: str | None = None
     checkpoint_index_path: str | None = None
     subject_index_map_path: str | None = None
+    session_context_map_path: str | None = None
     checkpoint_selection_reason: str | None = None
     fallback_reason: str | None = None
     model_config: dict[str, Any] = field(default_factory=dict)
@@ -156,6 +157,7 @@ def resolve_model_run(
     )
 
     subject_index_map_path = None
+    session_context_map_path = None
     trained_subject_ids = None
     if is_multisubject:
         if normalized_split != _TRAIN_SPLIT:
@@ -176,6 +178,9 @@ def resolve_model_run(
                 "Resolved multisubject run does not contain any trained subjects in "
                 f"{subject_index_map_path}."
             )
+        resolved_session_context_path = outputs_dir / "session_context_map.json"
+        if resolved_session_context_path.exists():
+            session_context_map_path = resolved_session_context_path
 
     resolved = ResolvedModelRun(
         model_dir=str(model_dir_path),
@@ -201,6 +206,9 @@ def resolve_model_run(
         else None,
         subject_index_map_path=(
             str(subject_index_map_path) if subject_index_map_path is not None else None
+        ),
+        session_context_map_path=(
+            str(session_context_map_path) if session_context_map_path is not None else None
         ),
         checkpoint_selection_reason=reason,
         fallback_reason=fallback_reason,
@@ -430,7 +438,12 @@ def simulate_model_sessions(
 
             for _ in range(n_trials):
                 model_inputs = (
-                    runner.encode_inputs(subject_id, [prev_choice, prev_reward])
+                    runner.encode_inputs(
+                        subject_id,
+                        source_ses_idx,
+                        [prev_choice, prev_reward],
+                        source_session_id=animal_row.get("source_ses_idx"),
+                    )
                     if hasattr(runner, "encode_inputs")
                     else [prev_choice, prev_reward]
                 )
@@ -3745,6 +3758,10 @@ def _restore_model_runner(resolved_run: ResolvedModelRun):
     model_type = resolved_run.model_type
     subject_id_to_index: dict[Any, int] = {}
     index_to_subject_id: dict[int, Any] = {}
+    runner_uses_session_indices = False
+    session_max_index_by_subject_index: list[int] = []
+    merged_session_index_lookup: dict[tuple[Any, str], int] = {}
+    source_session_index_lookup: dict[tuple[Any, str], int] = {}
     if resolved_run.multisubject:
         subject_id_to_index, index_to_subject_id = _load_subject_index_maps_for_run(
             resolved_run
@@ -3753,6 +3770,28 @@ def _restore_model_runner(resolved_run: ResolvedModelRun):
             params,
             n_subjects=len(index_to_subject_id),
         )
+        if resolved_run.session_context_map_path:
+            multisubject_mod = importlib.import_module("utils.multisubject")
+            session_context = multisubject_mod.load_session_context_map(
+                resolved_run.session_context_map_path
+            )
+            merged_session_index_lookup, source_session_index_lookup = (
+                multisubject_mod.subject_session_index_lookup_from_session_context(
+                    session_context
+                )
+            )
+            session_max_index_by_subject_index = [0] * max(1, len(index_to_subject_id))
+            for row in session_context.get("per_subject", []):
+                subject_index = int(row.get("subject_index"))
+                ordered_session_ids = row.get("ordered_session_ids") or []
+                if subject_index < 0 or subject_index >= len(session_max_index_by_subject_index):
+                    raise ValueError(
+                        "session_context_map.json contains an out-of-range subject_index: "
+                        f"{subject_index}"
+                    )
+                session_max_index_by_subject_index[subject_index] = int(
+                    len(ordered_session_ids)
+                )
 
     if model_type == "disrnn":
         config_dict = copy.deepcopy(_as_dict(resolved_run.model_config))
@@ -3762,6 +3801,15 @@ def _restore_model_runner(resolved_run: ResolvedModelRun):
         config_dict["update_net_obs_penalty"] = 0.0
         config_dict["update_net_latent_penalty"] = 0.0
         config_dict["l2_scale"] = 0.0
+        session_conditioning_enabled = (
+            str(config_dict.get("session_encoding_type", "none")).strip().lower() != "none"
+        )
+        runner_uses_session_indices = bool(session_conditioning_enabled)
+        if session_conditioning_enabled and not resolved_run.session_context_map_path:
+            raise FileNotFoundError(
+                "Session-conditioned multisubject disRNN analysis requires "
+                "outputs/session_context_map.json."
+            )
         if resolved_run.multisubject:
             multisubject_disrnn_mod = importlib.import_module("models.multisubject_disrnn")
             config_dict["subj_penalty"] = 0.0
@@ -3774,6 +3822,12 @@ def _restore_model_runner(resolved_run: ResolvedModelRun):
                 raise ValueError(
                     "Saved disRNN config max_n_subjects is smaller than the resolved "
                     "subject_index_map.json roster."
+                )
+            if session_conditioning_enabled and not config_dict.get(
+                "session_max_index_by_subject_index"
+            ):
+                config_dict["session_max_index_by_subject_index"] = list(
+                    session_max_index_by_subject_index
                 )
             config = multisubject_disrnn_mod.MultisubjectDisRnnConfig(**config_dict)
 
@@ -3792,6 +3846,15 @@ def _restore_model_runner(resolved_run: ResolvedModelRun):
         config_dict = copy.deepcopy(_as_dict(resolved_run.model_config))
         architecture = _as_dict(config_dict.get("architecture", {}))
         output_size = int(config_dict.get("output_size", architecture.get("output_size", 0)))
+        session_conditioning_enabled = (
+            str(architecture.get("session_encoding_type", "none")).strip().lower() != "none"
+        )
+        runner_uses_session_indices = bool(session_conditioning_enabled)
+        if session_conditioning_enabled and not resolved_run.session_context_map_path:
+            raise FileNotFoundError(
+                "Session-conditioned multisubject GRU analysis requires "
+                "outputs/session_context_map.json."
+            )
         make_network = make_gru_network(
             hidden_size=int(architecture["hidden_size"]),
             output_size=output_size,
@@ -3805,6 +3868,16 @@ def _restore_model_runner(resolved_run: ResolvedModelRun):
                 else None
             ),
             subject_embedding_init=str(architecture.get("subject_embedding_init", "zeros")),
+            session_encoding_type=str(architecture.get("session_encoding_type", "none")),
+            session_integration_type=str(
+                architecture.get("session_integration_type", "direct")
+            ),
+            session_fourier_k=int(architecture.get("session_fourier_k", 4)),
+            session_max_index_by_subject_index=(
+                list(session_max_index_by_subject_index)
+                if session_conditioning_enabled
+                else None
+            ),
         )
         n_actions = int(output_size)
     else:
@@ -3837,6 +3910,8 @@ def _restore_model_runner(resolved_run: ResolvedModelRun):
             n_actions: int,
             *,
             subject_id_to_index: Mapping[Any, int] | None = None,
+            merged_session_index_lookup: Mapping[tuple[Any, str], int] | None = None,
+            source_session_index_lookup: Mapping[tuple[Any, str], int] | None = None,
         ) -> None:
             self.initial_state = initial_state
             self.n_actions = int(n_actions)
@@ -3844,6 +3919,8 @@ def _restore_model_runner(resolved_run: ResolvedModelRun):
                 _normalize_identifier(subject_id): int(subject_index)
                 for subject_id, subject_index in (subject_id_to_index or {}).items()
             }
+            self.merged_session_index_lookup = dict(merged_session_index_lookup or {})
+            self.source_session_index_lookup = dict(source_session_index_lookup or {})
 
         def validate_subject_ids(self, subject_ids: Sequence[Any]) -> None:
             if not self.subject_id_to_index:
@@ -3862,7 +3939,37 @@ def _restore_model_runner(resolved_run: ResolvedModelRun):
                     f"{missing_subject_ids}"
                 )
 
-        def encode_inputs(self, subject_id: Any, inputs: Sequence[float]) -> list[float]:
+        def _resolve_session_index(
+            self,
+            *,
+            subject_id: Any,
+            session_id: Any,
+            source_session_id: Any | None = None,
+        ) -> int | None:
+            if not self.merged_session_index_lookup and not self.source_session_index_lookup:
+                return None
+            normalized_subject_id = _normalize_identifier(subject_id)
+            if source_session_id not in (None, ""):
+                source_key = (normalized_subject_id, str(source_session_id))
+                if source_key in self.source_session_index_lookup:
+                    return int(self.source_session_index_lookup[source_key])
+            merged_key = (normalized_subject_id, str(session_id))
+            if merged_key in self.merged_session_index_lookup:
+                return int(self.merged_session_index_lookup[merged_key])
+            raise ValueError(
+                "Multisubject post-training analysis could not resolve a session index for "
+                f"subject_id={normalized_subject_id!r}, session_id={session_id!r}, "
+                f"source_session_id={source_session_id!r}."
+            )
+
+        def encode_inputs(
+            self,
+            subject_id: Any,
+            session_id: Any,
+            inputs: Sequence[float],
+            *,
+            source_session_id: Any | None = None,
+        ) -> list[float]:
             encoded_inputs = [float(value) for value in inputs]
             if not self.subject_id_to_index:
                 return encoded_inputs
@@ -3873,10 +3980,15 @@ def _restore_model_runner(resolved_run: ResolvedModelRun):
                     f"{normalized_subject_id!r}, which is not present in "
                     "subject_index_map.json."
                 )
-            return [
-                float(self.subject_id_to_index[normalized_subject_id]),
-                *encoded_inputs,
-            ]
+            encoded_prefix = [float(self.subject_id_to_index[normalized_subject_id])]
+            session_index = self._resolve_session_index(
+                subject_id=normalized_subject_id,
+                session_id=session_id,
+                source_session_id=source_session_id,
+            )
+            if session_index is not None:
+                encoded_prefix.append(float(session_index))
+            return [*encoded_prefix, *encoded_inputs]
 
         def step(self, inputs: Sequence[float], prev_state):
             input_array = jnp.asarray([list(inputs)], dtype=jnp.float32)
@@ -3893,6 +4005,12 @@ def _restore_model_runner(resolved_run: ResolvedModelRun):
         initial_state=initial_state,
         n_actions=n_actions,
         subject_id_to_index=subject_id_to_index,
+        merged_session_index_lookup=(
+            merged_session_index_lookup if runner_uses_session_indices else None
+        ),
+        source_session_index_lookup=(
+            source_session_index_lookup if runner_uses_session_indices else None
+        ),
     )
 
 

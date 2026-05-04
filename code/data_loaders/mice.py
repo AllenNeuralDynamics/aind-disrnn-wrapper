@@ -363,10 +363,23 @@ def _build_multisubject_bundle(
             continue
 
         session_ids = list(dict.fromkeys(subject_df["ses_idx"].tolist()))
+        source_session_ids = list(dict.fromkeys(subject_df["source_ses_idx"].tolist()))
+        if len(source_session_ids) != len(session_ids):
+            raise ValueError(
+                "Expected source_ses_idx to preserve a 1:1 session mapping after alignment."
+            )
+        session_index_by_session_id = {
+            str(session_id): int(index)
+            for index, session_id in enumerate(session_ids, start=1)
+        }
         train_session_ids, eval_session_ids = compute_train_eval_session_ids(
             session_ids,
             eval_every_n=eval_every_n,
         )
+        subject_df["subject_session_index"] = subject_df["ses_idx"].map(
+            lambda session_id: session_index_by_session_id[str(session_id)]
+        )
+        subject_df["subject_max_session_index"] = int(len(session_ids))
         logger.info(
             "Prepared subject_id=%s with %d trials across %d sessions "
             "(train_sessions=%d, eval_sessions=%d).",
@@ -381,8 +394,10 @@ def _build_multisubject_bundle(
                 "subject_id": subject_id,
                 "df": subject_df,
                 "full_session_ids": session_ids,
+                "source_session_ids": source_session_ids,
                 "train_session_ids": train_session_ids,
                 "eval_session_ids": eval_session_ids,
+                "session_index_by_session_id": session_index_by_session_id,
             }
         )
 
@@ -402,12 +417,29 @@ def _build_multisubject_bundle(
     full_session_ids: list = []
     train_session_ids: list = []
     eval_session_ids: list = []
+    session_max_index_by_subject_index: list[int] = []
+    session_context_rows: list[dict[str, object]] = []
 
     for item in prepared_subjects:
         subject_id = item["subject_id"]
         subject_index = subject_id_to_index[subject_id]
         subject_df = pd.DataFrame(item["df"]).copy()
         subject_df["subject_index"] = int(subject_index)
+        session_index_by_session_id = {
+            str(session_id): int(session_index)
+            for session_id, session_index in dict(item["session_index_by_session_id"]).items()
+        }
+        session_max_index_by_subject_index.append(int(len(session_index_by_session_id)))
+        session_context_rows.append(
+            {
+                "subject_id": normalize_subject_id(subject_id),
+                "subject_index": int(subject_index),
+                "ordered_session_ids": [str(session_id) for session_id in item["full_session_ids"]],
+                "ordered_source_session_ids": [
+                    str(session_id) for session_id in item["source_session_ids"]
+                ],
+            }
+        )
 
         dataset = dl.create_disrnn_dataset(
             subject_df,
@@ -497,6 +529,11 @@ def _build_multisubject_bundle(
             "subject_id_to_index": subject_id_to_index,
             "index_to_subject_id": index_to_subject_id,
             "num_subjects": int(len(ordered_subject_ids)),
+            "session_max_index_by_subject_index": session_max_index_by_subject_index,
+            "session_context": {
+                "indexing": "1_based",
+                "per_subject": session_context_rows,
+            },
             "multisubject": True,
             "num_trials": int(len(raw_df)),
             "num_sessions": int(len(full_session_ids)),

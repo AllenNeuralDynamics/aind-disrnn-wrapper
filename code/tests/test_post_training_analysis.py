@@ -112,6 +112,27 @@ seed: 7
                     }
                 )
             )
+            (outputs_dir / "session_context_map.json").write_text(
+                json.dumps(
+                    {
+                        "indexing": "1_based",
+                        "per_subject": [
+                            {
+                                "subject_id": "m1",
+                                "subject_index": 0,
+                                "ordered_session_ids": ["m1__s1"],
+                                "ordered_source_session_ids": ["m1_s1"],
+                            },
+                            {
+                                "subject_id": "m2",
+                                "subject_index": 1,
+                                "ordered_session_ids": ["m2__s1"],
+                                "ordered_source_session_ids": ["m2_s1"],
+                            },
+                        ],
+                    }
+                )
+            )
         return model_dir
 
     def _session(
@@ -185,7 +206,14 @@ seed: 7
                 if list(subject_ids) != ["m1", "m2"]:
                     raise ValueError("unexpected subjects")
 
-            def encode_inputs(self, subject_id, inputs):
+            def encode_inputs(
+                self,
+                subject_id,
+                session_id,
+                inputs,
+                *,
+                source_session_id=None,
+            ):
                 encoded = [float(self._subject_id_to_index[subject_id]), *list(inputs)]
                 self.calls.append((subject_id, encoded))
                 return encoded
@@ -334,6 +362,7 @@ model:
 
         self.assertTrue(resolved.multisubject)
         self.assertTrue(resolved.subject_index_map_path.endswith("subject_index_map.json"))
+        self.assertTrue(resolved.session_context_map_path.endswith("session_context_map.json"))
         self.assertEqual(resolved.trained_subject_ids, ["m1", "m2"])
 
     def test_resolve_model_run_multisubject_requires_subject_index_map(self):

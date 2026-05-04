@@ -7,7 +7,7 @@ import time
 import types
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Dict, Mapping
+from typing import Any, Dict, Mapping, Sequence
 
 import jax
 import matplotlib.pyplot as plt
@@ -23,6 +23,7 @@ from disentangled_rnns.library import rnn_utils
 from base.interfaces import ModelTrainer
 from base.types import DatasetBundle
 from models.gru_network import make_gru_network
+from models.session_conditioning import resolve_session_conditioning_from_architecture
 from utils.disrnn_evaluation import HeldoutEvalConfig
 from utils.gru_evaluation import (
     add_gru_model_results,
@@ -33,7 +34,9 @@ from utils.gru_evaluation import (
 from utils.multisubject import (
     extract_subject_embeddings_from_params,
     normalize_subject_id,
+    prepend_session_index_to_multisubject_split_datasets,
     save_subject_index_map,
+    save_session_context_map,
     subject_embeddings_to_dataframe,
 )
 
@@ -74,6 +77,8 @@ def _validate_multisubject_dataset_inputs(
     *,
     max_n_subjects: int,
     context: str,
+    session_conditioning_enabled: bool = False,
+    session_max_index_by_subject_index: Sequence[int] | None = None,
 ) -> None:
     xs, _ = dataset.get_all()
     xs = np.asarray(xs)
@@ -81,9 +86,11 @@ def _validate_multisubject_dataset_inputs(
         raise ValueError(
             f"Multisubject GRU {context} expects dataset inputs to be 3D, got shape={xs.shape}."
         )
-    if xs.shape[2] < 2:
+    min_feature_count = 3 if session_conditioning_enabled else 2
+    if xs.shape[2] < min_feature_count:
         raise ValueError(
-            f"Multisubject GRU {context} requires a prepended subject-index feature."
+            f"Multisubject GRU {context} requires {min_feature_count} input features "
+            "including prepended subject/session indices."
         )
 
     subject_ids = np.asarray(xs[..., 0], dtype=float)
@@ -111,6 +118,58 @@ def _validate_multisubject_dataset_inputs(
             f"Expected padding sentinel -1 or values in [0, {int(max_n_subjects) - 1}]."
         )
 
+    if not session_conditioning_enabled:
+        return
+
+    if session_max_index_by_subject_index is None:
+        raise ValueError(
+            "Multisubject GRU session conditioning validation requires "
+            "session_max_index_by_subject_index."
+        )
+
+    session_max = np.asarray(session_max_index_by_subject_index, dtype=int)
+    if session_max.ndim != 1 or int(session_max.shape[0]) != int(max_n_subjects):
+        raise ValueError(
+            "Multisubject GRU session conditioning validation requires "
+            f"session_max_index_by_subject_index length {max_n_subjects}."
+        )
+
+    session_ids = np.asarray(xs[..., 1], dtype=float)
+    rounded_session_ids = np.rint(session_ids)
+    integer_like_mask = np.logical_or(session_ids == -1, np.isclose(session_ids, rounded_session_ids))
+    if not np.all(integer_like_mask):
+        bad_values = np.unique(session_ids[~integer_like_mask]).tolist()
+        raise ValueError(
+            "Multisubject GRU "
+            f"{context} expected integer-valued session ids, got {bad_values}."
+        )
+
+    session_ids_int = rounded_session_ids.astype(int)
+    valid_rows = subject_ids_int >= 0
+    if np.any(valid_rows):
+        valid_subject_ids_int = subject_ids_int[valid_rows]
+        valid_session_ids_int = session_ids_int[valid_rows]
+        subject_specific_max = session_max[valid_subject_ids_int]
+        invalid_session_mask = np.logical_or(
+            valid_session_ids_int < 1,
+            valid_session_ids_int > subject_specific_max,
+        )
+        if np.any(invalid_session_mask):
+            bad_values = np.unique(valid_session_ids_int[invalid_session_mask]).tolist()
+            raise ValueError(
+                "Multisubject GRU "
+                f"{context} encountered out-of-range session ids {bad_values} for the "
+                "resolved subject-specific session ranges."
+            )
+
+    invalid_padded_session_mask = np.logical_and(subject_ids_int < 0, session_ids_int != -1)
+    if np.any(invalid_padded_session_mask):
+        bad_values = np.unique(session_ids_int[invalid_padded_session_mask]).tolist()
+        raise ValueError(
+            "Multisubject GRU "
+            f"{context} expected padded rows to use session id -1, got {bad_values}."
+        )
+
 
 def _require_n_action_logits(dataset: Any, yhat: np.ndarray, *, context: str) -> int:
     n_action_logits = int(getattr(dataset, "n_classes", 0))
@@ -125,6 +184,24 @@ def _require_n_action_logits(dataset: Any, yhat: np.ndarray, *, context: str) ->
             f"but yhat.shape[2]={actual_output_size}"
         )
     return n_action_logits
+
+
+def _maybe_prepend_session_indices_to_datasets(
+    *,
+    dataset: Any,
+    dataset_train: Any,
+    dataset_eval: Any,
+    session_conditioning_enabled: bool,
+    metadata: Mapping[str, Any],
+) -> tuple[Any, Any, Any]:
+    if not session_conditioning_enabled:
+        return dataset, dataset_train, dataset_eval
+    return prepend_session_index_to_multisubject_split_datasets(
+        dataset=dataset,
+        dataset_train=dataset_train,
+        dataset_eval=dataset_eval,
+        metadata=metadata,
+    )
 
 
 def _log_heldout_dataset_details(heldout_data: dict[str, Any] | None) -> None:
@@ -272,10 +349,22 @@ class GruTrainer(ModelTrainer):
         )
         subject_embeddings_path = self.output_dir / "subject_embeddings.pkl"
         subject_embeddings_df.to_pickle(subject_embeddings_path)
-        return {
+        artifacts = {
             "subject_index_map": str(subject_index_map_path),
             "subject_embeddings": str(subject_embeddings_path),
         }
+        if str(self.architecture.get("session_encoding_type", "none")).strip().lower() != "none":
+            session_context = metadata.get("session_context")
+            if not isinstance(session_context, dict):
+                raise ValueError(
+                    "Session-conditioned multisubject GRU export requires metadata.session_context."
+                )
+            session_context_map_path = save_session_context_map(
+                self.output_dir / "session_context_map.json",
+                session_context=session_context,
+            )
+            artifacts["session_context_map"] = str(session_context_map_path)
+        return artifacts
 
     def _plot_subject_embedding_state_space(
         self,
@@ -681,6 +770,15 @@ class GruTrainer(ModelTrainer):
         max_n_subjects: int | None = None
         subject_embedding_size: int | None = None
         subject_embedding_init = str(self.architecture.get("subject_embedding_init", "zeros"))
+        session_conditioning_cfg = {
+            "enabled": False,
+            "session_encoding_type": "none",
+            "session_integration_type": str(
+                self.architecture.get("session_integration_type", "direct")
+            ),
+            "session_fourier_k": int(self.architecture.get("session_fourier_k", 4)),
+            "session_max_index_by_subject_index": (),
+        }
         if is_multisubject:
             subject_embedding_size = self.architecture.get("subject_embedding_size")
             if subject_embedding_size is None or int(subject_embedding_size) <= 0:
@@ -696,20 +794,54 @@ class GruTrainer(ModelTrainer):
                     "Multisubject GRU requires subject_id_to_index and "
                     "index_to_subject_id in bundle metadata."
                 )
+            session_conditioning_cfg = resolve_session_conditioning_from_architecture(
+                architecture=self.architecture,
+                metadata=metadata,
+                multisubject=is_multisubject,
+                max_n_subjects=max_n_subjects,
+                context="GruTrainer",
+            )
+            dataset, dataset_train, dataset_eval = _maybe_prepend_session_indices_to_datasets(
+                dataset=dataset,
+                dataset_train=dataset_train,
+                dataset_eval=dataset_eval,
+                session_conditioning_enabled=bool(session_conditioning_cfg["enabled"]),
+                metadata=metadata,
+            )
             _validate_multisubject_dataset_inputs(
                 dataset,
                 max_n_subjects=max_n_subjects,
                 context="full dataset",
+                session_conditioning_enabled=bool(session_conditioning_cfg["enabled"]),
+                session_max_index_by_subject_index=session_conditioning_cfg[
+                    "session_max_index_by_subject_index"
+                ],
             )
             _validate_multisubject_dataset_inputs(
                 dataset_train,
                 max_n_subjects=max_n_subjects,
                 context="training split",
+                session_conditioning_enabled=bool(session_conditioning_cfg["enabled"]),
+                session_max_index_by_subject_index=session_conditioning_cfg[
+                    "session_max_index_by_subject_index"
+                ],
             )
             _validate_multisubject_dataset_inputs(
                 dataset_eval,
                 max_n_subjects=max_n_subjects,
                 context="eval split",
+                session_conditioning_enabled=bool(session_conditioning_cfg["enabled"]),
+                session_max_index_by_subject_index=session_conditioning_cfg[
+                    "session_max_index_by_subject_index"
+                ],
+            )
+        else:
+            session_conditioning_cfg = resolve_session_conditioning_from_architecture(
+                architecture=self.architecture,
+                metadata=metadata,
+                multisubject=is_multisubject,
+                max_n_subjects=max_n_subjects,
+                context="GruTrainer",
             )
 
         expected_output_size = 2 if ignore_policy == "exclude" else 3
@@ -788,6 +920,13 @@ class GruTrainer(ModelTrainer):
                 int(subject_embedding_size) if subject_embedding_size is not None else None
             ),
             subject_embedding_init=subject_embedding_init,
+            session_encoding_type=str(session_conditioning_cfg["session_encoding_type"]),
+            session_integration_type=str(session_conditioning_cfg["session_integration_type"]),
+            session_fourier_k=int(session_conditioning_cfg["session_fourier_k"]),
+            session_max_index_by_subject_index=tuple(
+                int(value)
+                for value in session_conditioning_cfg["session_max_index_by_subject_index"]
+            ),
         )
 
         heldout_eval_cfg = None

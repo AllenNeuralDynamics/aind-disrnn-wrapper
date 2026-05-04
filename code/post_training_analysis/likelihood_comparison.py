@@ -485,10 +485,42 @@ def _resolve_likelihood_run(
 def _load_training_bundle_for_run(run: ResolvedLikelihoodRun) -> tuple[Any, Any]:
     from hydra.utils import instantiate
     from omegaconf import OmegaConf
+    from models.session_conditioning import resolve_session_conditioning_from_architecture
+    from utils.multisubject import prepend_session_index_to_multisubject_split_datasets
 
     hydra_config = OmegaConf.load(run.inputs_path)
     dataset_loader = instantiate(hydra_config.data)
     dataset_bundle = dataset_loader.load()
+    if run.model_type in {"gru", "disrnn"} and bool(run.multisubject):
+        model_cfg = _as_dict(_as_dict(run.run_config).get("model", {}))
+        architecture = _as_dict(model_cfg.get("architecture", {}))
+        metadata = dict(getattr(dataset_bundle, "metadata", {}) or {})
+        max_n_subjects = metadata.get("num_subjects")
+        if max_n_subjects is None:
+            subject_ids = metadata.get("subject_ids")
+            if isinstance(subject_ids, list):
+                max_n_subjects = len(subject_ids)
+        session_cfg = resolve_session_conditioning_from_architecture(
+            architecture=architecture,
+            metadata=metadata,
+            multisubject=True,
+            max_n_subjects=(int(max_n_subjects) if max_n_subjects is not None else None),
+            context="Likelihood comparison",
+        )
+        if bool(session_cfg["enabled"]):
+            dataset, dataset_train, dataset_eval = prepend_session_index_to_multisubject_split_datasets(
+                dataset=dataset_bundle.extras["dataset"],
+                dataset_train=dataset_bundle.train_set,
+                dataset_eval=dataset_bundle.eval_set,
+                metadata=metadata,
+            )
+            dataset_bundle = dataset_bundle.__class__(
+                raw=dataset_bundle.raw,
+                train_set=dataset_train,
+                eval_set=dataset_eval,
+                metadata=metadata,
+                extras={**dict(dataset_bundle.extras or {}), "dataset": dataset},
+            )
     return hydra_config, dataset_bundle
 
 
@@ -861,6 +893,7 @@ def _evaluate_gru_dataset(
     from disentangled_rnns.library import rnn_utils
 
     from models.gru_network import make_gru_network
+    from models.session_conditioning import resolve_session_conditioning_from_architecture
     from utils.disrnn_evaluation import _load_saved_params
     from utils.gru_evaluation import add_gru_model_results, _require_n_action_logits
 
@@ -880,6 +913,13 @@ def _evaluate_gru_dataset(
 
     max_n_subjects = None
     subject_embedding_size = None
+    session_conditioning_cfg = {
+        "enabled": False,
+        "session_encoding_type": "none",
+        "session_integration_type": str(architecture.get("session_integration_type", "direct")),
+        "session_fourier_k": int(architecture.get("session_fourier_k", 4)),
+        "session_max_index_by_subject_index": (),
+    }
     if run.multisubject:
         max_n_subjects = metadata.get("num_subjects")
         if max_n_subjects is None:
@@ -895,6 +935,21 @@ def _evaluate_gru_dataset(
             raise ValueError(
                 "Multisubject GRU evaluation requires architecture.subject_embedding_size > 0."
             )
+        session_conditioning_cfg = resolve_session_conditioning_from_architecture(
+            architecture=architecture,
+            metadata=metadata,
+            multisubject=bool(run.multisubject),
+            max_n_subjects=int(max_n_subjects),
+            context="GRU likelihood comparison",
+        )
+    else:
+        session_conditioning_cfg = resolve_session_conditioning_from_architecture(
+            architecture=architecture,
+            metadata=metadata,
+            multisubject=bool(run.multisubject),
+            max_n_subjects=max_n_subjects,
+            context="GRU likelihood comparison",
+        )
 
     make_network = make_gru_network(
         hidden_size=int(architecture["hidden_size"]),
@@ -905,6 +960,13 @@ def _evaluate_gru_dataset(
             int(subject_embedding_size) if subject_embedding_size is not None else None
         ),
         subject_embedding_init=str(architecture.get("subject_embedding_init", "zeros")),
+        session_encoding_type=str(session_conditioning_cfg["session_encoding_type"]),
+        session_integration_type=str(session_conditioning_cfg["session_integration_type"]),
+        session_fourier_k=int(session_conditioning_cfg["session_fourier_k"]),
+        session_max_index_by_subject_index=tuple(
+            int(value)
+            for value in session_conditioning_cfg["session_max_index_by_subject_index"]
+        ),
     )
 
     xs, _ = dataset.get_all()

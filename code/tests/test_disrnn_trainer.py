@@ -86,6 +86,111 @@ class TestDisrnnTrainer(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.output_dir, ignore_errors=True)
 
+    def _make_multisubject_bundle(self) -> DatasetBundle:
+        raw_df = self.bundle.raw.copy()
+        raw_df["subject_id"] = np.where(raw_df["ses_idx"].astype(int) < 3, 711041, 793446)
+        raw_df["source_ses_idx"] = raw_df["ses_idx"]
+        raw_df["ses_idx"] = raw_df.apply(
+            lambda row: f"{int(row['subject_id'])}__{int(row['source_ses_idx'])}",
+            axis=1,
+        )
+
+        ordered_subject_ids, subject_id_to_index, index_to_subject_id = build_subject_index_maps(
+            [711041, 793446]
+        )
+
+        full_datasets = []
+        train_datasets = []
+        eval_datasets = []
+        ordered_frames = []
+        subject_indices = []
+        full_session_ids = []
+        train_session_ids = []
+        eval_session_ids = []
+        session_max_index_by_subject_index = []
+        session_context_rows = []
+
+        for subject_id in ordered_subject_ids:
+            subject_df = raw_df[raw_df["subject_id"] == subject_id].copy()
+            subject_df = subject_df.sort_values(["ses_idx", "trial"]).reset_index(drop=True)
+            session_ids = list(dict.fromkeys(subject_df["ses_idx"].tolist()))
+            source_session_ids = list(dict.fromkeys(subject_df["source_ses_idx"].tolist()))
+            session_index_by_session_id = {
+                str(session_id): int(index)
+                for index, session_id in enumerate(session_ids, start=1)
+            }
+            train_ids, eval_ids = compute_train_eval_session_ids(session_ids, eval_every_n=2)
+            subject_df["subject_index"] = subject_id_to_index[subject_id]
+            subject_df["subject_session_index"] = subject_df["ses_idx"].map(
+                lambda session_id: session_index_by_session_id[str(session_id)]
+            )
+            subject_df["subject_max_session_index"] = int(len(session_ids))
+
+            dataset = dl.create_disrnn_dataset(
+                subject_df,
+                ignore_policy="exclude",
+                batch_size=None,
+                batch_mode="random",
+            )
+            dataset_train, dataset_eval = rnn_utils.split_dataset(dataset, eval_every_n=2)
+
+            full_datasets.append(dataset)
+            train_datasets.append(dataset_train)
+            eval_datasets.append(dataset_eval)
+            ordered_frames.append(subject_df)
+            subject_indices.append(subject_id_to_index[subject_id])
+            full_session_ids.extend(session_ids)
+            train_session_ids.extend(train_ids)
+            eval_session_ids.extend(eval_ids)
+            session_max_index_by_subject_index.append(int(len(session_ids)))
+            session_context_rows.append(
+                {
+                    "subject_id": subject_id,
+                    "subject_index": int(subject_id_to_index[subject_id]),
+                    "ordered_session_ids": [str(session_id) for session_id in session_ids],
+                    "ordered_source_session_ids": [
+                        str(session_id) for session_id in source_session_ids
+                    ],
+                }
+            )
+
+        merged_dataset = merge_datasets_with_subject_index(full_datasets, subject_indices)
+        merged_train = merge_datasets_with_subject_index(train_datasets, subject_indices)
+        merged_eval = merge_datasets_with_subject_index(eval_datasets, subject_indices)
+        merged_raw_df = pd.concat(ordered_frames, ignore_index=True)
+        merged_raw_df["ses_idx"] = pd.Categorical(
+            merged_raw_df["ses_idx"],
+            categories=full_session_ids,
+            ordered=True,
+        )
+        merged_raw_df = merged_raw_df.sort_values(["ses_idx", "trial"]).reset_index(drop=True)
+        merged_raw_df["ses_idx"] = merged_raw_df["ses_idx"].astype(str)
+
+        return DatasetBundle(
+            raw=merged_raw_df,
+            train_set=merged_train,
+            eval_set=merged_eval,
+            metadata={
+                "ignore_policy": "exclude",
+                "eval_every_n": 2,
+                "multisubject": True,
+                "subject_ids": ordered_subject_ids,
+                "subject_id_to_index": subject_id_to_index,
+                "index_to_subject_id": index_to_subject_id,
+                "num_subjects": len(ordered_subject_ids),
+                "session_max_index_by_subject_index": session_max_index_by_subject_index,
+                "session_context": {
+                    "indexing": "1_based",
+                    "per_subject": session_context_rows,
+                },
+                "num_trials": len(merged_raw_df),
+                "num_sessions": len(full_session_ids),
+                "train_session_ids": train_session_ids,
+                "eval_session_ids": eval_session_ids,
+            },
+            extras={"dataset": merged_dataset},
+        )
+
     def test_constructor_resolves_penalty_multiplier(self):
         trainer = DisrnnTrainer(
             architecture={
@@ -202,13 +307,24 @@ class TestDisrnnTrainer(unittest.TestCase):
         full_session_ids = []
         train_session_ids = []
         eval_session_ids = []
+        session_max_index_by_subject_index = []
+        session_context_rows = []
 
         for subject_id in ordered_subject_ids:
             subject_df = raw_df[raw_df["subject_id"] == subject_id].copy()
             subject_df = subject_df.sort_values(["ses_idx", "trial"]).reset_index(drop=True)
             session_ids = list(dict.fromkeys(subject_df["ses_idx"].tolist()))
+            source_session_ids = list(dict.fromkeys(subject_df["source_ses_idx"].tolist()))
+            session_index_by_session_id = {
+                str(session_id): int(index)
+                for index, session_id in enumerate(session_ids, start=1)
+            }
             train_ids, eval_ids = compute_train_eval_session_ids(session_ids, eval_every_n=2)
             subject_df["subject_index"] = subject_id_to_index[subject_id]
+            subject_df["subject_session_index"] = subject_df["ses_idx"].map(
+                lambda session_id: session_index_by_session_id[str(session_id)]
+            )
+            subject_df["subject_max_session_index"] = int(len(session_ids))
 
             dataset = dl.create_disrnn_dataset(
                 subject_df,
@@ -226,6 +342,17 @@ class TestDisrnnTrainer(unittest.TestCase):
             full_session_ids.extend(session_ids)
             train_session_ids.extend(train_ids)
             eval_session_ids.extend(eval_ids)
+            session_max_index_by_subject_index.append(int(len(session_ids)))
+            session_context_rows.append(
+                {
+                    "subject_id": subject_id,
+                    "subject_index": int(subject_id_to_index[subject_id]),
+                    "ordered_session_ids": [str(session_id) for session_id in session_ids],
+                    "ordered_source_session_ids": [
+                        str(session_id) for session_id in source_session_ids
+                    ],
+                }
+            )
 
         merged_dataset = merge_datasets_with_subject_index(full_datasets, subject_indices)
         merged_train = merge_datasets_with_subject_index(train_datasets, subject_indices)
@@ -251,6 +378,11 @@ class TestDisrnnTrainer(unittest.TestCase):
                 "subject_id_to_index": subject_id_to_index,
                 "index_to_subject_id": index_to_subject_id,
                 "num_subjects": len(ordered_subject_ids),
+                "session_max_index_by_subject_index": session_max_index_by_subject_index,
+                "session_context": {
+                    "indexing": "1_based",
+                    "per_subject": session_context_rows,
+                },
                 "num_trials": len(merged_raw_df),
                 "num_sessions": len(full_session_ids),
                 "train_session_ids": train_session_ids,
@@ -309,6 +441,151 @@ class TestDisrnnTrainer(unittest.TestCase):
         params = json.loads((self.output_dir / "params.json").read_text())
         self.assertIn("multisubject_dis_rnn", params)
         self.assertIn("subject_embeddings", params["multisubject_dis_rnn"])
+
+    def test_multisubject_session_conditioning_training_saves_session_context_artifact(self):
+        multisubject_bundle = self._make_multisubject_bundle()
+        trainer = DisrnnTrainer(
+            architecture={
+                "multisubject": True,
+                "latent_size": 4,
+                "update_net_n_units_per_layer": 8,
+                "update_net_n_layers": 2,
+                "choice_net_n_units_per_layer": 4,
+                "choice_net_n_layers": 1,
+                "activation": "leaky_relu",
+                "subject_embedding_size": 3,
+                "session_encoding_type": "scalar",
+                "session_integration_type": "direct",
+            },
+            penalties={
+                "latent_penalty": 1e-3,
+                "choice_net_latent_penalty": 1e-3,
+                "update_net_obs_penalty": 1e-3,
+                "update_net_latent_penalty": 1e-3,
+                "subject_penalty": 1e-3,
+                "update_net_subject_penalty": 1e-3,
+                "choice_net_subject_penalty": 1e-3,
+            },
+            training={
+                "lr": 1e-3,
+                "n_steps": 0,
+                "n_warmup_steps": 0,
+                "loss": "penalized_categorical",
+                "loss_param": 1.0,
+                "max_grad_norm": 1.0,
+                "checkpoint_every_n_steps": 0,
+                "checkpoint_run_heldout_eval": False,
+                "plot_choice_rule": False,
+                "plot_update_rules": False,
+                "plot_subject_index": 0,
+                "save_output_df": False,
+            },
+            output_dir=str(self.output_dir / "scalar_session"),
+            seed=42,
+        )
+
+        output = trainer.fit(multisubject_bundle)
+
+        self.assertIn("session_context_map", output["subject_artifacts"])
+        self.assertTrue(Path(output["subject_artifacts"]["session_context_map"]).exists())
+
+    def test_multisubject_session_conditioning_reduces_obs_size(self):
+        trainer = DisrnnTrainer(
+            architecture={
+                "multisubject": True,
+                "latent_size": 4,
+                "update_net_n_units_per_layer": 8,
+                "update_net_n_layers": 2,
+                "choice_net_n_units_per_layer": 4,
+                "choice_net_n_layers": 1,
+                "activation": "leaky_relu",
+                "subject_embedding_size": 3,
+                "session_encoding_type": "fourier",
+                "session_integration_type": "pre_mlp",
+                "session_fourier_k": 3,
+            },
+            penalties={
+                "latent_penalty": 1e-3,
+                "choice_net_latent_penalty": 1e-3,
+                "update_net_obs_penalty": 1e-3,
+                "update_net_latent_penalty": 1e-3,
+                "subject_penalty": 1e-3,
+                "update_net_subject_penalty": 1e-3,
+                "choice_net_subject_penalty": 1e-3,
+            },
+            training={
+                "lr": 1e-3,
+                "n_steps": 0,
+                "n_warmup_steps": 0,
+                "loss": "penalized_categorical",
+                "loss_param": 1.0,
+                "max_grad_norm": 1.0,
+                "plot_subject_index": 0,
+            },
+            output_dir=str(self.output_dir),
+            seed=42,
+        )
+
+        dummy_dataset = types.SimpleNamespace(
+            _xs=np.zeros((5, 2, 4), dtype=float),
+            x_names=["Subject ID", "Session Index", "prev choice", "prev reward"],
+            y_names=["choice"],
+        )
+        config, _ = trainer._build_network_configs(
+            dataset=dummy_dataset,
+            ignore_policy="exclude",
+            metadata={
+                "multisubject": True,
+                "num_subjects": 2,
+                "session_max_index_by_subject_index": [3, 3],
+            },
+        )
+
+        self.assertEqual(config.obs_size, 2)
+        self.assertEqual(config.session_encoding_type, "fourier")
+        self.assertEqual(config.session_integration_type, "pre_mlp")
+        self.assertEqual(config.session_fourier_k, 3)
+
+    def test_session_conditioning_requires_multisubject_mode(self):
+        trainer = DisrnnTrainer(
+            architecture={
+                "latent_size": 4,
+                "update_net_n_units_per_layer": 8,
+                "update_net_n_layers": 2,
+                "choice_net_n_units_per_layer": 4,
+                "choice_net_n_layers": 1,
+                "activation": "leaky_relu",
+                "session_encoding_type": "scalar",
+            },
+            penalties={
+                "latent_penalty": 1e-3,
+                "choice_net_latent_penalty": 1e-3,
+                "update_net_obs_penalty": 1e-3,
+                "update_net_latent_penalty": 1e-3,
+            },
+            training={
+                "lr": 1e-3,
+                "n_steps": 0,
+                "n_warmup_steps": 0,
+                "loss": "penalized_categorical",
+                "loss_param": 1.0,
+                "max_grad_norm": 1.0,
+            },
+            output_dir=str(self.output_dir),
+            seed=42,
+        )
+
+        dummy_dataset = types.SimpleNamespace(
+            _xs=np.zeros((5, 2, 2), dtype=float),
+            x_names=["prev choice", "prev reward"],
+            y_names=["choice"],
+        )
+        with self.assertRaisesRegex(ValueError, "requires multisubject mode"):
+            trainer._build_network_configs(
+                dataset=dummy_dataset,
+                ignore_policy="exclude",
+                metadata={"multisubject": False},
+            )
 
     def test_aligned_action_probabilities_preserve_dataframe_rows(self):
         session_df = pd.DataFrame(

@@ -9,6 +9,11 @@ import jax.numpy as jnp
 from disentangled_rnns.library import disrnn
 from disentangled_rnns.library import multisubject_disrnn as upstream_multisubject_disrnn
 
+from models.session_conditioning import (
+    apply_session_conditioning,
+    build_session_feat,
+    resolve_session_conditioning_config,
+)
 from models.subject_embedding_initialization import make_subject_embedding_initializer
 
 
@@ -18,6 +23,10 @@ class MultisubjectDisRnnConfig(upstream_multisubject_disrnn.MultisubjectDisRnnCo
 
     use_global_subject_bottleneck: bool = True
     subject_embedding_init: str = "zeros"
+    session_encoding_type: str = "none"
+    session_integration_type: str = "direct"
+    session_fourier_k: int = 4
+    session_max_index_by_subject_index: list[int] = dataclasses.field(default_factory=list)
 
 
 class MultisubjectDisRnn(upstream_multisubject_disrnn.MultisubjectDisRnn):
@@ -32,6 +41,26 @@ class MultisubjectDisRnn(upstream_multisubject_disrnn.MultisubjectDisRnn):
             max_n_subjects=int(config.max_n_subjects),
             subject_embedding_size=int(config.subject_embedding_size),
         )
+        session_cfg = resolve_session_conditioning_config(
+            multisubject=True,
+            session_encoding_type=getattr(config, "session_encoding_type", "none"),
+            session_integration_type=getattr(config, "session_integration_type", "direct"),
+            session_fourier_k=getattr(config, "session_fourier_k", 4),
+            session_max_index_by_subject_index=getattr(
+                config,
+                "session_max_index_by_subject_index",
+                (),
+            ),
+            max_n_subjects=int(config.max_n_subjects),
+            context="Multisubject disRNN",
+        )
+        self._session_conditioning_enabled = bool(session_cfg["enabled"])
+        self._session_encoding_type = str(session_cfg["session_encoding_type"])
+        self._session_integration_type = str(session_cfg["session_integration_type"])
+        self._session_fourier_k = int(session_cfg["session_fourier_k"])
+        self._session_max_index_by_subject_index = tuple(
+            int(value) for value in session_cfg["session_max_index_by_subject_index"]
+        )
         super().__init__(config)
 
     def _build_subj_emb_global_bottleneck(self):
@@ -45,7 +74,12 @@ class MultisubjectDisRnn(upstream_multisubject_disrnn.MultisubjectDisRnn):
         penalty = jnp.zeros(shape=(batch_size,))
 
         subject_ids = jnp.asarray(inputs[:, 0], dtype=jnp.int32)
-        observations = inputs[:, 1:]
+        if self._session_conditioning_enabled:
+            session_ids = jnp.asarray(inputs[:, 1], dtype=jnp.int32)
+            observations = inputs[:, 2:]
+        else:
+            session_ids = None
+            observations = inputs[:, 1:]
 
         subject_embeddings_table = hk.get_parameter(
             "subject_embeddings",
@@ -62,17 +96,37 @@ class MultisubjectDisRnn(upstream_multisubject_disrnn.MultisubjectDisRnn):
             valid_subject_ids.astype(subject_embeddings.dtype),
             axis=1,
         )
+        subject_context = subject_embeddings
+
+        if self._session_conditioning_enabled:
+            session_feat, valid_session_mask = build_session_feat(
+                subject_idx=subject_ids,
+                session_idx=session_ids,
+                session_max_index_by_subject=jnp.asarray(
+                    self._session_max_index_by_subject_index,
+                    dtype=jnp.int32,
+                ),
+                encoding_type=self._session_encoding_type,
+                fourier_k=self._session_fourier_k,
+            )
+            subject_context = apply_session_conditioning(
+                subject_emb=subject_embeddings,
+                session_feat=session_feat,
+                valid_session_mask=valid_session_mask,
+                d_subj=self._subject_embedding_size,
+                integration_type=self._session_integration_type,
+            )
 
         if self._use_global_subject_bottleneck:
-            subject_embeddings, kl_cost = disrnn.information_bottleneck(
-                inputs=subject_embeddings,
+            subject_context, kl_cost = disrnn.information_bottleneck(
+                inputs=subject_context,
                 sigmas=self._subj_emb_global_sigma,
                 noiseless_mode=self._noiseless_mode,
             )
             penalty += self._subj_penalty * kl_cost
 
         subj_emb_for_update_net = jnp.tile(
-            jnp.expand_dims(subject_embeddings, 2),
+            jnp.expand_dims(subject_context, 2),
             (1, 1, self._latent_size),
         )
         subj_emb_for_update_net, kl_cost = disrnn.information_bottleneck(
@@ -120,7 +174,7 @@ class MultisubjectDisRnn(upstream_multisubject_disrnn.MultisubjectDisRnn):
         penalty += update_net_penalty
 
         subj_emb_for_choice_net, subj_emb_kl_cost = disrnn.information_bottleneck(
-            inputs=subject_embeddings,
+            inputs=subject_context,
             sigmas=self._choice_net_subj_sigmas,
             multipliers=self._choice_net_subj_multipliers,
             noiseless_mode=self._noiseless_mode,
