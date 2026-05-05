@@ -1357,6 +1357,7 @@ class DisrnnTrainer(ModelTrainer):
             "params_path": str(params_path),
             "train_likelihood": train_likelihood,
             "eval_likelihood": eval_likelihood,
+            "session_curriculum_lambda": float(session_curriculum_lambda),
             "plot_paths": plot_paths,
             "split_examples": split_summaries,
         }
@@ -1631,11 +1632,24 @@ class DisrnnTrainer(ModelTrainer):
                 ),
             )
 
-        def _make_noiseless_eval_network_for_total_step(current_step: int) -> Any:
+        def _session_curriculum_lambda_for_completed_total_steps(
+            completed_total_steps: int,
+        ) -> float:
+            if int(completed_total_steps) <= 0:
+                return _session_curriculum_lambda_for_total_step(0)
+            return _session_curriculum_lambda_for_total_step(
+                int(completed_total_steps) - 1
+            )
+
+        def _make_noiseless_eval_network_for_completed_total_steps(
+            completed_total_steps: int,
+        ) -> Any:
             return _bind_session_curriculum_lambda(
                 make_noiseless_network,
-                session_curriculum_lambda=_session_curriculum_lambda_for_total_step(
-                    current_step
+                session_curriculum_lambda=(
+                    _session_curriculum_lambda_for_completed_total_steps(
+                        completed_total_steps
+                    )
                 ),
             )
 
@@ -1746,13 +1760,13 @@ class DisrnnTrainer(ModelTrainer):
         def _compute_distillation_metrics(
             current_params: Any,
             *,
-            current_total_step: int,
+            completed_total_steps: int,
         ) -> tuple[float, float] | None:
             if distillation_ensemble is None:
                 return None
             train_metric = evaluate_distillation_loss(
-                make_network=_make_noiseless_eval_network_for_total_step(
-                    current_total_step
+                make_network=_make_noiseless_eval_network_for_completed_total_steps(
+                    completed_total_steps
                 ),
                 params=current_params,
                 xs=xs_train_all,
@@ -1764,8 +1778,8 @@ class DisrnnTrainer(ModelTrainer):
                 penalty_scale=distillation_penalty_scale,
             )
             eval_metric = evaluate_distillation_loss(
-                make_network=_make_noiseless_eval_network_for_total_step(
-                    current_total_step
+                make_network=_make_noiseless_eval_network_for_completed_total_steps(
+                    completed_total_steps
                 ),
                 params=current_params,
                 xs=xs_eval_all,
@@ -1827,7 +1841,9 @@ class DisrnnTrainer(ModelTrainer):
                 dataset_train=dataset_train,
                 dataset_eval=dataset_eval,
                 ignore_policy=ignore_policy,
-                make_eval_network=_make_noiseless_eval_network_for_total_step(0),
+                make_eval_network=(
+                    _make_noiseless_eval_network_for_completed_total_steps(0)
+                ),
                 disrnn_config=disrnn_config,
                 is_multisubject=is_multisubject,
                 heldout_eval_cfg=heldout_eval_cfg,
@@ -1835,11 +1851,13 @@ class DisrnnTrainer(ModelTrainer):
                 wandb_run=wandb_run,
                 wandb_step=0,
                 keep_media_files=args.checkpoint_keep_media_files,
-                session_curriculum_lambda=_session_curriculum_lambda_for_total_step(0),
+                session_curriculum_lambda=(
+                    _session_curriculum_lambda_for_completed_total_steps(0)
+                ),
             )
             distillation_metrics = _compute_distillation_metrics(
                 params,
-                current_total_step=0,
+                completed_total_steps=0,
             )
             if distillation_metrics is not None:
                 (
@@ -1906,7 +1924,7 @@ class DisrnnTrainer(ModelTrainer):
                 dataset_train=dataset_train,
                 dataset_eval=dataset_eval,
                 ignore_policy=ignore_policy,
-                make_eval_network=_make_noiseless_eval_network_for_total_step(
+                make_eval_network=_make_noiseless_eval_network_for_completed_total_steps(
                     int(args.n_warmup_steps)
                 ),
                 disrnn_config=disrnn_config,
@@ -1916,13 +1934,15 @@ class DisrnnTrainer(ModelTrainer):
                 wandb_run=wandb_run,
                 wandb_step=int(args.n_warmup_steps),
                 keep_media_files=args.checkpoint_keep_media_files,
-                session_curriculum_lambda=_session_curriculum_lambda_for_total_step(
-                    int(args.n_warmup_steps)
+                session_curriculum_lambda=(
+                    _session_curriculum_lambda_for_completed_total_steps(
+                        int(args.n_warmup_steps)
+                    )
                 ),
             )
             distillation_metrics = _compute_distillation_metrics(
                 params,
-                current_total_step=int(args.n_warmup_steps),
+                completed_total_steps=int(args.n_warmup_steps),
             )
             if distillation_metrics is not None:
                 (
@@ -2053,12 +2073,16 @@ class DisrnnTrainer(ModelTrainer):
 
                 random_key = jax.random.split(random_key, 2)[0]
                 steps_completed += chunk_steps
-                current_total_step = int(args.n_warmup_steps + steps_completed)
-                current_session_curriculum_lambda = _session_curriculum_lambda_for_total_step(
-                    current_total_step
+                current_completed_total_steps = int(args.n_warmup_steps + steps_completed)
+                current_session_curriculum_lambda = (
+                    _session_curriculum_lambda_for_completed_total_steps(
+                        current_completed_total_steps
+                    )
                 )
                 current_noiseless_eval_network = (
-                    _make_noiseless_eval_network_for_total_step(current_total_step)
+                    _make_noiseless_eval_network_for_completed_total_steps(
+                        current_completed_total_steps
+                    )
                 )
 
                 checkpoint_dir = checkpoint_root / f"step_{steps_completed}"
@@ -2597,15 +2621,17 @@ class DisrnnTrainer(ModelTrainer):
         if wandb_run is not None:
             wandb_run.log({"fig/validation_loss_curve": wandb.Image(str(losses_path))})
 
-        final_total_step = int(args.n_warmup_steps + args.n_steps)
-        final_session_curriculum_lambda = _session_curriculum_lambda_for_total_step(
-            final_total_step
+        final_completed_total_steps = int(args.n_warmup_steps + args.n_steps)
+        final_session_curriculum_lambda = _session_curriculum_lambda_for_completed_total_steps(
+            final_completed_total_steps
         )
         output["session_curriculum"]["final_lambda"] = float(
             final_session_curriculum_lambda
         )
-        final_noiseless_eval_network = _make_noiseless_eval_network_for_total_step(
-            final_total_step
+        final_noiseless_eval_network = (
+            _make_noiseless_eval_network_for_completed_total_steps(
+                final_completed_total_steps
+            )
         )
 
         bottlenecks_fig = plotting.plot_bottlenecks(params, disrnn_config, sort_latents=False)

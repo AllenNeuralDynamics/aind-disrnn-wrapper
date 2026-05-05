@@ -286,6 +286,71 @@ class TestDisrnnTrainer(unittest.TestCase):
         self.assertLessEqual(output["likelihood_train"], 1.0)
         self.assertTrue((self.output_dir / "checkpoints" / "index.json").exists())
 
+    def test_checkpointed_session_curriculum_uses_last_applied_step_for_snapshots(self):
+        trainer = DisrnnTrainer(
+            architecture={
+                "multisubject": True,
+                "latent_size": 4,
+                "update_net_n_units_per_layer": 8,
+                "update_net_n_layers": 2,
+                "choice_net_n_units_per_layer": 4,
+                "choice_net_n_layers": 1,
+                "activation": "leaky_relu",
+                "subject_embedding_size": 3,
+                "session_encoding_type": "scalar",
+                "session_n_pretrain_steps": 0,
+                "session_n_warmup_steps": 5,
+            },
+            penalties={
+                "latent_penalty": 1e-3,
+                "choice_net_latent_penalty": 1e-3,
+                "update_net_obs_penalty": 1e-3,
+                "update_net_latent_penalty": 1e-3,
+                "subject_penalty": 1e-3,
+                "update_net_subject_penalty": 1e-3,
+                "choice_net_subject_penalty": 1e-3,
+            },
+            training={
+                "lr": 1e-3,
+                "n_steps": 3,
+                "n_warmup_steps": 1,
+                "loss": "penalized_categorical",
+                "loss_param": 1.0,
+                "max_grad_norm": 1.0,
+                "checkpoint_every_n_steps": 2,
+                "checkpoint_plot_split_examples_every_n": 0,
+                "checkpoint_save_output_df_every_n": 0,
+                "checkpoint_log_eval_to_wandb": False,
+                "checkpoint_log_train_to_wandb": False,
+                "checkpoint_log_split_examples_to_wandb": False,
+                "checkpoint_run_heldout_eval": False,
+                "checkpoint_plot_choice_rule": False,
+                "checkpoint_plot_update_rules": False,
+                "plot_choice_rule": False,
+                "plot_update_rules": False,
+                "plot_session_context_state_space": False,
+                "save_output_df": False,
+            },
+            output_dir=str(self.output_dir / "session_curriculum_ckpt"),
+            seed=42,
+        )
+
+        output = trainer.fit(self._make_multisubject_bundle())
+
+        self.assertEqual(output["session_curriculum"]["total_training_steps"], 4)
+        self.assertAlmostEqual(
+            output["initial_evaluations"]["before_warmup"]["session_curriculum_lambda"],
+            0.0,
+        )
+        self.assertAlmostEqual(
+            output["initial_evaluations"]["after_warmup"]["session_curriculum_lambda"],
+            0.0,
+        )
+        self.assertEqual(len(output["checkpoints"]), 2)
+        self.assertAlmostEqual(output["checkpoints"][0]["session_curriculum_lambda"], 0.4)
+        self.assertAlmostEqual(output["checkpoints"][1]["session_curriculum_lambda"], 0.6)
+        self.assertAlmostEqual(output["session_curriculum"]["final_lambda"], 0.6)
+
     def test_multisubject_training_exports_subject_artifacts(self):
         raw_df = self.bundle.raw.copy()
         raw_df["subject_id"] = np.where(raw_df["ses_idx"].astype(int) < 3, 711041, 793446)

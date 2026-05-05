@@ -1479,6 +1479,7 @@ class GruTrainer(ModelTrainer):
             random_key: Any,
             optimizer: Any,
             wandb_step_offset: int = 0,
+            total_step_offset: int = 0,
         ):
             return train_network_with_session_regularization(
                 make_network,
@@ -1489,7 +1490,11 @@ class GruTrainer(ModelTrainer):
                 n_action_logits=int(args.output_size),
                 session_regularization_apply=session_regularization_apply,
                 session_regularization_scale=lambda_reg_session,
-                session_curriculum_lambda_schedule=_session_curriculum_lambda_for_step,
+                session_curriculum_lambda_schedule=(
+                    lambda local_step: _session_curriculum_lambda_for_step(
+                        total_step_offset + local_step
+                    )
+                ),
                 params=params,
                 opt_state=opt_state,
                 opt=optimizer,
@@ -1538,6 +1543,7 @@ class GruTrainer(ModelTrainer):
             n_steps=0,
             random_key=key,
             optimizer=optax.adam(args.learning_rate),
+            total_step_offset=0,
         )
         if args.initialization_eval_before_training:
             output["initial_evaluations"] = {
@@ -1568,6 +1574,7 @@ class GruTrainer(ModelTrainer):
                 n_steps=args.n_steps,
                 random_key=key,
                 optimizer=optax.adam(args.learning_rate),
+                total_step_offset=0,
             )
         else:
             optimizer = optax.adam(args.learning_rate)
@@ -1596,6 +1603,7 @@ class GruTrainer(ModelTrainer):
                     random_key=random_key,
                     optimizer=optimizer,
                     wandb_step_offset=steps_completed,
+                    total_step_offset=steps_completed,
                 )
 
                 all_training_losses.extend(np.asarray(chunk_losses["training_loss"]).tolist())
