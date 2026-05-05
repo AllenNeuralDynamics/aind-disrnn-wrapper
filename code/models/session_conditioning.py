@@ -155,6 +155,11 @@ def apply_session_conditioning(
     hidden = jax.nn.relu(
         hk.Linear(int(d_subj) * 2, name="session_delta_hidden")(delta_inputs)
     )
-    delta = hk.Linear(int(d_subj), name="session_delta_out")(hidden)
+    delta = hk.Linear(
+        int(d_subj),
+        name="session_delta_out",
+        w_init=hk.initializers.Constant(0.0),
+        b_init=hk.initializers.Constant(0.0),
+    )(hidden)
     delta = delta * valid_session_mask[..., None].astype(delta.dtype)
     return subject_emb + delta

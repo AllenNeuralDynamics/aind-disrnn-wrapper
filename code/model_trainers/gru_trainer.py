@@ -664,6 +664,7 @@ class GruTrainer(ModelTrainer):
 
         cmap = plt.get_cmap("viridis")
         marker_by_split = {"train": "o", "eval": "s", "full": "^"}
+        colorbar_specs: list[tuple[Any, list[Any], int, int]] = []
 
         for subject_position, (subject_index, subject_id) in enumerate(subject_keys):
             subject_rows = plot_df[
@@ -746,17 +747,14 @@ class GruTrainer(ModelTrainer):
 
             scalar_mappable = plt.cm.ScalarMappable(cmap=cmap, norm=subject_norm)
             scalar_mappable.set_array([])
-            colorbar = fig.colorbar(
-                scalar_mappable,
-                ax=subject_axes,
-                shrink=0.92,
-                pad=0.02,
+            colorbar_specs.append(
+                (
+                    scalar_mappable,
+                    subject_axes,
+                    int(subject_max_session_index),
+                    int(subject_index),
+                )
             )
-            if subject_max_session_index <= 6:
-                colorbar.set_ticks(np.arange(1, subject_max_session_index + 1))
-            else:
-                colorbar.set_ticks([1, subject_max_session_index])
-            colorbar.set_label(f"Session index (subj {subject_index})")
 
         legend_handles = [
             Line2D(
@@ -821,7 +819,25 @@ class GruTrainer(ModelTrainer):
             frameon=False,
         )
         fig.suptitle("Session-Conditioned Subject Context State Space", fontsize=14)
-        fig.tight_layout(rect=(0, 0.06, 1, 0.96))
+        fig.tight_layout(rect=(0, 0.06, 0.86, 0.96))
+
+        colorbar_left = 0.89
+        colorbar_width = 0.018
+        for scalar_mappable, subject_axes, subject_max_session_index, subject_index in colorbar_specs:
+            subject_positions = [ax.get_position() for ax in subject_axes]
+            if not subject_positions:
+                continue
+            y0 = min(position.y0 for position in subject_positions)
+            y1 = max(position.y1 for position in subject_positions)
+            colorbar_ax = fig.add_axes(
+                [colorbar_left, y0, colorbar_width, max(y1 - y0, 0.05)]
+            )
+            colorbar = fig.colorbar(scalar_mappable, cax=colorbar_ax)
+            if subject_max_session_index <= 6:
+                colorbar.set_ticks(np.arange(1, subject_max_session_index + 1))
+            else:
+                colorbar.set_ticks([1, subject_max_session_index])
+            colorbar.set_label(f"Session index (subj {subject_index})")
         return fig
 
     def _remove_media_files(self, paths: list[Any]) -> None:
