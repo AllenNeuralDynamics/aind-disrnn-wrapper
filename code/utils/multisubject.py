@@ -334,6 +334,7 @@ def resolve_session_context_plot_subject_indices(
     *,
     requested_subject_indices: Sequence[int] | int | None = None,
     max_subjects: int = 3,
+    random_seed: int | None = None,
 ) -> list[int]:
     """Resolve up to ``max_subjects`` subject indices for session-context plots."""
     if int(max_subjects) < 0:
@@ -346,7 +347,15 @@ def resolve_session_context_plot_subject_indices(
         return []
 
     if requested_subject_indices is None:
-        return available_subject_indices[: int(max_subjects)]
+        if random_seed is None:
+            return available_subject_indices[: int(max_subjects)]
+        rng = np.random.default_rng(int(random_seed))
+        sampled = rng.choice(
+            np.asarray(available_subject_indices, dtype=int),
+            size=min(int(max_subjects), len(available_subject_indices)),
+            replace=False,
+        )
+        return [int(value) for value in np.asarray(sampled, dtype=int).tolist()]
 
     if isinstance(requested_subject_indices, (int, np.integer)):
         requested_values = [int(requested_subject_indices)]

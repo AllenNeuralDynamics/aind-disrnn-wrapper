@@ -334,6 +334,11 @@ class GruTrainer(ModelTrainer):
             session_context,
             requested_subject_indices=self.training.get("session_context_plot_subject_indices"),
             max_subjects=int(self.training.get("session_context_plot_max_subjects", 3)),
+            random_seed=(
+                None
+                if self.training.get("session_context_plot_subject_indices") is not None
+                else int(self.seed or 0)
+            ),
         )
 
     def _log_session_conditioning_details(
@@ -405,10 +410,17 @@ class GruTrainer(ModelTrainer):
             selected_subject_indices = self._resolve_session_context_plot_subject_indices(
                 metadata=metadata
             )
-            logger.info(
-                "Session-context state-space plot subjects: %s",
-                selected_subject_indices,
-            )
+            if self.training.get("session_context_plot_subject_indices") is None:
+                logger.info(
+                    "Session-context state-space plot subjects (random, seed=%s): %s",
+                    int(self.seed or 0),
+                    selected_subject_indices,
+                )
+            else:
+                logger.info(
+                    "Session-context state-space plot subjects: %s",
+                    selected_subject_indices,
+                )
 
     def _save_multisubject_artifacts(
         self,
@@ -612,6 +624,7 @@ class GruTrainer(ModelTrainer):
         if plot_df.empty:
             return None
 
+        subject_embeddings = extract_subject_embeddings_from_params(params)
         subject_curricula = self._resolve_subject_curricula(raw_df=raw_df, metadata=metadata)
         plot_df["curriculum_name"] = plot_df["subject_id"].map(
             lambda subject_id: subject_curricula.get(
@@ -645,16 +658,11 @@ class GruTrainer(ModelTrainer):
         fig, axes = plt.subplots(
             block_rows * len(subject_keys),
             ncols,
-            figsize=(5.6 * ncols, 4.5 * block_rows * len(subject_keys)),
+            figsize=(6.2 * ncols, 4.5 * block_rows * len(subject_keys)),
             squeeze=False,
         )
 
-        session_index_min = float(plot_df["session_index"].min())
-        session_index_max = float(plot_df["session_index"].max())
-        if session_index_min == session_index_max:
-            session_index_max = session_index_min + 1.0
         cmap = plt.get_cmap("viridis")
-        norm = plt.Normalize(vmin=session_index_min, vmax=session_index_max)
         marker_by_split = {"train": "o", "eval": "s", "full": "^"}
 
         for subject_position, (subject_index, subject_id) in enumerate(subject_keys):
@@ -665,12 +673,23 @@ class GruTrainer(ModelTrainer):
             curriculum_name = str(subject_rows["curriculum_name"].iloc[0])
             train_count = int((subject_rows["session_split"] == "train").sum())
             eval_count = int((subject_rows["session_split"] == "eval").sum())
+            subject_max_session_index = int(subject_rows["subject_max_session_index"].iloc[0])
+            subject_norm = plt.Normalize(
+                vmin=1.0,
+                vmax=float(max(subject_max_session_index, 2)),
+            )
+            subject_embedding = np.asarray(
+                subject_embeddings[int(subject_index)],
+                dtype=float,
+            )
+            subject_axes: list[Any] = []
 
             for pair_index, (x_column, y_column) in enumerate(dim_pairs):
                 ax = axes[
                     subject_position * block_rows + pair_index // ncols,
                     pair_index % ncols,
                 ]
+                subject_axes.append(ax)
                 ax.plot(
                     subject_rows[x_column],
                     subject_rows[y_column],
@@ -688,7 +707,7 @@ class GruTrainer(ModelTrainer):
                         split_rows[y_column],
                         c=split_rows["session_index"].to_numpy(dtype=float),
                         cmap=cmap,
-                        norm=norm,
+                        norm=subject_norm,
                         marker=marker,
                         s=62,
                         edgecolors="black",
@@ -696,6 +715,18 @@ class GruTrainer(ModelTrainer):
                         alpha=0.95,
                         zorder=2,
                     )
+                x_dim = int(x_column.split("_")[-1]) - 1
+                y_dim = int(y_column.split("_")[-1]) - 1
+                ax.scatter(
+                    float(subject_embedding[x_dim]),
+                    float(subject_embedding[y_dim]),
+                    marker="*",
+                    s=160,
+                    c="black",
+                    edgecolors="white",
+                    linewidths=0.8,
+                    zorder=3,
+                )
                 ax.axhline(0, color="0.85", linewidth=1)
                 ax.axvline(0, color="0.85", linewidth=1)
                 ax.set_xlabel(x_column.replace("_", " ").title())
@@ -712,6 +743,20 @@ class GruTrainer(ModelTrainer):
                     subject_position * block_rows + empty_index // ncols,
                     empty_index % ncols,
                 ].axis("off")
+
+            scalar_mappable = plt.cm.ScalarMappable(cmap=cmap, norm=subject_norm)
+            scalar_mappable.set_array([])
+            colorbar = fig.colorbar(
+                scalar_mappable,
+                ax=subject_axes,
+                shrink=0.92,
+                pad=0.02,
+            )
+            if subject_max_session_index <= 6:
+                colorbar.set_ticks(np.arange(1, subject_max_session_index + 1))
+            else:
+                colorbar.set_ticks([1, subject_max_session_index])
+            colorbar.set_label(f"Session index (subj {subject_index})")
 
         legend_handles = [
             Line2D(
@@ -743,6 +788,17 @@ class GruTrainer(ModelTrainer):
                 linewidth=0,
                 label="Eval session",
             ),
+            Line2D(
+                [0],
+                [0],
+                marker="*",
+                color="black",
+                markerfacecolor="black",
+                markeredgecolor="white",
+                markersize=11,
+                linewidth=0,
+                label="Base subject embedding",
+            ),
         ]
         if (plot_df["session_split"] == "full").any():
             legend_handles.append(
@@ -758,16 +814,6 @@ class GruTrainer(ModelTrainer):
                     label="Other session",
                 )
             )
-
-        scalar_mappable = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
-        scalar_mappable.set_array([])
-        colorbar = fig.colorbar(
-            scalar_mappable,
-            ax=axes.ravel().tolist(),
-            shrink=0.92,
-            pad=0.02,
-        )
-        colorbar.set_label("Per-subject session index")
         fig.legend(
             handles=legend_handles,
             loc="lower center",

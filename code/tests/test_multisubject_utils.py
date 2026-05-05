@@ -257,6 +257,25 @@ class TestMultisubjectUtils(unittest.TestCase):
 
         self.assertEqual(resolved, [2, 0])
 
+    def test_resolve_session_context_plot_subject_indices_can_sample_random_subset(self):
+        session_context = {
+            "indexing": "1_based",
+            "per_subject": [
+                {"subject_id": "m0", "subject_index": 0, "ordered_session_ids": ["a"]},
+                {"subject_id": "m1", "subject_index": 1, "ordered_session_ids": ["b"]},
+                {"subject_id": "m2", "subject_index": 2, "ordered_session_ids": ["c"]},
+                {"subject_id": "m3", "subject_index": 3, "ordered_session_ids": ["d"]},
+            ],
+        }
+
+        resolved = resolve_session_context_plot_subject_indices(
+            session_context,
+            max_subjects=2,
+            random_seed=43,
+        )
+
+        self.assertEqual(resolved, [2, 1])
+
     def test_compute_session_conditioned_context_dataframe_reconstructs_direct_scalar(self):
         params = {
             GRU_SUBJECT_MODULE_KEY: {
