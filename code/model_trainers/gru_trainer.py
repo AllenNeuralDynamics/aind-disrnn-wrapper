@@ -40,7 +40,12 @@ from utils.multisubject import (
     resolve_session_context_plot_subject_indices,
     save_subject_index_map,
     save_session_context_map,
+    session_regularization_index_arrays_from_session_context,
     subject_embeddings_to_dataframe,
+)
+from utils.session_regularized_training import (
+    build_zero_mean_session_delta_regularization_apply,
+    train_network_with_session_regularization,
 )
 
 logger = logging.getLogger(__name__)
@@ -363,6 +368,10 @@ class GruTrainer(ModelTrainer):
             session_conditioning_cfg["session_encoding_type"],
             session_conditioning_cfg["session_integration_type"],
             int(session_conditioning_cfg["session_fourier_k"]),
+        )
+        logger.info(
+            "Session regularization lambda_reg_session=%s",
+            float(self.training.get("lambda_reg_session", 0.0)),
         )
         logger.info(
             "Session-conditioned input features: %s",
@@ -1345,6 +1354,85 @@ class GruTrainer(ModelTrainer):
                 for value in session_conditioning_cfg["session_max_index_by_subject_index"]
             ),
         )
+        lambda_reg_session = float(self.training.get("lambda_reg_session", 0.0))
+        if lambda_reg_session < 0:
+            raise ValueError("training.lambda_reg_session must be >= 0.")
+        session_regularization_apply = None
+        if lambda_reg_session > 0:
+            if not bool(session_conditioning_cfg["enabled"]):
+                raise ValueError(
+                    "training.lambda_reg_session requires session conditioning to be enabled."
+                )
+            session_context = metadata.get("session_context")
+            if not isinstance(session_context, Mapping):
+                raise ValueError(
+                    "training.lambda_reg_session requires metadata.session_context."
+                )
+            if max_n_subjects is None:
+                raise ValueError(
+                    "training.lambda_reg_session requires multisubject metadata.num_subjects."
+                )
+            reg_subject_indices, reg_session_indices = (
+                session_regularization_index_arrays_from_session_context(session_context)
+            )
+            session_regularization_apply = build_zero_mean_session_delta_regularization_apply(
+                make_network=make_network,
+                subject_indices=reg_subject_indices,
+                session_indices=reg_session_indices,
+                max_n_subjects=int(max_n_subjects),
+            )
+            logger.info(
+                "Zero-mean session-delta regularization enabled: lambda_reg_session=%s "
+                "over %d subject-session pairs.",
+                lambda_reg_session,
+                int(reg_subject_indices.shape[0]),
+            )
+
+        def _train_network_with_optional_session_regularization(
+            *,
+            params: Any | None = None,
+            opt_state: Any | None = None,
+            n_steps: int,
+            random_key: Any,
+            optimizer: Any,
+            wandb_step_offset: int = 0,
+        ):
+            if session_regularization_apply is None:
+                return rnn_utils.train_network(
+                    make_network,
+                    dataset_train,
+                    dataset_eval,
+                    loss=args.loss,
+                    loss_param=args.loss_param,
+                    params=params,
+                    opt_state=opt_state,
+                    opt=optimizer,
+                    n_steps=n_steps,
+                    max_grad_norm=args.max_grad_norm,
+                    random_key=random_key,
+                    report_progress_by="wandb",
+                    wandb_run=wandb_run,
+                    wandb_step_offset=wandb_step_offset,
+                )
+            return train_network_with_session_regularization(
+                make_network,
+                dataset_train,
+                dataset_eval,
+                loss=args.loss,
+                loss_param=args.loss_param,
+                n_action_logits=int(args.output_size),
+                session_regularization_apply=session_regularization_apply,
+                session_regularization_scale=lambda_reg_session,
+                params=params,
+                opt_state=opt_state,
+                opt=optimizer,
+                n_steps=n_steps,
+                max_grad_norm=args.max_grad_norm,
+                random_key=random_key,
+                report_progress_by="wandb",
+                wandb_run=wandb_run,
+                wandb_step_offset=wandb_step_offset,
+            )
 
         heldout_eval_cfg = None
         heldout_test_data = self.heldout_data
@@ -1379,18 +1467,10 @@ class GruTrainer(ModelTrainer):
         checkpoint_records: list[dict[str, Any]] = []
         checkpoint_heldout_summaries: list[dict[str, Any]] = []
 
-        params, init_opt_state, _ = rnn_utils.train_network(
-            make_network,
-            dataset_train,
-            dataset_eval,
-            loss=args.loss,
-            loss_param=args.loss_param,
-            opt=optax.adam(args.learning_rate),
+        params, init_opt_state, _ = _train_network_with_optional_session_regularization(
             n_steps=0,
-            max_grad_norm=args.max_grad_norm,
             random_key=key,
-            report_progress_by="wandb",
-            wandb_run=wandb_run,
+            optimizer=optax.adam(args.learning_rate),
         )
         if args.initialization_eval_before_training:
             output["initial_evaluations"] = {
@@ -1414,21 +1494,12 @@ class GruTrainer(ModelTrainer):
             }
 
         if args.checkpoint_every_n_steps == 0:
-            params, opt_state, losses = rnn_utils.train_network(
-                make_network,
-                dataset_train,
-                dataset_eval,
-                loss=args.loss,
-                loss_param=args.loss_param,
+            params, opt_state, losses = _train_network_with_optional_session_regularization(
                 params=params,
                 opt_state=init_opt_state,
-                opt=optax.adam(args.learning_rate),
                 n_steps=args.n_steps,
-                max_grad_norm=args.max_grad_norm,
-                do_plot=True,
                 random_key=key,
-                report_progress_by="wandb",
-                wandb_run=wandb_run,
+                optimizer=optax.adam(args.learning_rate),
             )
         else:
             optimizer = optax.adam(args.learning_rate)
@@ -1450,21 +1521,12 @@ class GruTrainer(ModelTrainer):
                     args.checkpoint_every_n_steps,
                     args.n_steps - steps_completed,
                 )
-                params, opt_state, chunk_losses = rnn_utils.train_network(
-                    make_network,
-                    dataset_train,
-                    dataset_eval,
-                    loss=args.loss,
-                    loss_param=args.loss_param,
+                params, opt_state, chunk_losses = _train_network_with_optional_session_regularization(
                     params=params,
                     opt_state=opt_state,
-                    opt=optimizer,
                     n_steps=chunk_steps,
-                    max_grad_norm=args.max_grad_norm,
-                    do_plot=False,
                     random_key=random_key,
-                    report_progress_by="wandb",
-                    wandb_run=wandb_run,
+                    optimizer=optimizer,
                     wandb_step_offset=steps_completed,
                 )
 

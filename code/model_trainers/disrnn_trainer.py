@@ -49,9 +49,14 @@ from utils.multisubject import (
     resolve_session_context_plot_subject_indices,
     save_subject_index_map,
     save_session_context_map,
+    session_regularization_index_arrays_from_session_context,
     subject_embeddings_to_dataframe,
 )
 from utils.run_helpers import resolve_disrnn_penalties
+from utils.session_regularized_training import (
+    build_zero_mean_session_delta_regularization_apply,
+    train_network_with_session_regularization,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -534,6 +539,10 @@ class DisrnnTrainer(ModelTrainer):
             session_conditioning_cfg["session_encoding_type"],
             session_conditioning_cfg["session_integration_type"],
             int(session_conditioning_cfg["session_fourier_k"]),
+        )
+        logger.info(
+            "Session regularization lambda_reg_session=%s",
+            float(self.training.get("lambda_reg_session", 0.0)),
         )
         logger.info(
             "Session-conditioned input features: %s",
@@ -1519,6 +1528,50 @@ class DisrnnTrainer(ModelTrainer):
         expected_n_action_logits = int(getattr(dataset, "n_classes", 0))
         if expected_n_action_logits <= 0:
             expected_n_action_logits = 2 if ignore_policy == "exclude" else 3
+        lambda_reg_session = float(self.training.get("lambda_reg_session", 0.0))
+        if lambda_reg_session < 0:
+            raise ValueError("training.lambda_reg_session must be >= 0.")
+        train_session_regularization_apply = None
+        warmup_session_regularization_apply = None
+        if lambda_reg_session > 0:
+            if not bool(session_conditioning_cfg["enabled"]):
+                raise ValueError(
+                    "training.lambda_reg_session requires session conditioning to be enabled."
+                )
+            session_context = metadata.get("session_context")
+            if not isinstance(session_context, Mapping):
+                raise ValueError(
+                    "training.lambda_reg_session requires metadata.session_context."
+                )
+            if max_n_subjects is None:
+                raise ValueError(
+                    "training.lambda_reg_session requires multisubject metadata.num_subjects."
+                )
+            reg_subject_indices, reg_session_indices = (
+                session_regularization_index_arrays_from_session_context(session_context)
+            )
+            warmup_session_regularization_apply = (
+                build_zero_mean_session_delta_regularization_apply(
+                    make_network=make_noiseless_network,
+                    subject_indices=reg_subject_indices,
+                    session_indices=reg_session_indices,
+                    max_n_subjects=int(max_n_subjects),
+                )
+            )
+            train_session_regularization_apply = (
+                build_zero_mean_session_delta_regularization_apply(
+                    make_network=make_train_network,
+                    subject_indices=reg_subject_indices,
+                    session_indices=reg_session_indices,
+                    max_n_subjects=int(max_n_subjects),
+                )
+            )
+            logger.info(
+                "Zero-mean session-delta regularization enabled: lambda_reg_session=%s "
+                "over %d subject-session pairs.",
+                lambda_reg_session,
+                int(reg_subject_indices.shape[0]),
+            )
         xs_train_all, ys_train_all = dataset_train.get_all()
         xs_eval_all, ys_eval_all = dataset_eval.get_all()
         distillation_penalty_scale = resolve_penalty_scale(args.loss_param)
@@ -1538,6 +1591,54 @@ class DisrnnTrainer(ModelTrainer):
                 expected_output_size=expected_n_action_logits,
             )
             output["distillation"] = dict(distillation_ensemble.manifest)
+
+        def _train_supervised_with_optional_session_regularization(
+            *,
+            make_current_network: Callable[[], Any],
+            current_session_regularization_apply: Any | None,
+            params: Any | None = None,
+            opt_state: Any | None = None,
+            n_steps: int,
+            random_key: Any,
+            optimizer: Any,
+            wandb_step_offset: int = 0,
+        ):
+            if current_session_regularization_apply is None:
+                return rnn_utils.train_network(
+                    make_current_network,
+                    dataset_train,
+                    dataset_eval,
+                    opt=optimizer,
+                    loss=args.loss,
+                    loss_param=args.loss_param,
+                    params=params,
+                    opt_state=opt_state,
+                    n_steps=n_steps,
+                    max_grad_norm=args.max_grad_norm,
+                    random_key=random_key,
+                    report_progress_by="wandb",
+                    wandb_run=wandb_run,
+                    wandb_step_offset=wandb_step_offset,
+                )
+            return train_network_with_session_regularization(
+                make_current_network,
+                dataset_train,
+                dataset_eval,
+                loss=args.loss,
+                loss_param=args.loss_param,
+                n_action_logits=expected_n_action_logits,
+                session_regularization_apply=current_session_regularization_apply,
+                session_regularization_scale=lambda_reg_session,
+                opt=optimizer,
+                params=params,
+                opt_state=opt_state,
+                n_steps=n_steps,
+                max_grad_norm=args.max_grad_norm,
+                random_key=random_key,
+                report_progress_by="wandb",
+                wandb_run=wandb_run,
+                wandb_step_offset=wandb_step_offset,
+            )
 
         def _compute_distillation_metrics(current_params: Any) -> tuple[float, float] | None:
             if distillation_ensemble is None:
@@ -1596,18 +1697,12 @@ class DisrnnTrainer(ModelTrainer):
                         exc,
                     )
 
-        params, warmup_opt_state, _ = rnn_utils.train_network(
-            make_noiseless_network,
-            dataset_train,
-            dataset_eval,
-            opt=optax.adam(args.learning_rate),
-            loss=args.loss,
-            loss_param=args.loss_param,
+        params, warmup_opt_state, _ = _train_supervised_with_optional_session_regularization(
+            make_current_network=make_noiseless_network,
+            current_session_regularization_apply=warmup_session_regularization_apply,
             n_steps=0,
-            max_grad_norm=args.max_grad_norm,
             random_key=warmup_key,
-            report_progress_by="wandb",
-            wandb_run=wandb_run,
+            optimizer=optax.adam(args.learning_rate),
         )
         initial_evaluations: dict[str, Any] = {}
         if args.initialization_eval_before_warmup:
@@ -1641,20 +1736,16 @@ class DisrnnTrainer(ModelTrainer):
         logger.info("Running warmup training phase")
         warmup_start = time.time()
         if distillation_ensemble is None:
-            params, warmup_opt_state, warmup_losses = rnn_utils.train_network(
-                make_noiseless_network,
-                dataset_train,
-                dataset_eval,
-                opt=optax.adam(args.learning_rate),
-                loss=args.loss,
-                loss_param=args.loss_param,
-                params=params,
-                opt_state=warmup_opt_state,
-                n_steps=args.n_warmup_steps,
-                max_grad_norm=args.max_grad_norm,
-                random_key=warmup_key,
-                report_progress_by="wandb",
-                wandb_run=wandb_run,
+            params, warmup_opt_state, warmup_losses = (
+                _train_supervised_with_optional_session_regularization(
+                    make_current_network=make_noiseless_network,
+                    current_session_regularization_apply=warmup_session_regularization_apply,
+                    params=params,
+                    opt_state=warmup_opt_state,
+                    n_steps=args.n_warmup_steps,
+                    random_key=warmup_key,
+                    optimizer=optax.adam(args.learning_rate),
+                )
             )
         else:
             params, warmup_opt_state, warmup_losses = train_network_with_distillation(
@@ -1673,6 +1764,8 @@ class DisrnnTrainer(ModelTrainer):
                 n_action_logits=expected_n_action_logits,
                 include_penalty=False,
                 penalty_scale=distillation_penalty_scale,
+                session_regularization_apply=warmup_session_regularization_apply,
+                session_regularization_scale=lambda_reg_session,
                 report_progress_by="wandb",
                 wandb_run=wandb_run,
             )
@@ -1725,21 +1818,14 @@ class DisrnnTrainer(ModelTrainer):
         checkpoint_heldout_summaries: list[dict[str, Any]] = []
         if args.checkpoint_every_n_steps == 0:
             if distillation_ensemble is None:
-                params, opt_state, losses = rnn_utils.train_network(
-                    make_train_network,
-                    dataset_train,
-                    dataset_eval,
-                    loss=args.loss,
-                    loss_param=args.loss_param,
+                params, opt_state, losses = _train_supervised_with_optional_session_regularization(
+                    make_current_network=make_train_network,
+                    current_session_regularization_apply=train_session_regularization_apply,
                     params=params,
                     opt_state=None,
-                    opt=optax.adam(args.learning_rate),
                     n_steps=args.n_steps,
-                    max_grad_norm=args.max_grad_norm,
-                    do_plot=True,
                     random_key=training_key,
-                    report_progress_by="wandb",
-                    wandb_run=wandb_run,
+                    optimizer=optax.adam(args.learning_rate),
                     wandb_step_offset=args.n_warmup_steps,
                 )
             else:
@@ -1759,6 +1845,8 @@ class DisrnnTrainer(ModelTrainer):
                     n_action_logits=expected_n_action_logits,
                     include_penalty=True,
                     penalty_scale=distillation_penalty_scale,
+                    session_regularization_apply=train_session_regularization_apply,
+                    session_regularization_scale=lambda_reg_session,
                     report_progress_by="wandb",
                     wandb_run=wandb_run,
                     wandb_step_offset=args.n_warmup_steps,
@@ -1782,22 +1870,19 @@ class DisrnnTrainer(ModelTrainer):
                     args.n_steps - steps_completed,
                 )
                 if distillation_ensemble is None:
-                    params, opt_state, chunk_losses = rnn_utils.train_network(
-                        make_train_network,
-                        dataset_train,
-                        dataset_eval,
-                        loss=args.loss,
-                        loss_param=args.loss_param,
-                        params=params,
-                        opt_state=opt_state,
-                        opt=optimizer,
-                        n_steps=chunk_steps,
-                        max_grad_norm=args.max_grad_norm,
-                        do_plot=False,
-                        random_key=random_key,
-                        report_progress_by="wandb",
-                        wandb_run=wandb_run,
-                        wandb_step_offset=args.n_warmup_steps + steps_completed,
+                    params, opt_state, chunk_losses = (
+                        _train_supervised_with_optional_session_regularization(
+                            make_current_network=make_train_network,
+                            current_session_regularization_apply=(
+                                train_session_regularization_apply
+                            ),
+                            params=params,
+                            opt_state=opt_state,
+                            n_steps=chunk_steps,
+                            random_key=random_key,
+                            optimizer=optimizer,
+                            wandb_step_offset=args.n_warmup_steps + steps_completed,
+                        )
                     )
                 else:
                     params, opt_state, chunk_losses = train_network_with_distillation(
@@ -1816,6 +1901,8 @@ class DisrnnTrainer(ModelTrainer):
                         n_action_logits=expected_n_action_logits,
                         include_penalty=True,
                         penalty_scale=distillation_penalty_scale,
+                        session_regularization_apply=train_session_regularization_apply,
+                        session_regularization_scale=lambda_reg_session,
                         report_progress_by="wandb",
                         wandb_run=wandb_run,
                         wandb_step_offset=args.n_warmup_steps + steps_completed,

@@ -374,6 +374,24 @@ def resolve_session_context_plot_subject_indices(
     return resolved[: int(max_subjects)]
 
 
+def session_regularization_index_arrays_from_session_context(
+    session_context: Mapping[str, Any],
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return flat subject/session arrays covering every session in context order."""
+    subject_indices: list[int] = []
+    session_indices: list[int] = []
+    for row in ordered_session_context_rows(session_context):
+        subject_index = int(row["subject_index"])
+        ordered_session_ids = row.get("ordered_session_ids") or []
+        for session_index, _ in enumerate(ordered_session_ids, start=1):
+            subject_indices.append(subject_index)
+            session_indices.append(int(session_index))
+    return (
+        np.asarray(subject_indices, dtype=np.int32),
+        np.asarray(session_indices, dtype=np.int32),
+    )
+
+
 def _find_linear_module_params(
     params: Mapping[str, Any],
     *,

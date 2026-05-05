@@ -591,6 +591,40 @@ class TestDisrnnTrainer(unittest.TestCase):
                 metadata={"multisubject": False},
             )
 
+    def test_session_delta_regularization_requires_session_conditioning(self):
+        trainer = DisrnnTrainer(
+            architecture={
+                "multisubject": True,
+                "latent_size": 4,
+                "update_net_n_units_per_layer": 8,
+                "update_net_n_layers": 2,
+                "choice_net_n_units_per_layer": 4,
+                "choice_net_n_layers": 1,
+                "activation": "leaky_relu",
+                "subject_embedding_size": 3,
+            },
+            penalties={
+                "latent_penalty": 1e-3,
+                "choice_net_latent_penalty": 1e-3,
+                "update_net_obs_penalty": 1e-3,
+                "update_net_latent_penalty": 1e-3,
+            },
+            training={
+                "lr": 1e-3,
+                "n_steps": 0,
+                "n_warmup_steps": 0,
+                "loss": "penalized_categorical",
+                "loss_param": 1.0,
+                "lambda_reg_session": 1e-3,
+                "max_grad_norm": 1.0,
+            },
+            output_dir=str(self.output_dir / "invalid_session_reg"),
+            seed=42,
+        )
+
+        with self.assertRaisesRegex(ValueError, "requires session conditioning"):
+            trainer.fit(self._make_multisubject_bundle())
+
     def test_aligned_action_probabilities_preserve_dataframe_rows(self):
         session_df = pd.DataFrame(
             {

@@ -5,8 +5,8 @@ from typing import Callable, Sequence
 import haiku as hk
 import jax.numpy as jnp
 from models.session_conditioning import (
-    apply_session_conditioning,
     build_session_feat,
+    compute_session_delta as compute_session_delta_perturbation,
     resolve_session_conditioning_config,
 )
 from models.subject_embedding_initialization import make_subject_embedding_initializer
@@ -58,15 +58,10 @@ class MultisubjectGru(hk.RNNCore):
         self._gru = hk.GRU(self._hidden_size, name="gru")
         self._readout = hk.Linear(output_size=self._output_size, name="readout")
 
-    def __call__(self, inputs: jnp.ndarray, prev_state: jnp.ndarray):
-        subject_ids = jnp.asarray(inputs[..., 0], dtype=jnp.int32)
-        if self._session_conditioning_enabled:
-            session_ids = jnp.asarray(inputs[..., 1], dtype=jnp.int32)
-            observations = inputs[..., 2:]
-        else:
-            session_ids = None
-            observations = inputs[..., 1:]
-
+    def _lookup_subject_embeddings(
+        self,
+        subject_ids: jnp.ndarray,
+    ) -> jnp.ndarray:
         subject_embeddings_table = hk.get_parameter(
             "subject_embeddings",
             (self._max_n_subjects, self._subject_embedding_size),
@@ -78,30 +73,72 @@ class MultisubjectGru(hk.RNNCore):
         )
         safe_subject_ids = jnp.where(valid_subject_ids, subject_ids, 0)
         subject_embeddings = jnp.take(subject_embeddings_table, safe_subject_ids, axis=0)
-        subject_embeddings = subject_embeddings * jnp.expand_dims(
+        return subject_embeddings * jnp.expand_dims(
             valid_subject_ids.astype(subject_embeddings.dtype),
             axis=-1,
         )
-        subject_context = subject_embeddings
+
+    def compute_session_delta(
+        self,
+        *,
+        subject_ids: jnp.ndarray,
+        session_ids: jnp.ndarray,
+    ) -> jnp.ndarray:
+        if not self._session_conditioning_enabled:
+            raise ValueError("Session deltas require session conditioning to be enabled.")
+
+        subject_embeddings = self._lookup_subject_embeddings(subject_ids)
+        session_feat, valid_session_mask = build_session_feat(
+            subject_idx=subject_ids,
+            session_idx=session_ids,
+            session_max_index_by_subject=jnp.asarray(
+                self._session_max_index_by_subject_index,
+                dtype=jnp.int32,
+            ),
+            encoding_type=self._session_encoding_type,
+            fourier_k=self._session_fourier_k,
+        )
+        return compute_session_delta_perturbation(
+            subject_emb=subject_embeddings,
+            session_feat=session_feat,
+            valid_session_mask=valid_session_mask,
+            d_subj=self._subject_embedding_size,
+            integration_type=self._session_integration_type,
+        )
+
+    def compute_subject_context(
+        self,
+        *,
+        subject_ids: jnp.ndarray,
+        session_ids: jnp.ndarray | None = None,
+    ) -> jnp.ndarray:
+        subject_embeddings = self._lookup_subject_embeddings(subject_ids)
+        if not self._session_conditioning_enabled:
+            return subject_embeddings
+        if session_ids is None:
+            raise ValueError("Session-conditioned subject context requires session_ids.")
+
+        return subject_embeddings + self.compute_session_delta(
+            subject_ids=subject_ids,
+            session_ids=session_ids,
+        )
+
+    def __call__(self, inputs: jnp.ndarray, prev_state: jnp.ndarray):
+        subject_ids = jnp.asarray(inputs[..., 0], dtype=jnp.int32)
+        if self._session_conditioning_enabled:
+            session_ids = jnp.asarray(inputs[..., 1], dtype=jnp.int32)
+            observations = inputs[..., 2:]
+        else:
+            session_ids = None
+            observations = inputs[..., 1:]
 
         if self._session_conditioning_enabled:
-            session_feat, valid_session_mask = build_session_feat(
-                subject_idx=subject_ids,
-                session_idx=session_ids,
-                session_max_index_by_subject=jnp.asarray(
-                    self._session_max_index_by_subject_index,
-                    dtype=jnp.int32,
-                ),
-                encoding_type=self._session_encoding_type,
-                fourier_k=self._session_fourier_k,
+            subject_context = self.compute_subject_context(
+                subject_ids=subject_ids,
+                session_ids=session_ids,
             )
-            subject_context = apply_session_conditioning(
-                subject_emb=subject_embeddings,
-                session_feat=session_feat,
-                valid_session_mask=valid_session_mask,
-                d_subj=self._subject_embedding_size,
-                integration_type=self._session_integration_type,
-            )
+        else:
+            subject_context = self.compute_subject_context(subject_ids=subject_ids)
 
         gru_inputs = jnp.concatenate((observations, subject_context), axis=-1)
         gru_output, next_state = self._gru(gru_inputs, prev_state)

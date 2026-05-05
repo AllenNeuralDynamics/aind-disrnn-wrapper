@@ -134,7 +134,7 @@ def build_session_feat(
     return session_feat, valid_session_mask
 
 
-def apply_session_conditioning(
+def compute_session_delta(
     *,
     subject_emb: jnp.ndarray,
     session_feat: jnp.ndarray,
@@ -142,7 +142,7 @@ def apply_session_conditioning(
     d_subj: int,
     integration_type: str,
 ) -> jnp.ndarray:
-    """Add a learned session-conditioned perturbation to the subject embedding."""
+    """Return the learned session-conditioned perturbation for a subject embedding."""
     conditioned_session_feat = session_feat
     if integration_type == "pre_mlp":
         conditioned_session_feat = jax.nn.relu(
@@ -161,5 +161,23 @@ def apply_session_conditioning(
         w_init=hk.initializers.Constant(0.0),
         b_init=hk.initializers.Constant(0.0),
     )(hidden)
-    delta = delta * valid_session_mask[..., None].astype(delta.dtype)
+    return delta * valid_session_mask[..., None].astype(delta.dtype)
+
+
+def apply_session_conditioning(
+    *,
+    subject_emb: jnp.ndarray,
+    session_feat: jnp.ndarray,
+    valid_session_mask: jnp.ndarray,
+    d_subj: int,
+    integration_type: str,
+) -> jnp.ndarray:
+    """Add a learned session-conditioned perturbation to the subject embedding."""
+    delta = compute_session_delta(
+        subject_emb=subject_emb,
+        session_feat=session_feat,
+        valid_session_mask=valid_session_mask,
+        d_subj=d_subj,
+        integration_type=integration_type,
+    )
     return subject_emb + delta

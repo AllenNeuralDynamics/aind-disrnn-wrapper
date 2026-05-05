@@ -349,6 +349,8 @@ def train_network_with_distillation(
     n_action_logits: int,
     include_penalty: bool,
     penalty_scale: float,
+    session_regularization_apply: Callable[[Any, jax.Array], jnp.ndarray] | None = None,
+    session_regularization_scale: float = 0.0,
     log_losses_every: int = 10,
     report_progress_by: DistillationProgressMode = "print",
     wandb_run: Any | None = None,
@@ -385,7 +387,8 @@ def train_network_with_distillation(
         batch_teacher_probs: jnp.ndarray,
         key: jax.Array,
     ) -> jnp.ndarray:
-        model_output = model.apply(current_params, key, batch_xs)
+        model_key, regularization_key = jax.random.split(key)
+        model_output = model.apply(current_params, model_key, batch_xs)
         logits = model_output[:, :, :n_action_logits]
         loss = _distillation_kl_loss(
             teacher_probs=batch_teacher_probs,
@@ -397,6 +400,14 @@ def train_network_with_distillation(
             penalty, n_unmasked_samples = rnn_utils.compute_penalty(batch_ys, model_output)
             avg_penalty = penalty / jnp.maximum(1, n_unmasked_samples)
             loss = loss + float(penalty_scale) * avg_penalty
+        if (
+            session_regularization_apply is not None
+            and float(session_regularization_scale) > 0
+        ):
+            loss = loss + float(session_regularization_scale) * session_regularization_apply(
+                current_params,
+                regularization_key,
+            )
         return loss
 
     compute_loss_jit = jax.jit(compute_loss)

@@ -638,6 +638,29 @@ class TestGruTrainer(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "session_fourier_k must be > 0"):
             trainer.fit(self.multisubject_bundle)
 
+    def test_session_delta_regularization_requires_session_conditioning(self):
+        trainer = GruTrainer(
+            architecture={
+                "multisubject": True,
+                "hidden_size": 8,
+                "num_layers": 1,
+                "subject_embedding_size": 3,
+            },
+            training={
+                "lr": 1e-3,
+                "n_steps": 0,
+                "loss": "categorical",
+                "loss_param": 1,
+                "lambda_reg_session": 1e-3,
+                "max_grad_norm": 1.0,
+            },
+            output_dir=str(self.output_dir / "invalid_session_reg"),
+            seed=42,
+        )
+
+        with self.assertRaisesRegex(ValueError, "requires session conditioning"):
+            trainer.fit(self.multisubject_bundle)
+
     def test_heldout_eval_rejects_multisubject_gru(self):
         hydra_config = OmegaConf.create(
             {

@@ -218,6 +218,7 @@ model:
     lr: 0.001
     loss: penalized_categorical
     loss_param: 1.0
+    lambda_reg_session: 0.0   # 0 disables zero-mean session-delta regularization; try 1e-3 to 1e-2
     max_grad_norm: 1.0
   seed: ${seed}
   run_name_component: disrnn_beta${.penalties.beta}_lr${.training.lr}

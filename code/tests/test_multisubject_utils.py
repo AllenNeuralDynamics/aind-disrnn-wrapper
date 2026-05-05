@@ -27,6 +27,7 @@ from utils.multisubject import (
     prepend_session_index_to_multisubject_dataset,
     resolve_session_context_plot_subject_indices,
     save_session_context_map,
+    session_regularization_index_arrays_from_session_context,
     session_indices_for_split,
 )
 
@@ -275,6 +276,30 @@ class TestMultisubjectUtils(unittest.TestCase):
         )
 
         self.assertEqual(resolved, [2, 1])
+
+    def test_session_regularization_index_arrays_cover_all_sessions(self):
+        session_context = {
+            "indexing": "1_based",
+            "per_subject": [
+                {
+                    "subject_id": "m1",
+                    "subject_index": 1,
+                    "ordered_session_ids": ["m1__s1", "m1__s2"],
+                },
+                {
+                    "subject_id": "m0",
+                    "subject_index": 0,
+                    "ordered_session_ids": ["m0__s1"],
+                },
+            ],
+        }
+
+        subject_indices, session_indices = (
+            session_regularization_index_arrays_from_session_context(session_context)
+        )
+
+        self.assertTrue(np.array_equal(subject_indices, np.array([0, 1, 1], dtype=np.int32)))
+        self.assertTrue(np.array_equal(session_indices, np.array([1, 1, 2], dtype=np.int32)))
 
     def test_compute_session_conditioned_context_dataframe_reconstructs_direct_scalar(self):
         params = {
