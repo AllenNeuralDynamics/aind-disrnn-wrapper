@@ -478,6 +478,7 @@ def compute_session_conditioned_context_dataframe(
     session_fourier_k: int,
     session_delta_n_layers: int,
     session_delta_hidden_size: int,
+    session_curriculum_lambda: float = 1.0,
     session_max_index_by_subject_index: Sequence[int],
     train_session_ids: Sequence[Any] | None = None,
     eval_session_ids: Sequence[Any] | None = None,
@@ -619,6 +620,7 @@ def compute_session_conditioned_context_dataframe(
             hidden = np.maximum(_apply_linear_layer(hidden, hidden_weights, hidden_bias), 0.0)
         delta = _apply_linear_layer(hidden, out_weights, out_bias)
         delta = delta * valid_session_mask[:, None].astype(float)
+        delta = float(session_curriculum_lambda) * delta
         subject_context = subject_context + delta
 
         subject_id = normalize_subject_id(subject_row.get("subject_id"))

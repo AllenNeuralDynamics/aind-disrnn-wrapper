@@ -28,6 +28,7 @@ class MultisubjectGru(hk.RNNCore):
         session_fourier_k: int = 4,
         session_delta_n_layers: int = 3,
         session_delta_hidden_size: int = 16,
+        session_curriculum_lambda: float = 1.0,
         session_max_index_by_subject_index: Sequence[int] | None = None,
         name: str = "multisubject_gru",
     ) -> None:
@@ -58,6 +59,7 @@ class MultisubjectGru(hk.RNNCore):
         self._session_fourier_k = int(session_cfg["session_fourier_k"])
         self._session_delta_n_layers = int(session_cfg["session_delta_n_layers"])
         self._session_delta_hidden_size = int(session_cfg["session_delta_hidden_size"])
+        self._session_curriculum_lambda = session_curriculum_lambda
         self._session_max_index_by_subject_index = tuple(
             int(value) for value in session_cfg["session_max_index_by_subject_index"]
         )
@@ -112,6 +114,7 @@ class MultisubjectGru(hk.RNNCore):
             integration_type=self._session_integration_type,
             delta_n_layers=self._session_delta_n_layers,
             delta_hidden_size=self._session_delta_hidden_size,
+            curriculum_lambda=self._session_curriculum_lambda,
         )
 
     def compute_subject_context(
@@ -170,8 +173,9 @@ def make_gru_network(
     session_fourier_k: int = 4,
     session_delta_n_layers: int = 3,
     session_delta_hidden_size: int = 16,
+    session_curriculum_lambda: float = 1.0,
     session_max_index_by_subject_index: Sequence[int] | None = None,
-) -> Callable[[], hk.RNNCore]:
+) -> Callable[..., hk.RNNCore]:
     """Build the single-layer GRU used by the upstream training notebook."""
     if int(hidden_size) <= 0:
         raise ValueError("architecture.hidden_size must be > 0 for GRU models.")
@@ -216,7 +220,14 @@ def make_gru_network(
             context="GRU network factory",
         )
 
-    def _make_network() -> hk.RNNCore:
+    def _make_network(
+        runtime_session_curriculum_lambda: float | None = None,
+    ) -> hk.RNNCore:
+        resolved_session_curriculum_lambda = (
+            session_curriculum_lambda
+            if runtime_session_curriculum_lambda is None
+            else runtime_session_curriculum_lambda
+        )
         if multisubject:
             return MultisubjectGru(
                 hidden_size=hidden_size,
@@ -229,6 +240,7 @@ def make_gru_network(
                 session_fourier_k=int(session_cfg["session_fourier_k"]),
                 session_delta_n_layers=int(session_cfg["session_delta_n_layers"]),
                 session_delta_hidden_size=int(session_cfg["session_delta_hidden_size"]),
+                session_curriculum_lambda=resolved_session_curriculum_lambda,
                 session_max_index_by_subject_index=tuple(
                     int(value)
                     for value in session_cfg["session_max_index_by_subject_index"]

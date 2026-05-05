@@ -333,7 +333,7 @@ def evaluate_distillation_loss(
 
 
 def train_network_with_distillation(
-    make_network: Callable[[], hk.RNNCore],
+    make_network: Callable[[float], hk.RNNCore],
     training_dataset: Any,
     validation_dataset: Any | None,
     *,
@@ -349,8 +349,9 @@ def train_network_with_distillation(
     n_action_logits: int,
     include_penalty: bool,
     penalty_scale: float,
-    session_regularization_apply: Callable[[Any, jax.Array], jnp.ndarray] | None = None,
+    session_regularization_apply: Callable[[Any, jax.Array, float | jax.Array], jnp.ndarray] | None = None,
     session_regularization_scale: float = 0.0,
+    session_curriculum_lambda_schedule: Callable[[int], float] | None = None,
     log_losses_every: int = 10,
     report_progress_by: DistillationProgressMode = "print",
     wandb_run: Any | None = None,
@@ -358,9 +359,17 @@ def train_network_with_distillation(
 ) -> tuple[Any, optax.OptState, dict[str, np.ndarray]]:
     """Train an RNN against soft teacher targets."""
     xs_all, _ = _extract_dataset_arrays(training_dataset)
+    initial_session_curriculum_lambda = (
+        1.0
+        if session_curriculum_lambda_schedule is None
+        else float(session_curriculum_lambda_schedule(0))
+    )
 
-    def unroll_network(inputs: jnp.ndarray) -> jnp.ndarray:
-        core = make_network()
+    def unroll_network(
+        inputs: jnp.ndarray,
+        session_curriculum_lambda: jnp.ndarray,
+    ) -> jnp.ndarray:
+        core = make_network(session_curriculum_lambda)
         batch_size = jnp.shape(inputs)[1]
         state = core.initial_state(batch_size)
         outputs, _ = hk.dynamic_unroll(core, inputs, state)
@@ -372,7 +381,11 @@ def train_network_with_distillation(
         random_key = jax.random.PRNGKey(0)
     if params is None:
         random_key, key1 = jax.random.split(random_key)
-        params = model.init(key1, xs_all)
+        params = model.init(
+            key1,
+            xs_all,
+            jnp.asarray(initial_session_curriculum_lambda, dtype=jnp.float32),
+        )
     if opt_state is None:
         opt_state = opt.init(params)
 
@@ -386,9 +399,15 @@ def train_network_with_distillation(
         batch_ys: jnp.ndarray,
         batch_teacher_probs: jnp.ndarray,
         key: jax.Array,
+        session_curriculum_lambda: jnp.ndarray,
     ) -> jnp.ndarray:
         model_key, regularization_key = jax.random.split(key)
-        model_output = model.apply(current_params, model_key, batch_xs)
+        model_output = model.apply(
+            current_params,
+            model_key,
+            batch_xs,
+            session_curriculum_lambda,
+        )
         logits = model_output[:, :, :n_action_logits]
         loss = _distillation_kl_loss(
             teacher_probs=batch_teacher_probs,
@@ -407,6 +426,7 @@ def train_network_with_distillation(
             loss = loss + float(session_regularization_scale) * session_regularization_apply(
                 current_params,
                 regularization_key,
+                session_curriculum_lambda,
             )
         return loss
 
@@ -420,6 +440,7 @@ def train_network_with_distillation(
         batch_ys: jnp.ndarray,
         batch_teacher_probs: jnp.ndarray,
         key: jax.Array,
+        session_curriculum_lambda: jnp.ndarray,
     ) -> tuple[jnp.ndarray, Any, optax.OptState]:
         loss_value, grads = jax.value_and_grad(compute_loss, argnums=0)(
             current_params,
@@ -427,6 +448,7 @@ def train_network_with_distillation(
             batch_ys,
             batch_teacher_probs,
             key,
+            session_curriculum_lambda,
         )
         grads, next_opt_state = opt.update(grads, current_opt_state)
         clipped_grads = optimizers.clip_grads(grads, max_grad_norm)
@@ -439,6 +461,11 @@ def train_network_with_distillation(
 
     for step in range(int(n_steps)):
         random_key, subkey_train, subkey_validation = jax.random.split(random_key, 3)
+        current_session_curriculum_lambda = (
+            1.0
+            if session_curriculum_lambda_schedule is None
+            else float(session_curriculum_lambda_schedule(step))
+        )
         batch_xs, batch_ys, batch_teacher = _sample_batch(
             training_dataset,
             teacher_probs=np.asarray(training_teacher_probs),
@@ -450,6 +477,7 @@ def train_network_with_distillation(
             jnp.asarray(batch_ys),
             jnp.asarray(batch_teacher),
             subkey_train,
+            jnp.asarray(current_session_curriculum_lambda, dtype=jnp.float32),
         )
 
         if step % log_losses_every == 0 or step == int(n_steps) - 1:
@@ -472,6 +500,7 @@ def train_network_with_distillation(
                     jnp.asarray(ys_eval),
                     jnp.asarray(validation_teacher_probs),
                     subkey_validation,
+                    jnp.asarray(current_session_curriculum_lambda, dtype=jnp.float32),
                 )
 
             training_loss.append(float(loss_value))
@@ -479,12 +508,19 @@ def train_network_with_distillation(
             log_str = (
                 f"Step {step + 1} of {n_steps}. "
                 f"Training Loss: {float(loss_value):.2e}. "
-                f"Validation Loss: {float(validation_value):.2e}"
+                f"Validation Loss: {float(validation_value):.2e}. "
+                f"Session Curriculum Lambda: {current_session_curriculum_lambda:.3f}"
             )
 
             if report_progress_by == "wandb" and hasattr(wandb_run, "log"):
                 wandb_run.log(
-                    {"train/loss": float(loss_value), "valid/loss": float(validation_value)},
+                    {
+                        "train/loss": float(loss_value),
+                        "valid/loss": float(validation_value),
+                        "train/session_curriculum_lambda": float(
+                            current_session_curriculum_lambda
+                        ),
+                    },
                     step=step + wandb_step_offset,
                 )
 

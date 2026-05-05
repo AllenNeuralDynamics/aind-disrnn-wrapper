@@ -28,6 +28,9 @@ class MultisubjectDisRnnConfig(upstream_multisubject_disrnn.MultisubjectDisRnnCo
     session_fourier_k: int = 4
     session_delta_n_layers: int = 3
     session_delta_hidden_size: int = 16
+    session_n_pretrain_steps: int = 0
+    session_n_warmup_steps: int = 0
+    session_curriculum_lambda: float = 1.0
     session_max_index_by_subject_index: list[int] = dataclasses.field(default_factory=list)
 
 
@@ -64,6 +67,7 @@ class MultisubjectDisRnn(upstream_multisubject_disrnn.MultisubjectDisRnn):
         self._session_fourier_k = int(session_cfg["session_fourier_k"])
         self._session_delta_n_layers = int(session_cfg["session_delta_n_layers"])
         self._session_delta_hidden_size = int(session_cfg["session_delta_hidden_size"])
+        self._session_curriculum_lambda = getattr(config, "session_curriculum_lambda", 1.0)
         self._session_max_index_by_subject_index = tuple(
             int(value) for value in session_cfg["session_max_index_by_subject_index"]
         )
@@ -123,6 +127,7 @@ class MultisubjectDisRnn(upstream_multisubject_disrnn.MultisubjectDisRnn):
             integration_type=self._session_integration_type,
             delta_n_layers=self._session_delta_n_layers,
             delta_hidden_size=self._session_delta_hidden_size,
+            curriculum_lambda=self._session_curriculum_lambda,
         )
 
     def compute_subject_context(

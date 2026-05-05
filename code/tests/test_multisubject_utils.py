@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from models.session_conditioning import compute_session_curriculum_lambda
 from utils.multisubject import (
     GRU_SUBJECT_MODULE_KEY,
     SUBJECT_MODULE_KEY,
@@ -59,6 +60,18 @@ class _DummyDataset:
 
 
 class TestMultisubjectUtils(unittest.TestCase):
+    def test_compute_session_curriculum_lambda_obeys_pretrain_and_warmup_steps(self):
+        lambdas = [
+            compute_session_curriculum_lambda(
+                current_step=step,
+                session_n_pretrain_steps=3,
+                session_n_warmup_steps=2,
+            )
+            for step in range(7)
+        ]
+
+        self.assertEqual(lambdas, [0.0, 0.0, 0.0, 0.0, 0.5, 1.0, 1.0])
+
     def test_build_subject_index_maps_preserves_order(self):
         ordered_subject_ids, subject_id_to_index, index_to_subject_id = (
             build_subject_index_maps([711041, 793446, 711041, 727456])
@@ -426,6 +439,59 @@ class TestMultisubjectUtils(unittest.TestCase):
 
         self.assertTrue(np.allclose(plot_df["embedding_1"].to_numpy(), [1.5, 2.5]))
         self.assertTrue(np.allclose(plot_df["embedding_2"].to_numpy(), [-0.5, -0.5]))
+
+    def test_compute_session_conditioned_context_dataframe_applies_curriculum_lambda(self):
+        params = {
+            GRU_SUBJECT_MODULE_KEY: {
+                SUBJECT_TABLE_KEY: np.array([[1.0, 0.0]])
+            },
+            "multisubject_gru/~/session_delta_hidden": {
+                "w": np.array(
+                    [
+                        [0.0, 0.0],
+                        [0.0, 0.0],
+                        [2.0, 0.0],
+                    ]
+                ),
+                "b": np.zeros(2),
+            },
+            "multisubject_gru/~/session_delta_out": {
+                "w": np.array(
+                    [
+                        [1.0, 0.0],
+                        [0.0, 0.0],
+                    ]
+                ),
+                "b": np.zeros(2),
+            },
+        }
+        session_context = {
+            "indexing": "1_based",
+            "per_subject": [
+                {
+                    "subject_id": "m0",
+                    "subject_index": 0,
+                    "ordered_session_ids": ["m0__s1", "m0__s2"],
+                    "ordered_source_session_ids": ["s1", "s2"],
+                }
+            ],
+        }
+
+        plot_df = compute_session_conditioned_context_dataframe(
+            params,
+            session_context=session_context,
+            session_encoding_type="scalar",
+            session_integration_type="direct",
+            session_fourier_k=4,
+            session_delta_n_layers=1,
+            session_delta_hidden_size=2,
+            session_curriculum_lambda=0.5,
+            session_max_index_by_subject_index=[2],
+            selected_subject_indices=[0],
+        )
+
+        self.assertTrue(np.allclose(plot_df["embedding_1"].to_numpy(), [1.5, 2.0]))
+        self.assertTrue(np.allclose(plot_df["embedding_2"].to_numpy(), [0.0, 0.0]))
 
     def test_local_upstream_conversion_preserves_effective_embeddings(self):
         params_local = {

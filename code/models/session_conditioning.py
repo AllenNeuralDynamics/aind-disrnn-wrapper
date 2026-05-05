@@ -8,6 +8,8 @@ import jax.numpy as jnp
 
 _VALID_SESSION_ENCODING_TYPES = {"none", "scalar", "fourier"}
 _VALID_SESSION_INTEGRATION_TYPES = {"direct", "pre_mlp"}
+_DEFAULT_SESSION_PRETRAIN_FRACTION = 0.3
+_DEFAULT_SESSION_WARMUP_FRACTION = 0.2
 
 
 def is_session_conditioning_enabled(session_encoding_type: str | None) -> bool:
@@ -133,6 +135,80 @@ def resolve_session_conditioning_from_architecture(
     )
 
 
+def resolve_session_curriculum_steps(
+    *,
+    total_training_steps: int | None,
+    session_n_pretrain_steps: int | None,
+    session_n_warmup_steps: int | None,
+    context: str,
+) -> dict[str, int]:
+    """Resolve the step schedule used to ramp in session conditioning."""
+    resolved_total_training_steps = int(
+        total_training_steps if total_training_steps is not None else 0
+    )
+    if resolved_total_training_steps < 0:
+        raise ValueError(f"{context} total_training_steps must be >= 0.")
+
+    if session_n_pretrain_steps is None:
+        resolved_pretrain_steps = int(
+            round(
+                resolved_total_training_steps
+                * _DEFAULT_SESSION_PRETRAIN_FRACTION
+            )
+        )
+    else:
+        resolved_pretrain_steps = int(session_n_pretrain_steps)
+    if session_n_warmup_steps is None:
+        resolved_warmup_steps = int(
+            round(
+                resolved_total_training_steps
+                * _DEFAULT_SESSION_WARMUP_FRACTION
+            )
+        )
+    else:
+        resolved_warmup_steps = int(session_n_warmup_steps)
+
+    if resolved_pretrain_steps < 0:
+        raise ValueError(f"{context} session_n_pretrain_steps must be >= 0.")
+    if resolved_warmup_steps < 0:
+        raise ValueError(f"{context} session_n_warmup_steps must be >= 0.")
+
+    return {
+        "session_n_pretrain_steps": resolved_pretrain_steps,
+        "session_n_warmup_steps": resolved_warmup_steps,
+    }
+
+
+def compute_session_curriculum_lambda(
+    *,
+    current_step: int,
+    session_n_pretrain_steps: int,
+    session_n_warmup_steps: int,
+) -> float:
+    """Return the current curriculum gate for session conditioning."""
+    resolved_current_step = int(current_step)
+    resolved_pretrain_steps = int(session_n_pretrain_steps)
+    resolved_warmup_steps = int(session_n_warmup_steps)
+
+    if resolved_current_step < 0:
+        raise ValueError("current_step must be >= 0.")
+    if resolved_pretrain_steps < 0:
+        raise ValueError("session_n_pretrain_steps must be >= 0.")
+    if resolved_warmup_steps < 0:
+        raise ValueError("session_n_warmup_steps must be >= 0.")
+
+    if resolved_current_step < resolved_pretrain_steps:
+        return 0.0
+    if resolved_warmup_steps <= 0:
+        return 1.0
+    if resolved_current_step < resolved_pretrain_steps + resolved_warmup_steps:
+        return float(
+            (resolved_current_step - resolved_pretrain_steps)
+            / resolved_warmup_steps
+        )
+    return 1.0
+
+
 def build_session_feat(
     *,
     subject_idx: jnp.ndarray,
@@ -170,6 +246,7 @@ def compute_session_delta(
     integration_type: str,
     delta_n_layers: int,
     delta_hidden_size: int,
+    curriculum_lambda: float | jnp.ndarray = 1.0,
 ) -> jnp.ndarray:
     """Return the learned session-conditioned perturbation for a subject embedding."""
     conditioned_session_feat = session_feat
@@ -197,7 +274,9 @@ def compute_session_delta(
         w_init=hk.initializers.Constant(0.0),
         b_init=hk.initializers.Constant(0.0),
     )(hidden)
-    return delta * valid_session_mask[..., None].astype(delta.dtype)
+    valid_delta = delta * valid_session_mask[..., None].astype(delta.dtype)
+    curriculum_scale = jnp.asarray(curriculum_lambda, dtype=valid_delta.dtype)
+    return curriculum_scale * valid_delta
 
 
 def apply_session_conditioning(
@@ -209,6 +288,7 @@ def apply_session_conditioning(
     integration_type: str,
     delta_n_layers: int,
     delta_hidden_size: int,
+    curriculum_lambda: float | jnp.ndarray = 1.0,
 ) -> jnp.ndarray:
     """Add a learned session-conditioned perturbation to the subject embedding."""
     delta = compute_session_delta(
@@ -219,5 +299,6 @@ def apply_session_conditioning(
         integration_type=integration_type,
         delta_n_layers=delta_n_layers,
         delta_hidden_size=delta_hidden_size,
+        curriculum_lambda=curriculum_lambda,
     )
     return subject_emb + delta

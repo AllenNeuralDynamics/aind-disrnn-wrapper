@@ -511,6 +511,8 @@ class TestDisrnnTrainer(unittest.TestCase):
                 "session_fourier_k": 3,
                 "session_delta_n_layers": 2,
                 "session_delta_hidden_size": 11,
+                "session_n_pretrain_steps": 4,
+                "session_n_warmup_steps": 3,
             },
             penalties={
                 "latent_penalty": 1e-3,
@@ -555,6 +557,57 @@ class TestDisrnnTrainer(unittest.TestCase):
         self.assertEqual(config.session_fourier_k, 3)
         self.assertEqual(config.session_delta_n_layers, 2)
         self.assertEqual(config.session_delta_hidden_size, 11)
+        self.assertEqual(config.session_n_pretrain_steps, 4)
+        self.assertEqual(config.session_n_warmup_steps, 3)
+
+    def test_multisubject_session_conditioning_resolves_default_curriculum_steps(self):
+        multisubject_bundle = self._make_multisubject_bundle()
+        trainer = DisrnnTrainer(
+            architecture={
+                "multisubject": True,
+                "latent_size": 4,
+                "update_net_n_units_per_layer": 8,
+                "update_net_n_layers": 2,
+                "choice_net_n_units_per_layer": 4,
+                "choice_net_n_layers": 1,
+                "activation": "leaky_relu",
+                "subject_embedding_size": 3,
+                "session_encoding_type": "scalar",
+            },
+            penalties={
+                "latent_penalty": 1e-3,
+                "choice_net_latent_penalty": 1e-3,
+                "update_net_obs_penalty": 1e-3,
+                "update_net_latent_penalty": 1e-3,
+                "subject_penalty": 1e-3,
+                "update_net_subject_penalty": 1e-3,
+                "choice_net_subject_penalty": 1e-3,
+            },
+            training={
+                "lr": 1e-3,
+                "n_steps": 2,
+                "n_warmup_steps": 2,
+                "loss": "penalized_categorical",
+                "loss_param": 1.0,
+                "max_grad_norm": 1.0,
+                "checkpoint_every_n_steps": 0,
+                "checkpoint_run_heldout_eval": False,
+                "plot_choice_rule": False,
+                "plot_update_rules": False,
+                "plot_subject_index": 0,
+                "save_output_df": False,
+            },
+            output_dir=str(self.output_dir / "resolved_curriculum"),
+            seed=42,
+        )
+
+        trainer.fit(multisubject_bundle)
+
+        saved_cfg = json.loads(
+            (self.output_dir / "resolved_curriculum" / "disrnn_config.json").read_text()
+        )
+        self.assertEqual(saved_cfg["session_n_pretrain_steps"], 1)
+        self.assertEqual(saved_cfg["session_n_warmup_steps"], 1)
 
     def test_session_conditioning_requires_multisubject_mode(self):
         trainer = DisrnnTrainer(

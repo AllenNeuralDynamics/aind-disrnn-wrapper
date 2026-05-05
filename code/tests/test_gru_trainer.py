@@ -370,6 +370,8 @@ class TestGruTrainer(unittest.TestCase):
                 "session_integration_type": "direct",
                 "session_delta_n_layers": 2,
                 "session_delta_hidden_size": 11,
+                "session_n_pretrain_steps": 4,
+                "session_n_warmup_steps": 3,
             },
             training={
                 "lr": 1e-3,
@@ -399,6 +401,8 @@ class TestGruTrainer(unittest.TestCase):
         self.assertEqual(saved_cfg["architecture"]["session_integration_type"], "direct")
         self.assertEqual(saved_cfg["architecture"]["session_delta_n_layers"], 2)
         self.assertEqual(saved_cfg["architecture"]["session_delta_hidden_size"], 11)
+        self.assertEqual(saved_cfg["architecture"]["session_n_pretrain_steps"], 4)
+        self.assertEqual(saved_cfg["architecture"]["session_n_warmup_steps"], 3)
 
     def test_multisubject_fourier_pre_mlp_session_conditioning_persists_config(self):
         trainer = GruTrainer(
@@ -412,6 +416,8 @@ class TestGruTrainer(unittest.TestCase):
                 "session_fourier_k": 3,
                 "session_delta_n_layers": 2,
                 "session_delta_hidden_size": 11,
+                "session_n_pretrain_steps": 5,
+                "session_n_warmup_steps": 2,
             },
             training={
                 "lr": 1e-3,
@@ -435,6 +441,39 @@ class TestGruTrainer(unittest.TestCase):
         self.assertEqual(saved_cfg["architecture"]["session_fourier_k"], 3)
         self.assertEqual(saved_cfg["architecture"]["session_delta_n_layers"], 2)
         self.assertEqual(saved_cfg["architecture"]["session_delta_hidden_size"], 11)
+        self.assertEqual(saved_cfg["architecture"]["session_n_pretrain_steps"], 5)
+        self.assertEqual(saved_cfg["architecture"]["session_n_warmup_steps"], 2)
+
+    def test_multisubject_session_conditioning_resolves_default_curriculum_steps(self):
+        trainer = GruTrainer(
+            architecture={
+                "multisubject": True,
+                "hidden_size": 8,
+                "num_layers": 1,
+                "subject_embedding_size": 3,
+                "session_encoding_type": "scalar",
+            },
+            training={
+                "lr": 1e-3,
+                "n_steps": 10,
+                "loss": "categorical",
+                "loss_param": 1,
+                "max_grad_norm": 1.0,
+                "checkpoint_every_n_steps": 0,
+                "checkpoint_run_heldout_eval": False,
+                "save_output_df": False,
+            },
+            output_dir=str(self.output_dir / "resolved_curriculum"),
+            seed=42,
+        )
+
+        trainer.fit(self.multisubject_bundle)
+
+        saved_cfg = json.loads(
+            (self.output_dir / "resolved_curriculum" / "gru_config.json").read_text()
+        )
+        self.assertEqual(saved_cfg["architecture"]["session_n_pretrain_steps"], 3)
+        self.assertEqual(saved_cfg["architecture"]["session_n_warmup_steps"], 2)
 
     def test_multisubject_requires_subject_embedding_size(self):
         trainer = GruTrainer(

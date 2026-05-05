@@ -17,7 +17,8 @@ from disentangled_rnns.library import rnn_utils
 logger = logging.getLogger(__name__)
 
 ProgressMode = Literal["print", "log", "wandb", "none"]
-SessionRegularizationApply = Callable[[Any, jax.Array], jnp.ndarray]
+SessionRegularizationApply = Callable[[Any, jax.Array, float | jax.Array], jnp.ndarray]
+SessionCurriculumSchedule = Callable[[int], float]
 
 
 def _extract_dataset_arrays(dataset: Any) -> tuple[np.ndarray, np.ndarray]:
@@ -99,7 +100,7 @@ def _average_penalty(
 
 def build_zero_mean_session_delta_regularization_apply(
     *,
-    make_network: Callable[[], hk.RNNCore],
+    make_network: Callable[[float], hk.RNNCore],
     subject_indices: Sequence[int] | np.ndarray,
     session_indices: Sequence[int] | np.ndarray,
     max_n_subjects: int,
@@ -123,8 +124,9 @@ def build_zero_mean_session_delta_regularization_apply(
     def _regularization_forward(
         regularization_subject_indices: jnp.ndarray,
         regularization_session_indices: jnp.ndarray,
+        session_curriculum_lambda: jnp.ndarray,
     ) -> jnp.ndarray:
-        core = make_network()
+        core = make_network(session_curriculum_lambda)
         if not hasattr(core, "compute_session_delta"):
             raise ValueError(
                 "Session regularization requires a network with compute_session_delta()."
@@ -147,27 +149,33 @@ def build_zero_mean_session_delta_regularization_apply(
     regularization_model = hk.transform(_regularization_forward)
     apply_regularization = jax.jit(regularization_model.apply)
 
-    def _apply(current_params: Any, key: jax.Array) -> jnp.ndarray:
+    def _apply(
+        current_params: Any,
+        key: jax.Array,
+        session_curriculum_lambda: float,
+    ) -> jnp.ndarray:
         return apply_regularization(
             current_params,
             key,
             subject_indices_jnp,
             session_indices_jnp,
+            jnp.asarray(session_curriculum_lambda, dtype=jnp.float32),
         )
 
     return _apply
 
 
 def train_network_with_session_regularization(
-    make_network: Callable[[], hk.RNNCore],
+    make_network: Callable[[float], hk.RNNCore],
     training_dataset: Any,
     validation_dataset: Any | None,
     *,
     loss: str,
     loss_param: Mapping[str, Any] | float | int,
     n_action_logits: int,
-    session_regularization_apply: SessionRegularizationApply,
+    session_regularization_apply: SessionRegularizationApply | None,
     session_regularization_scale: float,
+    session_curriculum_lambda_schedule: SessionCurriculumSchedule | None = None,
     opt: optax.GradientTransformation = optax.adam(1e-3),
     random_key: jax.Array | None = None,
     opt_state: optax.OptState | None = None,
@@ -190,9 +198,17 @@ def train_network_with_session_regularization(
         raise ValueError("session_regularization_scale must be >= 0.")
 
     xs_all, _ = _extract_dataset_arrays(training_dataset)
+    initial_session_curriculum_lambda = (
+        1.0
+        if session_curriculum_lambda_schedule is None
+        else float(session_curriculum_lambda_schedule(0))
+    )
 
-    def unroll_network(inputs: jnp.ndarray) -> jnp.ndarray:
-        core = make_network()
+    def unroll_network(
+        inputs: jnp.ndarray,
+        session_curriculum_lambda: jnp.ndarray,
+    ) -> jnp.ndarray:
+        core = make_network(session_curriculum_lambda)
         batch_size = jnp.shape(inputs)[1]
         state = core.initial_state(batch_size)
         outputs, _ = hk.dynamic_unroll(core, inputs, state)
@@ -204,7 +220,11 @@ def train_network_with_session_regularization(
         random_key = jax.random.PRNGKey(0)
     if params is None:
         random_key, key1 = jax.random.split(random_key)
-        params = model.init(key1, xs_all)
+        params = model.init(
+            key1,
+            xs_all,
+            jnp.asarray(initial_session_curriculum_lambda, dtype=jnp.float32),
+        )
     if opt_state is None:
         opt_state = opt.init(params)
 
@@ -219,9 +239,15 @@ def train_network_with_session_regularization(
         batch_xs: jnp.ndarray,
         batch_ys: jnp.ndarray,
         key: jax.Array,
+        session_curriculum_lambda: jnp.ndarray,
     ) -> jnp.ndarray:
         model_key, regularization_key = jax.random.split(key)
-        model_output = model.apply(current_params, model_key, batch_xs)
+        model_output = model.apply(
+            current_params,
+            model_key,
+            batch_xs,
+            session_curriculum_lambda,
+        )
         logits = model_output[:, :, : int(n_action_logits)]
         supervised_loss, valid_mask = _categorical_loss(logits, batch_ys)
         total_loss = supervised_loss
@@ -230,10 +256,17 @@ def train_network_with_session_regularization(
                 model_output,
                 valid_mask,
             )
-        total_loss = total_loss + float(session_regularization_scale) * session_regularization_apply(
-            current_params,
-            regularization_key,
-        )
+        if (
+            session_regularization_apply is not None
+            and float(session_regularization_scale) > 0
+        ):
+            total_loss = total_loss + float(
+                session_regularization_scale
+            ) * session_regularization_apply(
+                current_params,
+                regularization_key,
+                session_curriculum_lambda,
+            )
         return total_loss
 
     compute_loss_jit = jax.jit(compute_loss)
@@ -245,12 +278,14 @@ def train_network_with_session_regularization(
         batch_xs: jnp.ndarray,
         batch_ys: jnp.ndarray,
         key: jax.Array,
+        session_curriculum_lambda: jnp.ndarray,
     ) -> tuple[jnp.ndarray, Any, optax.OptState]:
         loss_value, grads = jax.value_and_grad(compute_loss, argnums=0)(
             current_params,
             batch_xs,
             batch_ys,
             key,
+            session_curriculum_lambda,
         )
         grads, next_opt_state = opt.update(grads, current_opt_state)
         clipped_grads = optimizers.clip_grads(grads, max_grad_norm)
@@ -263,6 +298,11 @@ def train_network_with_session_regularization(
 
     for step in range(int(n_steps)):
         random_key, subkey_train, subkey_validation = jax.random.split(random_key, 3)
+        current_session_curriculum_lambda = (
+            1.0
+            if session_curriculum_lambda_schedule is None
+            else float(session_curriculum_lambda_schedule(step))
+        )
         batch_xs, batch_ys = _sample_batch(training_dataset)
         loss_value, params, opt_state = train_step(
             params,
@@ -270,6 +310,7 @@ def train_network_with_session_regularization(
             jnp.asarray(batch_xs),
             jnp.asarray(batch_ys),
             subkey_train,
+            jnp.asarray(current_session_curriculum_lambda, dtype=jnp.float32),
         )
 
         if step % log_losses_every == 0 or step == int(n_steps) - 1:
@@ -286,6 +327,7 @@ def train_network_with_session_regularization(
                     jnp.asarray(xs_eval),
                     jnp.asarray(ys_eval),
                     subkey_validation,
+                    jnp.asarray(current_session_curriculum_lambda, dtype=jnp.float32),
                 )
 
             training_loss.append(float(loss_value))
@@ -293,7 +335,8 @@ def train_network_with_session_regularization(
             log_str = (
                 f"Step {step + 1} of {n_steps}. "
                 f"Training Loss: {float(loss_value):.2e}. "
-                f"Validation Loss: {float(validation_value):.2e}"
+                f"Validation Loss: {float(validation_value):.2e}. "
+                f"Session Curriculum Lambda: {current_session_curriculum_lambda:.3f}"
             )
             if report_progress_by == "print":
                 print(log_str)
@@ -304,6 +347,9 @@ def train_network_with_session_regularization(
                     {
                         "train/loss": float(loss_value),
                         "valid/loss": float(validation_value),
+                        "train/session_curriculum_lambda": float(
+                            current_session_curriculum_lambda
+                        ),
                     },
                     step=wandb_step_offset + step,
                 )

@@ -171,6 +171,8 @@ model:
     session_fourier_k: 4             # used only for fourier
     session_delta_n_layers: 3
     session_delta_hidden_size: 16
+    session_n_pretrain_steps: null   # null => resolve to ~30% of warmup + train steps
+    session_n_warmup_steps: null     # null => resolve to ~20% of warmup + train steps
     use_global_subject_bottleneck: true
   penalties:
     beta: 0.001

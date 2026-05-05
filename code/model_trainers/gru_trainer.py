@@ -23,7 +23,11 @@ from disentangled_rnns.library import rnn_utils
 from base.interfaces import ModelTrainer
 from base.types import DatasetBundle
 from models.gru_network import make_gru_network
-from models.session_conditioning import resolve_session_conditioning_from_architecture
+from models.session_conditioning import (
+    compute_session_curriculum_lambda,
+    resolve_session_conditioning_from_architecture,
+    resolve_session_curriculum_steps,
+)
 from utils.disrnn_evaluation import HeldoutEvalConfig
 from utils.gru_evaluation import (
     add_gru_model_results,
@@ -194,6 +198,14 @@ def _require_n_action_logits(dataset: Any, yhat: np.ndarray, *, context: str) ->
     return n_action_logits
 
 
+def _bind_session_curriculum_lambda(
+    make_network: Any,
+    *,
+    session_curriculum_lambda: float,
+) -> Any:
+    return lambda: make_network(session_curriculum_lambda)
+
+
 def _maybe_prepend_session_indices_to_datasets(
     *,
     dataset: Any,
@@ -354,6 +366,8 @@ class GruTrainer(ModelTrainer):
         metadata: Mapping[str, Any],
         dataset: Any,
         session_conditioning_cfg: Mapping[str, Any],
+        session_curriculum_cfg: Mapping[str, Any],
+        total_training_steps: int,
     ) -> None:
         if not bool(session_conditioning_cfg.get("enabled")):
             return
@@ -376,6 +390,12 @@ class GruTrainer(ModelTrainer):
         logger.info(
             "Session regularization lambda_reg_session=%s",
             float(self.training.get("lambda_reg_session", 0.0)),
+        )
+        logger.info(
+            "Session curriculum steps: pretrain=%d warmup=%d total=%d",
+            int(session_curriculum_cfg["session_n_pretrain_steps"]),
+            int(session_curriculum_cfg["session_n_warmup_steps"]),
+            int(total_training_steps),
         )
         logger.info(
             "Session-conditioned input features: %s",
@@ -589,6 +609,7 @@ class GruTrainer(ModelTrainer):
         params: Any,
         raw_df: pd.DataFrame,
         metadata: Mapping[str, Any],
+        session_curriculum_lambda: float = 1.0,
     ) -> Any | None:
         if not bool(self.training.get("plot_session_context_state_space", True)):
             return None
@@ -632,6 +653,7 @@ class GruTrainer(ModelTrainer):
             session_delta_hidden_size=int(
                 session_conditioning_cfg["session_delta_hidden_size"]
             ),
+            session_curriculum_lambda=float(session_curriculum_lambda),
             session_max_index_by_subject_index=session_conditioning_cfg[
                 "session_max_index_by_subject_index"
             ],
@@ -955,6 +977,7 @@ class GruTrainer(ModelTrainer):
         wandb_run: Any | None,
         wandb_step: int | None,
         keep_media_files: bool,
+        session_curriculum_lambda: float = 1.0,
     ) -> dict[str, Any]:
         stage_dir = self.output_dir / "initialization" / stage_name
         stage_dir.mkdir(parents=True, exist_ok=True)
@@ -1041,6 +1064,7 @@ class GruTrainer(ModelTrainer):
                         params=params,
                         raw_df=bundle.raw,
                         metadata=metadata,
+                        session_curriculum_lambda=session_curriculum_lambda,
                     )
                 )
                 if subject_session_context_fig is not None:
@@ -1266,6 +1290,24 @@ class GruTrainer(ModelTrainer):
                 context="GruTrainer",
             )
 
+        total_session_curriculum_steps = int(self.training.get("n_steps", 0))
+        session_curriculum_cfg = resolve_session_curriculum_steps(
+            total_training_steps=total_session_curriculum_steps,
+            session_n_pretrain_steps=self.architecture.get("session_n_pretrain_steps"),
+            session_n_warmup_steps=self.architecture.get("session_n_warmup_steps"),
+            context="GruTrainer",
+        )
+        self.architecture["session_n_pretrain_steps"] = int(
+            session_curriculum_cfg["session_n_pretrain_steps"]
+        )
+        self.architecture["session_n_warmup_steps"] = int(
+            session_curriculum_cfg["session_n_warmup_steps"]
+        )
+        output["session_curriculum"] = {
+            **session_curriculum_cfg,
+            "total_training_steps": int(total_session_curriculum_steps),
+        }
+
         _log_dataset_split_details(
             dataset=dataset,
             dataset_train=dataset_train,
@@ -1277,6 +1319,8 @@ class GruTrainer(ModelTrainer):
                 metadata=metadata,
                 dataset=dataset,
                 session_conditioning_cfg=session_conditioning_cfg,
+                session_curriculum_cfg=session_curriculum_cfg,
+                total_training_steps=total_session_curriculum_steps,
             )
             if bool(session_conditioning_cfg["enabled"]) and bool(
                 self.training.get("plot_session_context_state_space", True)
@@ -1371,6 +1415,28 @@ class GruTrainer(ModelTrainer):
                 for value in session_conditioning_cfg["session_max_index_by_subject_index"]
             ),
         )
+
+        def _session_curriculum_lambda_for_step(current_step: int) -> float:
+            if not bool(session_conditioning_cfg["enabled"]):
+                return 1.0
+            return compute_session_curriculum_lambda(
+                current_step=current_step,
+                session_n_pretrain_steps=int(
+                    session_curriculum_cfg["session_n_pretrain_steps"]
+                ),
+                session_n_warmup_steps=int(
+                    session_curriculum_cfg["session_n_warmup_steps"]
+                ),
+            )
+
+        def _make_eval_network_for_step(current_step: int) -> Any:
+            return _bind_session_curriculum_lambda(
+                make_network,
+                session_curriculum_lambda=_session_curriculum_lambda_for_step(
+                    current_step
+                ),
+            )
+
         lambda_reg_session = float(self.training.get("lambda_reg_session", 0.0))
         if lambda_reg_session < 0:
             raise ValueError("training.lambda_reg_session must be >= 0.")
@@ -1414,23 +1480,6 @@ class GruTrainer(ModelTrainer):
             optimizer: Any,
             wandb_step_offset: int = 0,
         ):
-            if session_regularization_apply is None:
-                return rnn_utils.train_network(
-                    make_network,
-                    dataset_train,
-                    dataset_eval,
-                    loss=args.loss,
-                    loss_param=args.loss_param,
-                    params=params,
-                    opt_state=opt_state,
-                    opt=optimizer,
-                    n_steps=n_steps,
-                    max_grad_norm=args.max_grad_norm,
-                    random_key=random_key,
-                    report_progress_by="wandb",
-                    wandb_run=wandb_run,
-                    wandb_step_offset=wandb_step_offset,
-                )
             return train_network_with_session_regularization(
                 make_network,
                 dataset_train,
@@ -1440,6 +1489,7 @@ class GruTrainer(ModelTrainer):
                 n_action_logits=int(args.output_size),
                 session_regularization_apply=session_regularization_apply,
                 session_regularization_scale=lambda_reg_session,
+                session_curriculum_lambda_schedule=_session_curriculum_lambda_for_step,
                 params=params,
                 opt_state=opt_state,
                 opt=optimizer,
@@ -1500,13 +1550,14 @@ class GruTrainer(ModelTrainer):
                     dataset_train=dataset_train,
                     dataset_eval=dataset_eval,
                     ignore_policy=ignore_policy,
-                    make_network=make_network,
+                    make_network=_make_eval_network_for_step(0),
                     is_multisubject=is_multisubject,
                     heldout_eval_cfg=heldout_eval_cfg,
                     heldout_data=heldout_test_data,
                     wandb_run=wandb_run,
                     wandb_step=0,
                     keep_media_files=args.checkpoint_keep_media_files,
+                    session_curriculum_lambda=_session_curriculum_lambda_for_step(0),
                 )
             }
 
@@ -1552,6 +1603,10 @@ class GruTrainer(ModelTrainer):
 
                 random_key = jax.random.split(random_key, 2)[0]
                 steps_completed += chunk_steps
+                current_session_curriculum_lambda = _session_curriculum_lambda_for_step(
+                    steps_completed
+                )
+                current_eval_network = _make_eval_network_for_step(steps_completed)
 
                 checkpoint_dir = checkpoint_root / f"step_{steps_completed}"
                 checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -1562,7 +1617,7 @@ class GruTrainer(ModelTrainer):
                 train_likelihood_ckpt: float | None = None
                 if args.checkpoint_eval_on_train_split:
                     yhat_train_ckpt, _ = rnn_utils.eval_network(
-                        make_network,
+                        current_eval_network,
                         params,
                         xs_train_all,
                     )
@@ -1581,7 +1636,7 @@ class GruTrainer(ModelTrainer):
                 eval_likelihood_ckpt: float | None = None
                 if args.checkpoint_eval_on_eval_split:
                     yhat_eval_ckpt, _ = rnn_utils.eval_network(
-                        make_network,
+                        current_eval_network,
                         params,
                         xs_eval_all,
                     )
@@ -1600,6 +1655,7 @@ class GruTrainer(ModelTrainer):
                 checkpoint_record = {
                     "step": int(steps_completed),
                     "params_path": str(checkpoint_params_path),
+                    "session_curriculum_lambda": float(current_session_curriculum_lambda),
                 }
                 if train_likelihood_ckpt is not None:
                     checkpoint_record["train_likelihood"] = train_likelihood_ckpt
@@ -1641,6 +1697,7 @@ class GruTrainer(ModelTrainer):
                                 params=params,
                                 raw_df=bundle.raw,
                                 metadata=metadata,
+                                session_curriculum_lambda=current_session_curriculum_lambda,
                             )
                         )
                         if subject_session_context_fig_ckpt is not None:
@@ -1679,7 +1736,7 @@ class GruTrainer(ModelTrainer):
                 )
                 if should_plot_split_examples_ckpt or should_save_output_df_ckpt:
                     yhat_full_ckpt, network_states_full_ckpt = rnn_utils.eval_network(
-                        make_network,
+                        current_eval_network,
                         params,
                         xs_full_for_checkpoint,
                     )
@@ -1920,6 +1977,9 @@ class GruTrainer(ModelTrainer):
         training_time = time.time() - start
         output["training_time"] = training_time
         output["checkpoint_every_n_steps"] = int(args.checkpoint_every_n_steps)
+        output["session_curriculum"]["final_lambda"] = float(
+            _session_curriculum_lambda_for_step(args.n_steps)
+        )
         if checkpoint_records:
             output["checkpoints"] = checkpoint_records
         if checkpoint_heldout_summaries:
@@ -1932,6 +1992,9 @@ class GruTrainer(ModelTrainer):
         )
         if wandb_run is not None:
             wandb_run.log({"fig/validation_loss_curve": wandb.Image(str(losses_path))})
+
+        final_session_curriculum_lambda = _session_curriculum_lambda_for_step(args.n_steps)
+        final_eval_network = _make_eval_network_for_step(args.n_steps)
 
         if is_multisubject:
             subject_embedding_fig = self._plot_subject_embedding_state_space(
@@ -1957,6 +2020,7 @@ class GruTrainer(ModelTrainer):
                 params=params,
                 raw_df=bundle.raw,
                 metadata=metadata,
+                session_curriculum_lambda=final_session_curriculum_lambda,
             )
             if subject_session_context_fig is not None:
                 subject_session_context_path = self._save_figure(
@@ -1977,7 +2041,7 @@ class GruTrainer(ModelTrainer):
 
         xs_full, _ = dataset.get_all()
         yhat_full, network_states_full = rnn_utils.eval_network(
-            make_network,
+            final_eval_network,
             params,
             xs_full,
         )
@@ -2004,7 +2068,7 @@ class GruTrainer(ModelTrainer):
             )
 
         xs_train, ys_train = dataset_train.get_all()
-        yhat_train, _ = rnn_utils.eval_network(make_network, params, xs_train)
+        yhat_train, _ = rnn_utils.eval_network(final_eval_network, params, xs_train)
         n_action_logits_train = _require_n_action_logits(
             dataset_train,
             np.asarray(yhat_train),
@@ -2018,7 +2082,7 @@ class GruTrainer(ModelTrainer):
         logger.info("Final training likelihood: %.4f", float(likelihood_train))
 
         xs_eval, ys_eval = dataset_eval.get_all()
-        yhat_eval, _ = rnn_utils.eval_network(make_network, params, xs_eval)
+        yhat_eval, _ = rnn_utils.eval_network(final_eval_network, params, xs_eval)
         n_action_logits = _require_n_action_logits(
             dataset_eval,
             np.asarray(yhat_eval),
