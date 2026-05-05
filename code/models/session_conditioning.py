@@ -21,6 +21,8 @@ def resolve_session_conditioning_config(
     session_encoding_type: str | None,
     session_integration_type: str | None,
     session_fourier_k: int | None,
+    session_delta_n_layers: int | None,
+    session_delta_hidden_size: int | None,
     session_max_index_by_subject_index: Sequence[int] | None,
     max_n_subjects: int | None,
     context: str,
@@ -29,6 +31,10 @@ def resolve_session_conditioning_config(
     encoding_type = str(session_encoding_type or "none").strip().lower()
     integration_type = str(session_integration_type or "direct").strip().lower()
     fourier_k = int(session_fourier_k if session_fourier_k is not None else 4)
+    delta_n_layers = int(session_delta_n_layers if session_delta_n_layers is not None else 3)
+    delta_hidden_size = int(
+        session_delta_hidden_size if session_delta_hidden_size is not None else 16
+    )
     enabled = is_session_conditioning_enabled(encoding_type)
 
     if encoding_type not in _VALID_SESSION_ENCODING_TYPES:
@@ -43,6 +49,10 @@ def resolve_session_conditioning_config(
         )
     if encoding_type == "fourier" and fourier_k <= 0:
         raise ValueError(f"{context} session_fourier_k must be > 0 for fourier encoding.")
+    if delta_n_layers <= 0:
+        raise ValueError(f"{context} session_delta_n_layers must be > 0.")
+    if delta_hidden_size <= 0:
+        raise ValueError(f"{context} session_delta_hidden_size must be > 0.")
     if enabled and not multisubject:
         raise ValueError(f"{context} session conditioning requires multisubject mode.")
 
@@ -52,6 +62,8 @@ def resolve_session_conditioning_config(
             "session_encoding_type": "none",
             "session_integration_type": integration_type,
             "session_fourier_k": fourier_k,
+            "session_delta_n_layers": delta_n_layers,
+            "session_delta_hidden_size": delta_hidden_size,
             "session_max_index_by_subject_index": (),
         }
 
@@ -82,6 +94,8 @@ def resolve_session_conditioning_config(
         "session_encoding_type": encoding_type,
         "session_integration_type": integration_type,
         "session_fourier_k": fourier_k,
+        "session_delta_n_layers": delta_n_layers,
+        "session_delta_hidden_size": delta_hidden_size,
         "session_max_index_by_subject_index": resolved_session_max,
     }
 
@@ -92,14 +106,27 @@ def resolve_session_conditioning_from_architecture(
     metadata: Mapping[str, Any],
     multisubject: bool,
     max_n_subjects: int | None,
+    subject_embedding_size: int | None = None,
+    use_legacy_delta_defaults_when_missing: bool = False,
     context: str,
 ) -> dict[str, Any]:
     """Read and validate session-conditioning config from architecture plus metadata."""
+    session_delta_n_layers = architecture.get("session_delta_n_layers")
+    session_delta_hidden_size = architecture.get("session_delta_hidden_size")
+    if session_delta_n_layers is None and use_legacy_delta_defaults_when_missing:
+        session_delta_n_layers = 1
+    if session_delta_hidden_size is None and use_legacy_delta_defaults_when_missing:
+        if subject_embedding_size is not None and session_delta_n_layers in (None, 1):
+            session_delta_hidden_size = int(subject_embedding_size) * 2
+        else:
+            session_delta_hidden_size = 16
     return resolve_session_conditioning_config(
         multisubject=multisubject,
         session_encoding_type=architecture.get("session_encoding_type", "none"),
         session_integration_type=architecture.get("session_integration_type", "direct"),
         session_fourier_k=architecture.get("session_fourier_k", 4),
+        session_delta_n_layers=session_delta_n_layers,
+        session_delta_hidden_size=session_delta_hidden_size,
         session_max_index_by_subject_index=metadata.get("session_max_index_by_subject_index"),
         max_n_subjects=max_n_subjects,
         context=context,
@@ -141,6 +168,8 @@ def compute_session_delta(
     valid_session_mask: jnp.ndarray,
     d_subj: int,
     integration_type: str,
+    delta_n_layers: int,
+    delta_hidden_size: int,
 ) -> jnp.ndarray:
     """Return the learned session-conditioned perturbation for a subject embedding."""
     conditioned_session_feat = session_feat
@@ -152,9 +181,16 @@ def compute_session_delta(
         raise ValueError(f"Unsupported session_integration_type={integration_type!r}.")
 
     delta_inputs = jnp.concatenate((subject_emb, conditioned_session_feat), axis=-1)
-    hidden = jax.nn.relu(
-        hk.Linear(int(d_subj) * 2, name="session_delta_hidden")(delta_inputs)
-    )
+    hidden = delta_inputs
+    for layer_index in range(int(delta_n_layers)):
+        layer_name = (
+            "session_delta_hidden"
+            if layer_index == 0
+            else f"session_delta_hidden_{layer_index}"
+        )
+        hidden = jax.nn.relu(
+            hk.Linear(int(delta_hidden_size), name=layer_name)(hidden)
+        )
     delta = hk.Linear(
         int(d_subj),
         name="session_delta_out",
@@ -171,6 +207,8 @@ def apply_session_conditioning(
     valid_session_mask: jnp.ndarray,
     d_subj: int,
     integration_type: str,
+    delta_n_layers: int,
+    delta_hidden_size: int,
 ) -> jnp.ndarray:
     """Add a learned session-conditioned perturbation to the subject embedding."""
     delta = compute_session_delta(
@@ -179,5 +217,7 @@ def apply_session_conditioning(
         valid_session_mask=valid_session_mask,
         d_subj=d_subj,
         integration_type=integration_type,
+        delta_n_layers=delta_n_layers,
+        delta_hidden_size=delta_hidden_size,
     )
     return subject_emb + delta

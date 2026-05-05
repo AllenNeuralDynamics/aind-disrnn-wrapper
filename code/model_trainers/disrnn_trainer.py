@@ -231,6 +231,8 @@ class DisrnnTrainer(ModelTrainer):
     ) -> None:
         super().__init__(seed=seed)
         self.architecture = _to_dict(architecture)
+        self.architecture.setdefault("session_delta_n_layers", 3)
+        self.architecture.setdefault("session_delta_hidden_size", 16)
         self.penalties = resolve_disrnn_penalties(penalties)
         self.training = _to_dict(training)
         self.distillation = resolve_distillation_config(
@@ -279,6 +281,7 @@ class DisrnnTrainer(ModelTrainer):
                 metadata=metadata,
                 multisubject=is_multisubject,
                 max_n_subjects=num_subjects,
+                subject_embedding_size=int(subject_embedding_size),
                 context="DisrnnTrainer",
             )
             packed_context_feature_count = (
@@ -317,6 +320,10 @@ class DisrnnTrainer(ModelTrainer):
                     session_conditioning_cfg["session_integration_type"]
                 ),
                 session_fourier_k=int(session_conditioning_cfg["session_fourier_k"]),
+                session_delta_n_layers=int(session_conditioning_cfg["session_delta_n_layers"]),
+                session_delta_hidden_size=int(
+                    session_conditioning_cfg["session_delta_hidden_size"]
+                ),
                 session_max_index_by_subject_index=list(
                     session_conditioning_cfg["session_max_index_by_subject_index"]
                 ),
@@ -337,6 +344,7 @@ class DisrnnTrainer(ModelTrainer):
                 metadata=metadata,
                 multisubject=is_multisubject,
                 max_n_subjects=None,
+                subject_embedding_size=None,
                 context="DisrnnTrainer",
             )
             config = disrnn.DisRnnConfig(
@@ -535,10 +543,12 @@ class DisrnnTrainer(ModelTrainer):
         )
         logger.info(
             "Session conditioning enabled for disRNN: encoding=%s integration=%s "
-            "fourier_k=%d packed_input=[subject_idx, session_idx, *obs]",
+            "fourier_k=%d delta_layers=%d delta_hidden=%d packed_input=[subject_idx, session_idx, *obs]",
             session_conditioning_cfg["session_encoding_type"],
             session_conditioning_cfg["session_integration_type"],
             int(session_conditioning_cfg["session_fourier_k"]),
+            int(session_conditioning_cfg["session_delta_n_layers"]),
+            int(session_conditioning_cfg["session_delta_hidden_size"]),
         )
         logger.info(
             "Session regularization lambda_reg_session=%s",
@@ -720,6 +730,7 @@ class DisrnnTrainer(ModelTrainer):
             metadata=metadata,
             multisubject=True,
             max_n_subjects=int(max_n_subjects) if max_n_subjects is not None else None,
+            subject_embedding_size=int(self.architecture["subject_embedding_size"]),
             context="DisrnnTrainer session-context plotting",
         )
         if not bool(session_conditioning_cfg["enabled"]):
@@ -745,6 +756,10 @@ class DisrnnTrainer(ModelTrainer):
                 session_conditioning_cfg["session_integration_type"]
             ),
             session_fourier_k=int(session_conditioning_cfg["session_fourier_k"]),
+            session_delta_n_layers=int(session_conditioning_cfg["session_delta_n_layers"]),
+            session_delta_hidden_size=int(
+                session_conditioning_cfg["session_delta_hidden_size"]
+            ),
             session_max_index_by_subject_index=session_conditioning_cfg[
                 "session_max_index_by_subject_index"
             ],
@@ -859,8 +874,6 @@ class DisrnnTrainer(ModelTrainer):
                     linewidths=0.8,
                     zorder=3,
                 )
-                ax.axhline(0, color="0.85", linewidth=1)
-                ax.axvline(0, color="0.85", linewidth=1)
                 ax.set_xlabel(x_column.replace("_", " ").title())
                 ax.set_ylabel(y_column.replace("_", " ").title())
                 ax.set_title(
@@ -1384,6 +1397,9 @@ class DisrnnTrainer(ModelTrainer):
             metadata=metadata,
             multisubject=is_multisubject,
             max_n_subjects=max_n_subjects,
+            subject_embedding_size=(
+                int(self.architecture["subject_embedding_size"]) if is_multisubject else None
+            ),
             context="DisrnnTrainer",
         )
         dataset, dataset_train, dataset_eval = _maybe_prepend_session_indices_to_datasets(

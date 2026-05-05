@@ -918,6 +918,8 @@ def _evaluate_gru_dataset(
         "session_encoding_type": "none",
         "session_integration_type": str(architecture.get("session_integration_type", "direct")),
         "session_fourier_k": int(architecture.get("session_fourier_k", 4)),
+        "session_delta_n_layers": int(architecture.get("session_delta_n_layers", 3)),
+        "session_delta_hidden_size": int(architecture.get("session_delta_hidden_size", 16)),
         "session_max_index_by_subject_index": (),
     }
     if run.multisubject:
@@ -940,6 +942,10 @@ def _evaluate_gru_dataset(
             metadata=metadata,
             multisubject=bool(run.multisubject),
             max_n_subjects=int(max_n_subjects),
+            subject_embedding_size=(
+                int(subject_embedding_size) if subject_embedding_size is not None else None
+            ),
+            use_legacy_delta_defaults_when_missing=True,
             context="GRU likelihood comparison",
         )
     else:
@@ -948,6 +954,8 @@ def _evaluate_gru_dataset(
             metadata=metadata,
             multisubject=bool(run.multisubject),
             max_n_subjects=max_n_subjects,
+            subject_embedding_size=None,
+            use_legacy_delta_defaults_when_missing=True,
             context="GRU likelihood comparison",
         )
 
@@ -963,6 +971,8 @@ def _evaluate_gru_dataset(
         session_encoding_type=str(session_conditioning_cfg["session_encoding_type"]),
         session_integration_type=str(session_conditioning_cfg["session_integration_type"]),
         session_fourier_k=int(session_conditioning_cfg["session_fourier_k"]),
+        session_delta_n_layers=int(session_conditioning_cfg["session_delta_n_layers"]),
+        session_delta_hidden_size=int(session_conditioning_cfg["session_delta_hidden_size"]),
         session_max_index_by_subject_index=tuple(
             int(value)
             for value in session_conditioning_cfg["session_max_index_by_subject_index"]

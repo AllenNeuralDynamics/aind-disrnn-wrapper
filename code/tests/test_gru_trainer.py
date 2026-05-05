@@ -368,6 +368,8 @@ class TestGruTrainer(unittest.TestCase):
                 "subject_embedding_size": 3,
                 "session_encoding_type": "scalar",
                 "session_integration_type": "direct",
+                "session_delta_n_layers": 2,
+                "session_delta_hidden_size": 11,
             },
             training={
                 "lr": 1e-3,
@@ -395,6 +397,8 @@ class TestGruTrainer(unittest.TestCase):
         saved_cfg = json.loads((self.output_dir / "scalar_session" / "gru_config.json").read_text())
         self.assertEqual(saved_cfg["architecture"]["session_encoding_type"], "scalar")
         self.assertEqual(saved_cfg["architecture"]["session_integration_type"], "direct")
+        self.assertEqual(saved_cfg["architecture"]["session_delta_n_layers"], 2)
+        self.assertEqual(saved_cfg["architecture"]["session_delta_hidden_size"], 11)
 
     def test_multisubject_fourier_pre_mlp_session_conditioning_persists_config(self):
         trainer = GruTrainer(
@@ -406,6 +410,8 @@ class TestGruTrainer(unittest.TestCase):
                 "session_encoding_type": "fourier",
                 "session_integration_type": "pre_mlp",
                 "session_fourier_k": 3,
+                "session_delta_n_layers": 2,
+                "session_delta_hidden_size": 11,
             },
             training={
                 "lr": 1e-3,
@@ -427,6 +433,8 @@ class TestGruTrainer(unittest.TestCase):
         self.assertEqual(saved_cfg["architecture"]["session_encoding_type"], "fourier")
         self.assertEqual(saved_cfg["architecture"]["session_integration_type"], "pre_mlp")
         self.assertEqual(saved_cfg["architecture"]["session_fourier_k"], 3)
+        self.assertEqual(saved_cfg["architecture"]["session_delta_n_layers"], 2)
+        self.assertEqual(saved_cfg["architecture"]["session_delta_hidden_size"], 11)
 
     def test_multisubject_requires_subject_embedding_size(self):
         trainer = GruTrainer(

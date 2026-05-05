@@ -3829,6 +3829,15 @@ def _restore_model_runner(resolved_run: ResolvedModelRun):
                 config_dict["session_max_index_by_subject_index"] = list(
                     session_max_index_by_subject_index
                 )
+            if session_conditioning_enabled and "session_delta_n_layers" not in config_dict:
+                config_dict["session_delta_n_layers"] = 1
+            if (
+                session_conditioning_enabled
+                and "session_delta_hidden_size" not in config_dict
+            ):
+                config_dict["session_delta_hidden_size"] = int(
+                    config_dict["subject_embedding_size"]
+                ) * 2
             config = multisubject_disrnn_mod.MultisubjectDisRnnConfig(**config_dict)
 
             def make_network():
@@ -3873,6 +3882,22 @@ def _restore_model_runner(resolved_run: ResolvedModelRun):
                 architecture.get("session_integration_type", "direct")
             ),
             session_fourier_k=int(architecture.get("session_fourier_k", 4)),
+            session_delta_n_layers=int(
+                architecture.get(
+                    "session_delta_n_layers",
+                    1 if session_conditioning_enabled else 3,
+                )
+            ),
+            session_delta_hidden_size=int(
+                architecture.get(
+                    "session_delta_hidden_size",
+                    (
+                        2 * int(architecture["subject_embedding_size"])
+                        if session_conditioning_enabled
+                        else 16
+                    ),
+                )
+            ),
             session_max_index_by_subject_index=(
                 list(session_max_index_by_subject_index)
                 if session_conditioning_enabled

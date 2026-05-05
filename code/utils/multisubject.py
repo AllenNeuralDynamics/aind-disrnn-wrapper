@@ -476,6 +476,8 @@ def compute_session_conditioned_context_dataframe(
     session_encoding_type: str,
     session_integration_type: str,
     session_fourier_k: int,
+    session_delta_n_layers: int,
+    session_delta_hidden_size: int,
     session_max_index_by_subject_index: Sequence[int],
     train_session_ids: Sequence[Any] | None = None,
     eval_session_ids: Sequence[Any] | None = None,
@@ -494,6 +496,10 @@ def compute_session_conditioned_context_dataframe(
             "session_integration_type must be 'direct' or 'pre_mlp', got "
             f"{session_integration_type!r}."
         )
+    if int(session_delta_n_layers) <= 0:
+        raise ValueError("session_delta_n_layers must be > 0.")
+    if int(session_delta_hidden_size) <= 0:
+        raise ValueError("session_delta_hidden_size must be > 0.")
 
     ordered_rows = ordered_session_context_rows(session_context)
     if selected_subject_indices is None:
@@ -521,10 +527,19 @@ def compute_session_conditioned_context_dataframe(
             f"{session_max.shape[0]}."
         )
 
-    hidden_weights, hidden_bias = _find_linear_module_params(
-        params,
-        module_leaf_name="session_delta_hidden",
-    )
+    hidden_layers: list[tuple[np.ndarray, np.ndarray]] = []
+    for layer_index in range(int(session_delta_n_layers)):
+        layer_name = (
+            "session_delta_hidden"
+            if layer_index == 0
+            else f"session_delta_hidden_{layer_index}"
+        )
+        hidden_layers.append(
+            _find_linear_module_params(
+                params,
+                module_leaf_name=layer_name,
+            )
+        )
     out_weights, out_bias = _find_linear_module_params(
         params,
         module_leaf_name="session_delta_out",
@@ -599,7 +614,9 @@ def compute_session_conditioned_context_dataframe(
             )
 
         delta_inputs = np.concatenate((subject_context, conditioned_session_feat), axis=1)
-        hidden = np.maximum(_apply_linear_layer(delta_inputs, hidden_weights, hidden_bias), 0.0)
+        hidden = delta_inputs
+        for hidden_weights, hidden_bias in hidden_layers:
+            hidden = np.maximum(_apply_linear_layer(hidden, hidden_weights, hidden_bias), 0.0)
         delta = _apply_linear_layer(hidden, out_weights, out_bias)
         delta = delta * valid_session_mask[:, None].astype(float)
         subject_context = subject_context + delta

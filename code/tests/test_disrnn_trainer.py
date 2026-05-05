@@ -456,6 +456,8 @@ class TestDisrnnTrainer(unittest.TestCase):
                 "subject_embedding_size": 3,
                 "session_encoding_type": "scalar",
                 "session_integration_type": "direct",
+                "session_delta_n_layers": 2,
+                "session_delta_hidden_size": 11,
             },
             penalties={
                 "latent_penalty": 1e-3,
@@ -507,6 +509,8 @@ class TestDisrnnTrainer(unittest.TestCase):
                 "session_encoding_type": "fourier",
                 "session_integration_type": "pre_mlp",
                 "session_fourier_k": 3,
+                "session_delta_n_layers": 2,
+                "session_delta_hidden_size": 11,
             },
             penalties={
                 "latent_penalty": 1e-3,
@@ -549,6 +553,8 @@ class TestDisrnnTrainer(unittest.TestCase):
         self.assertEqual(config.session_encoding_type, "fourier")
         self.assertEqual(config.session_integration_type, "pre_mlp")
         self.assertEqual(config.session_fourier_k, 3)
+        self.assertEqual(config.session_delta_n_layers, 2)
+        self.assertEqual(config.session_delta_hidden_size, 11)
 
     def test_session_conditioning_requires_multisubject_mode(self):
         trainer = DisrnnTrainer(

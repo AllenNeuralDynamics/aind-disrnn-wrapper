@@ -115,6 +115,8 @@ model:
     session_encoding_type: none      # none | scalar | fourier
     session_integration_type: direct # direct | pre_mlp
     session_fourier_k: 4             # used only for fourier
+    session_delta_n_layers: 3
+    session_delta_hidden_size: 16
   training:
     lr: 1e-3
     n_steps: 20

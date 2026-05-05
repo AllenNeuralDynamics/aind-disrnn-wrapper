@@ -26,6 +26,8 @@ class MultisubjectDisRnnConfig(upstream_multisubject_disrnn.MultisubjectDisRnnCo
     session_encoding_type: str = "none"
     session_integration_type: str = "direct"
     session_fourier_k: int = 4
+    session_delta_n_layers: int = 3
+    session_delta_hidden_size: int = 16
     session_max_index_by_subject_index: list[int] = dataclasses.field(default_factory=list)
 
 
@@ -46,6 +48,8 @@ class MultisubjectDisRnn(upstream_multisubject_disrnn.MultisubjectDisRnn):
             session_encoding_type=getattr(config, "session_encoding_type", "none"),
             session_integration_type=getattr(config, "session_integration_type", "direct"),
             session_fourier_k=getattr(config, "session_fourier_k", 4),
+            session_delta_n_layers=getattr(config, "session_delta_n_layers", 3),
+            session_delta_hidden_size=getattr(config, "session_delta_hidden_size", 16),
             session_max_index_by_subject_index=getattr(
                 config,
                 "session_max_index_by_subject_index",
@@ -58,6 +62,8 @@ class MultisubjectDisRnn(upstream_multisubject_disrnn.MultisubjectDisRnn):
         self._session_encoding_type = str(session_cfg["session_encoding_type"])
         self._session_integration_type = str(session_cfg["session_integration_type"])
         self._session_fourier_k = int(session_cfg["session_fourier_k"])
+        self._session_delta_n_layers = int(session_cfg["session_delta_n_layers"])
+        self._session_delta_hidden_size = int(session_cfg["session_delta_hidden_size"])
         self._session_max_index_by_subject_index = tuple(
             int(value) for value in session_cfg["session_max_index_by_subject_index"]
         )
@@ -115,6 +121,8 @@ class MultisubjectDisRnn(upstream_multisubject_disrnn.MultisubjectDisRnn):
             valid_session_mask=valid_session_mask,
             d_subj=self._subject_embedding_size,
             integration_type=self._session_integration_type,
+            delta_n_layers=self._session_delta_n_layers,
+            delta_hidden_size=self._session_delta_hidden_size,
         )
 
     def compute_subject_context(

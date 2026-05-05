@@ -26,6 +26,8 @@ class MultisubjectGru(hk.RNNCore):
         session_encoding_type: str = "none",
         session_integration_type: str = "direct",
         session_fourier_k: int = 4,
+        session_delta_n_layers: int = 3,
+        session_delta_hidden_size: int = 16,
         session_max_index_by_subject_index: Sequence[int] | None = None,
         name: str = "multisubject_gru",
     ) -> None:
@@ -44,6 +46,8 @@ class MultisubjectGru(hk.RNNCore):
             session_encoding_type=session_encoding_type,
             session_integration_type=session_integration_type,
             session_fourier_k=session_fourier_k,
+            session_delta_n_layers=session_delta_n_layers,
+            session_delta_hidden_size=session_delta_hidden_size,
             session_max_index_by_subject_index=session_max_index_by_subject_index,
             max_n_subjects=self._max_n_subjects,
             context="Multisubject GRU",
@@ -52,6 +56,8 @@ class MultisubjectGru(hk.RNNCore):
         self._session_encoding_type = str(session_cfg["session_encoding_type"])
         self._session_integration_type = str(session_cfg["session_integration_type"])
         self._session_fourier_k = int(session_cfg["session_fourier_k"])
+        self._session_delta_n_layers = int(session_cfg["session_delta_n_layers"])
+        self._session_delta_hidden_size = int(session_cfg["session_delta_hidden_size"])
         self._session_max_index_by_subject_index = tuple(
             int(value) for value in session_cfg["session_max_index_by_subject_index"]
         )
@@ -104,6 +110,8 @@ class MultisubjectGru(hk.RNNCore):
             valid_session_mask=valid_session_mask,
             d_subj=self._subject_embedding_size,
             integration_type=self._session_integration_type,
+            delta_n_layers=self._session_delta_n_layers,
+            delta_hidden_size=self._session_delta_hidden_size,
         )
 
     def compute_subject_context(
@@ -160,6 +168,8 @@ def make_gru_network(
     session_encoding_type: str = "none",
     session_integration_type: str = "direct",
     session_fourier_k: int = 4,
+    session_delta_n_layers: int = 3,
+    session_delta_hidden_size: int = 16,
     session_max_index_by_subject_index: Sequence[int] | None = None,
 ) -> Callable[[], hk.RNNCore]:
     """Build the single-layer GRU used by the upstream training notebook."""
@@ -187,6 +197,8 @@ def make_gru_network(
             session_encoding_type=session_encoding_type,
             session_integration_type=session_integration_type,
             session_fourier_k=session_fourier_k,
+            session_delta_n_layers=session_delta_n_layers,
+            session_delta_hidden_size=session_delta_hidden_size,
             session_max_index_by_subject_index=session_max_index_by_subject_index,
             max_n_subjects=max_n_subjects,
             context="GRU network factory",
@@ -197,6 +209,8 @@ def make_gru_network(
             session_encoding_type=session_encoding_type,
             session_integration_type=session_integration_type,
             session_fourier_k=session_fourier_k,
+            session_delta_n_layers=session_delta_n_layers,
+            session_delta_hidden_size=session_delta_hidden_size,
             session_max_index_by_subject_index=session_max_index_by_subject_index,
             max_n_subjects=max_n_subjects,
             context="GRU network factory",
@@ -213,6 +227,8 @@ def make_gru_network(
                 session_encoding_type=str(session_cfg["session_encoding_type"]),
                 session_integration_type=str(session_cfg["session_integration_type"]),
                 session_fourier_k=int(session_cfg["session_fourier_k"]),
+                session_delta_n_layers=int(session_cfg["session_delta_n_layers"]),
+                session_delta_hidden_size=int(session_cfg["session_delta_hidden_size"]),
                 session_max_index_by_subject_index=tuple(
                     int(value)
                     for value in session_cfg["session_max_index_by_subject_index"]
