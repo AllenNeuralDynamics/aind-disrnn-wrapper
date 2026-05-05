@@ -261,12 +261,27 @@ def _ordered_session_context_rows(session_context: Mapping[str, Any]) -> list[di
     return normalized_rows
 
 
+def ordered_session_context_rows(
+    session_context: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Return validated per-subject session-context rows sorted by subject index."""
+    normalized_rows: list[dict[str, Any]] = []
+    for row in _ordered_session_context_rows(session_context):
+        if row.get("subject_index") is None:
+            raise ValueError("Each session_context.per_subject entry must include subject_index.")
+        normalized_row = dict(row)
+        normalized_row["subject_index"] = int(row["subject_index"])
+        normalized_row["subject_id"] = normalize_subject_id(row.get("subject_id"))
+        normalized_rows.append(normalized_row)
+    return sorted(normalized_rows, key=lambda row: int(row["subject_index"]))
+
+
 def ordered_session_ids_from_session_context(
     session_context: Mapping[str, Any],
 ) -> list[str]:
     """Return merged full-session order from session-context metadata."""
     ordered_session_ids: list[str] = []
-    for row in _ordered_session_context_rows(session_context):
+    for row in ordered_session_context_rows(session_context):
         ordered_session_ids.extend(
             [str(session_id) for session_id in row.get("ordered_session_ids") or []]
         )
@@ -278,7 +293,7 @@ def merged_session_index_lookup_from_session_context(
 ) -> dict[str, int]:
     """Return merged-session-id -> 1-based per-subject session index."""
     lookup: dict[str, int] = {}
-    for row in _ordered_session_context_rows(session_context):
+    for row in ordered_session_context_rows(session_context):
         ordered_session_ids = [str(session_id) for session_id in row.get("ordered_session_ids") or []]
         for session_index, session_id in enumerate(ordered_session_ids, start=1):
             lookup[session_id] = int(session_index)
@@ -291,7 +306,7 @@ def subject_session_index_lookup_from_session_context(
     """Return subject/session lookups for merged and source session identifiers."""
     merged_lookup: dict[tuple[Any, str], int] = {}
     source_lookup: dict[tuple[Any, str], int] = {}
-    for row in _ordered_session_context_rows(session_context):
+    for row in ordered_session_context_rows(session_context):
         subject_id = normalize_subject_id(row.get("subject_id"))
         ordered_session_ids = [str(session_id) for session_id in row.get("ordered_session_ids") or []]
         ordered_source_session_ids = [
@@ -312,6 +327,283 @@ def subject_session_index_lookup_from_session_context(
             merged_lookup[(subject_id, merged_session_id)] = int(session_index)
             source_lookup[(subject_id, source_session_id)] = int(session_index)
     return merged_lookup, source_lookup
+
+
+def resolve_session_context_plot_subject_indices(
+    session_context: Mapping[str, Any],
+    *,
+    requested_subject_indices: Sequence[int] | int | None = None,
+    max_subjects: int = 3,
+) -> list[int]:
+    """Resolve up to ``max_subjects`` subject indices for session-context plots."""
+    if int(max_subjects) < 0:
+        raise ValueError("max_subjects must be >= 0.")
+
+    ordered_rows = ordered_session_context_rows(session_context)
+    available_subject_indices = [int(row["subject_index"]) for row in ordered_rows]
+    available_subject_index_set = set(available_subject_indices)
+    if int(max_subjects) == 0 or not available_subject_indices:
+        return []
+
+    if requested_subject_indices is None:
+        return available_subject_indices[: int(max_subjects)]
+
+    if isinstance(requested_subject_indices, (int, np.integer)):
+        requested_values = [int(requested_subject_indices)]
+    else:
+        requested_values = [int(value) for value in requested_subject_indices]
+
+    resolved: list[int] = []
+    for subject_index in requested_values:
+        if subject_index not in available_subject_index_set:
+            raise ValueError(
+                "Requested session-context plot subject_index is not present in the "
+                f"resolved session context: {subject_index}."
+            )
+        if subject_index not in resolved:
+            resolved.append(int(subject_index))
+    return resolved[: int(max_subjects)]
+
+
+def _find_linear_module_params(
+    params: Mapping[str, Any],
+    *,
+    module_leaf_name: str,
+) -> tuple[np.ndarray, np.ndarray]:
+    matches: list[tuple[str, Mapping[str, Any]]] = []
+
+    def _visit(mapping: Mapping[str, Any], prefix: str = "") -> None:
+        for key, value in mapping.items():
+            full_key = f"{prefix}/{key}" if prefix else str(key)
+            if not isinstance(value, Mapping):
+                continue
+            if "w" in value and "b" in value:
+                leaf_name = full_key.split("/")[-1]
+                if leaf_name == module_leaf_name:
+                    matches.append((full_key, value))
+                continue
+            _visit(value, full_key)
+
+    _visit(params)
+    if not matches:
+        raise KeyError(
+            f"Could not locate linear params for module leaf name {module_leaf_name!r}."
+        )
+    if len(matches) > 1:
+        match_names = [name for name, _ in matches]
+        raise ValueError(
+            "Expected exactly one linear module named "
+            f"{module_leaf_name!r}, found {match_names}."
+        )
+
+    _, module_params = matches[0]
+    return (
+        np.asarray(module_params["w"], dtype=float),
+        np.asarray(module_params["b"], dtype=float),
+    )
+
+
+def _apply_linear_layer(
+    inputs: np.ndarray,
+    weights: np.ndarray,
+    bias: np.ndarray,
+) -> np.ndarray:
+    return np.asarray(inputs, dtype=float) @ np.asarray(weights, dtype=float) + np.asarray(
+        bias,
+        dtype=float,
+    )
+
+
+def _build_session_feature_array(
+    *,
+    subject_indices: np.ndarray,
+    session_indices: np.ndarray,
+    session_max_index_by_subject_index: Sequence[int],
+    encoding_type: str,
+    fourier_k: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    safe_subject_indices = np.where(subject_indices >= 0, subject_indices, 0).astype(int)
+    session_max = np.asarray(session_max_index_by_subject_index, dtype=int)
+    subject_session_max = session_max[safe_subject_indices]
+    valid_session_mask = np.logical_and(subject_indices >= 0, session_indices >= 1)
+    bounded_session_max = np.maximum(subject_session_max.astype(float), 1.0)
+    phase = session_indices.astype(float) / bounded_session_max
+
+    if encoding_type == "scalar":
+        session_feat = phase[:, None]
+    elif encoding_type == "fourier":
+        ks = np.arange(1, int(fourier_k) + 1, dtype=float)
+        angles = 2.0 * np.pi * phase[:, None] * ks[None, :]
+        session_feat = np.concatenate((np.sin(angles), np.cos(angles)), axis=1)
+    else:
+        raise ValueError(f"Unsupported session_encoding_type={encoding_type!r}.")
+
+    session_feat = session_feat * valid_session_mask[:, None].astype(float)
+    return session_feat, valid_session_mask
+
+
+def compute_session_conditioned_context_dataframe(
+    params: Mapping[str, Any],
+    *,
+    session_context: Mapping[str, Any],
+    session_encoding_type: str,
+    session_integration_type: str,
+    session_fourier_k: int,
+    session_max_index_by_subject_index: Sequence[int],
+    train_session_ids: Sequence[Any] | None = None,
+    eval_session_ids: Sequence[Any] | None = None,
+    selected_subject_indices: Sequence[int] | int | None = None,
+) -> pd.DataFrame:
+    """Reconstruct subject+delta context embeddings for selected subjects across sessions."""
+    encoding_type = str(session_encoding_type).strip().lower()
+    integration_type = str(session_integration_type).strip().lower()
+    if encoding_type == "none":
+        raise ValueError(
+            "compute_session_conditioned_context_dataframe requires session conditioning to "
+            "be enabled."
+        )
+    if integration_type not in {"direct", "pre_mlp"}:
+        raise ValueError(
+            "session_integration_type must be 'direct' or 'pre_mlp', got "
+            f"{session_integration_type!r}."
+        )
+
+    ordered_rows = ordered_session_context_rows(session_context)
+    if selected_subject_indices is None:
+        requested_subject_count = len(ordered_rows)
+    elif isinstance(selected_subject_indices, (int, np.integer)):
+        requested_subject_count = 1
+    else:
+        requested_subject_count = max(1, len(selected_subject_indices))
+    resolved_subject_indices = resolve_session_context_plot_subject_indices(
+        session_context,
+        requested_subject_indices=selected_subject_indices,
+        max_subjects=requested_subject_count,
+    )
+    if not resolved_subject_indices:
+        return pd.DataFrame()
+
+    subject_embeddings = extract_subject_embeddings_from_params(dict(params))
+    session_max = np.asarray(session_max_index_by_subject_index, dtype=int)
+    if session_max.ndim != 1:
+        raise ValueError("session_max_index_by_subject_index must be 1D.")
+    if subject_embeddings.shape[0] != session_max.shape[0]:
+        raise ValueError(
+            "Subject embedding table and session_max_index_by_subject_index must agree on "
+            f"the number of subjects, got {subject_embeddings.shape[0]} and "
+            f"{session_max.shape[0]}."
+        )
+
+    hidden_weights, hidden_bias = _find_linear_module_params(
+        params,
+        module_leaf_name="session_delta_hidden",
+    )
+    out_weights, out_bias = _find_linear_module_params(
+        params,
+        module_leaf_name="session_delta_out",
+    )
+    pre_weights: np.ndarray | None = None
+    pre_bias: np.ndarray | None = None
+    if integration_type == "pre_mlp":
+        pre_weights, pre_bias = _find_linear_module_params(
+            params,
+            module_leaf_name="session_pre_mlp",
+        )
+
+    selected_subject_index_set = {int(value) for value in resolved_subject_indices}
+    rows_by_subject_index = {
+        int(row["subject_index"]): row
+        for row in ordered_rows
+        if int(row["subject_index"]) in selected_subject_index_set
+    }
+    train_session_id_set = {str(session_id) for session_id in train_session_ids or []}
+    eval_session_id_set = {str(session_id) for session_id in eval_session_ids or []}
+
+    records: list[dict[str, Any]] = []
+    for subject_index in resolved_subject_indices:
+        subject_row = rows_by_subject_index.get(int(subject_index))
+        if subject_row is None:
+            raise ValueError(
+                f"Resolved session context does not contain subject_index={subject_index}."
+            )
+
+        ordered_session_ids = [
+            str(session_id)
+            for session_id in (subject_row.get("ordered_session_ids") or [])
+        ]
+        ordered_source_session_ids = [
+            str(session_id)
+            for session_id in (
+                subject_row.get("ordered_source_session_ids")
+                or subject_row.get("ordered_session_ids")
+                or []
+            )
+        ]
+        if len(ordered_source_session_ids) != len(ordered_session_ids):
+            raise ValueError(
+                "session_context ordered_source_session_ids must align 1:1 with "
+                "ordered_session_ids."
+            )
+        if not ordered_session_ids:
+            continue
+
+        subject_index_array = np.full(len(ordered_session_ids), int(subject_index), dtype=int)
+        session_index_array = np.arange(1, len(ordered_session_ids) + 1, dtype=int)
+        session_feat, valid_session_mask = _build_session_feature_array(
+            subject_indices=subject_index_array,
+            session_indices=session_index_array,
+            session_max_index_by_subject_index=session_max,
+            encoding_type=encoding_type,
+            fourier_k=int(session_fourier_k),
+        )
+
+        subject_embedding = np.asarray(subject_embeddings[int(subject_index)], dtype=float)
+        subject_context = np.repeat(
+            subject_embedding.reshape(1, -1),
+            repeats=len(ordered_session_ids),
+            axis=0,
+        )
+        conditioned_session_feat = session_feat
+        if integration_type == "pre_mlp":
+            assert pre_weights is not None and pre_bias is not None
+            conditioned_session_feat = np.maximum(
+                _apply_linear_layer(session_feat, pre_weights, pre_bias),
+                0.0,
+            )
+
+        delta_inputs = np.concatenate((subject_context, conditioned_session_feat), axis=1)
+        hidden = np.maximum(_apply_linear_layer(delta_inputs, hidden_weights, hidden_bias), 0.0)
+        delta = _apply_linear_layer(hidden, out_weights, out_bias)
+        delta = delta * valid_session_mask[:, None].astype(float)
+        subject_context = subject_context + delta
+
+        subject_id = normalize_subject_id(subject_row.get("subject_id"))
+        for position, (session_id, source_session_id) in enumerate(
+            zip(ordered_session_ids, ordered_source_session_ids),
+            start=1,
+        ):
+            if session_id in train_session_id_set:
+                session_split = "train"
+            elif session_id in eval_session_id_set:
+                session_split = "eval"
+            else:
+                session_split = "full"
+
+            record = {
+                "subject_index": int(subject_index),
+                "subject_id": subject_id,
+                "session_id": str(session_id),
+                "source_session_id": str(source_session_id),
+                "session_split": session_split,
+                "session_index": int(position),
+                "subject_max_session_index": int(len(ordered_session_ids)),
+                "session_phase": float(position / max(len(ordered_session_ids), 1)),
+            }
+            for dimension, value in enumerate(subject_context[position - 1], start=1):
+                record[f"embedding_{dimension}"] = float(value)
+            records.append(record)
+
+    return pd.DataFrame(records)
 
 
 def session_indices_for_split(

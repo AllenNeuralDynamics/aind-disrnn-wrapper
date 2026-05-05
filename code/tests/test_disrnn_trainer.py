@@ -488,6 +488,10 @@ class TestDisrnnTrainer(unittest.TestCase):
 
         self.assertIn("session_context_map", output["subject_artifacts"])
         self.assertTrue(Path(output["subject_artifacts"]["session_context_map"]).exists())
+        self.assertIn("subject_session_context_state_space_path", output)
+        self.assertTrue(Path(output["subject_session_context_state_space_path"]).exists())
+        before_warmup = output["initial_evaluations"]["before_warmup"]
+        self.assertTrue(before_warmup["plot_paths"]["subject_session_context_state_space"])
 
     def test_multisubject_session_conditioning_reduces_obs_size(self):
         trainer = DisrnnTrainer(

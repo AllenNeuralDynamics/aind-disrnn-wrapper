@@ -16,13 +16,16 @@ from utils.multisubject import (
     SUBJECT_TABLE_KEY,
     append_subjects_to_index_maps,
     build_subject_index_maps,
+    compute_session_conditioned_context_dataframe,
     convert_local_params_to_upstream_multisubject,
     convert_upstream_params_to_local_multisubject,
     expand_saved_multisubject_checkpoint,
     extract_subject_embeddings_from_params,
     merge_datasets_with_subject_index,
+    ordered_session_context_rows,
     ordered_session_ids_from_session_context,
     prepend_session_index_to_multisubject_dataset,
+    resolve_session_context_plot_subject_indices,
     save_session_context_map,
     session_indices_for_split,
 )
@@ -211,6 +214,115 @@ class TestMultisubjectUtils(unittest.TestCase):
             loaded_payload = json.loads(saved_path.read_text())
 
             self.assertEqual(loaded_payload, payload)
+
+    def test_ordered_session_context_rows_sorts_by_subject_index(self):
+        session_context = {
+            "indexing": "1_based",
+            "per_subject": [
+                {
+                    "subject_id": "m2",
+                    "subject_index": 2,
+                    "ordered_session_ids": ["m2__s1"],
+                    "ordered_source_session_ids": ["s1"],
+                },
+                {
+                    "subject_id": "m0",
+                    "subject_index": 0,
+                    "ordered_session_ids": ["m0__s1"],
+                    "ordered_source_session_ids": ["s1"],
+                },
+            ],
+        }
+
+        ordered_rows = ordered_session_context_rows(session_context)
+
+        self.assertEqual([row["subject_index"] for row in ordered_rows], [0, 2])
+        self.assertEqual([row["subject_id"] for row in ordered_rows], ["m0", "m2"])
+
+    def test_resolve_session_context_plot_subject_indices_honors_requested_order(self):
+        session_context = {
+            "indexing": "1_based",
+            "per_subject": [
+                {"subject_id": "m0", "subject_index": 0, "ordered_session_ids": ["a"]},
+                {"subject_id": "m1", "subject_index": 1, "ordered_session_ids": ["b"]},
+                {"subject_id": "m2", "subject_index": 2, "ordered_session_ids": ["c"]},
+            ],
+        }
+
+        resolved = resolve_session_context_plot_subject_indices(
+            session_context,
+            requested_subject_indices=[2, 0, 2],
+            max_subjects=2,
+        )
+
+        self.assertEqual(resolved, [2, 0])
+
+    def test_compute_session_conditioned_context_dataframe_reconstructs_direct_scalar(self):
+        params = {
+            GRU_SUBJECT_MODULE_KEY: {
+                SUBJECT_TABLE_KEY: np.array(
+                    [
+                        [0.5, -0.5],
+                        [1.0, 0.25],
+                    ]
+                )
+            },
+            "multisubject_gru/~/session_delta_hidden": {
+                "w": np.array(
+                    [
+                        [0.0, 0.0, 0.0, 0.0],
+                        [0.0, 0.0, 0.0, 0.0],
+                        [1.0, 2.0, 0.0, 0.0],
+                    ]
+                ),
+                "b": np.zeros(4),
+            },
+            "multisubject_gru/~/session_delta_out": {
+                "w": np.array(
+                    [
+                        [1.0, 0.0],
+                        [0.0, 1.0],
+                        [0.0, 0.0],
+                        [0.0, 0.0],
+                    ]
+                ),
+                "b": np.zeros(2),
+            },
+        }
+        session_context = {
+            "indexing": "1_based",
+            "per_subject": [
+                {
+                    "subject_id": "m0",
+                    "subject_index": 0,
+                    "ordered_session_ids": ["m0__s1", "m0__s2"],
+                    "ordered_source_session_ids": ["s1", "s2"],
+                },
+                {
+                    "subject_id": "m1",
+                    "subject_index": 1,
+                    "ordered_session_ids": ["m1__s1"],
+                    "ordered_source_session_ids": ["s1"],
+                },
+            ],
+        }
+
+        plot_df = compute_session_conditioned_context_dataframe(
+            params,
+            session_context=session_context,
+            session_encoding_type="scalar",
+            session_integration_type="direct",
+            session_fourier_k=4,
+            session_max_index_by_subject_index=[2, 1],
+            train_session_ids=["m0__s1"],
+            eval_session_ids=["m0__s2"],
+            selected_subject_indices=[0],
+        )
+
+        self.assertEqual(plot_df["subject_index"].tolist(), [0, 0])
+        self.assertEqual(plot_df["session_split"].tolist(), ["train", "eval"])
+        self.assertTrue(np.allclose(plot_df["embedding_1"].to_numpy(), [1.0, 1.5]))
+        self.assertTrue(np.allclose(plot_df["embedding_2"].to_numpy(), [0.5, 1.5]))
 
     def test_local_upstream_conversion_preserves_effective_embeddings(self):
         params_local = {

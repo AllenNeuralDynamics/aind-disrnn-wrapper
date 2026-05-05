@@ -208,6 +208,10 @@ model:
     plot_choice_rule: false
     plot_update_rules: false
     plot_subject_index: 0   # which subject’s embedding is used for rule plots
+    session_conditioning_verbose_logging: true
+    plot_session_context_state_space: true
+    session_context_plot_max_subjects: 3
+    session_context_plot_subject_indices: null
     checkpoint_plot_choice_rule: false
     checkpoint_plot_update_rules: false
     save_output_df: false

@@ -32,9 +32,12 @@ from utils.gru_evaluation import (
     plot_gru_examples_for_split,
 )
 from utils.multisubject import (
+    compute_session_conditioned_context_dataframe,
     extract_subject_embeddings_from_params,
     normalize_subject_id,
+    ordered_session_context_rows,
     prepend_session_index_to_multisubject_split_datasets,
+    resolve_session_context_plot_subject_indices,
     save_subject_index_map,
     save_session_context_map,
     subject_embeddings_to_dataframe,
@@ -317,6 +320,96 @@ class GruTrainer(ModelTrainer):
             )
         return enriched_df
 
+    def _resolve_session_context_plot_subject_indices(
+        self,
+        *,
+        metadata: Mapping[str, Any],
+    ) -> list[int]:
+        session_context = metadata.get("session_context")
+        if not isinstance(session_context, Mapping):
+            raise ValueError(
+                "Session-context plotting requires metadata.session_context for multisubject runs."
+            )
+        return resolve_session_context_plot_subject_indices(
+            session_context,
+            requested_subject_indices=self.training.get("session_context_plot_subject_indices"),
+            max_subjects=int(self.training.get("session_context_plot_max_subjects", 3)),
+        )
+
+    def _log_session_conditioning_details(
+        self,
+        *,
+        metadata: Mapping[str, Any],
+        dataset: Any,
+        session_conditioning_cfg: Mapping[str, Any],
+    ) -> None:
+        if not bool(session_conditioning_cfg.get("enabled")):
+            return
+        if not bool(self.training.get("session_conditioning_verbose_logging", True)):
+            return
+
+        session_max = np.asarray(
+            session_conditioning_cfg["session_max_index_by_subject_index"],
+            dtype=int,
+        )
+        logger.info(
+            "Session conditioning enabled for GRU: encoding=%s integration=%s fourier_k=%d "
+            "packed_input=[subject_idx, session_idx, *obs]",
+            session_conditioning_cfg["session_encoding_type"],
+            session_conditioning_cfg["session_integration_type"],
+            int(session_conditioning_cfg["session_fourier_k"]),
+        )
+        logger.info(
+            "Session-conditioned input features: %s",
+            list(getattr(dataset, "x_names", [])),
+        )
+        logger.info(
+            "Per-subject session counts: min=%d median=%.1f max=%d across %d subjects",
+            int(np.min(session_max)),
+            float(np.median(session_max)),
+            int(np.max(session_max)),
+            int(session_max.shape[0]),
+        )
+
+        session_context = metadata.get("session_context")
+        if isinstance(session_context, Mapping):
+            ordered_rows = ordered_session_context_rows(session_context)
+            train_session_ids = {
+                str(session_id) for session_id in metadata.get("train_session_ids") or []
+            }
+            eval_session_ids = {
+                str(session_id) for session_id in metadata.get("eval_session_ids") or []
+            }
+            preview_tokens: list[str] = []
+            for row in ordered_rows[: min(5, len(ordered_rows))]:
+                ordered_session_ids = [
+                    str(session_id) for session_id in row.get("ordered_session_ids") or []
+                ]
+                train_count = sum(
+                    1 for session_id in ordered_session_ids if session_id in train_session_ids
+                )
+                eval_count = sum(
+                    1 for session_id in ordered_session_ids if session_id in eval_session_ids
+                )
+                preview_tokens.append(
+                    f"{int(row['subject_index'])}:{len(ordered_session_ids)} "
+                    f"(train={train_count}, eval={eval_count})"
+                )
+            if preview_tokens:
+                logger.info(
+                    "Session-order preview [subject_index:total (train, eval)]: %s",
+                    ", ".join(preview_tokens),
+                )
+
+        if bool(self.training.get("plot_session_context_state_space", True)):
+            selected_subject_indices = self._resolve_session_context_plot_subject_indices(
+                metadata=metadata
+            )
+            logger.info(
+                "Session-context state-space plot subjects: %s",
+                selected_subject_indices,
+            )
+
     def _save_multisubject_artifacts(
         self,
         *,
@@ -463,6 +556,226 @@ class GruTrainer(ModelTrainer):
         )
         fig.suptitle("Subject Embedding State Space", fontsize=14)
         fig.tight_layout(rect=(0, 0, 1, 0.95))
+        return fig
+
+    def _plot_subject_session_context_state_space(
+        self,
+        *,
+        params: Any,
+        raw_df: pd.DataFrame,
+        metadata: Mapping[str, Any],
+    ) -> Any | None:
+        if not bool(self.training.get("plot_session_context_state_space", True)):
+            return None
+
+        max_n_subjects = metadata.get("num_subjects")
+        if max_n_subjects is None:
+            subject_ids = metadata.get("subject_ids", [])
+            max_n_subjects = len(subject_ids)
+        session_conditioning_cfg = resolve_session_conditioning_from_architecture(
+            architecture=self.architecture,
+            metadata=metadata,
+            multisubject=True,
+            max_n_subjects=int(max_n_subjects) if max_n_subjects is not None else None,
+            context="GruTrainer session-context plotting",
+        )
+        if not bool(session_conditioning_cfg["enabled"]):
+            return None
+
+        selected_subject_indices = self._resolve_session_context_plot_subject_indices(
+            metadata=metadata
+        )
+        if not selected_subject_indices:
+            return None
+
+        session_context = metadata.get("session_context")
+        if not isinstance(session_context, Mapping):
+            raise ValueError(
+                "Session-context plotting requires metadata.session_context for multisubject runs."
+            )
+
+        plot_df = compute_session_conditioned_context_dataframe(
+            params,
+            session_context=session_context,
+            session_encoding_type=str(session_conditioning_cfg["session_encoding_type"]),
+            session_integration_type=str(
+                session_conditioning_cfg["session_integration_type"]
+            ),
+            session_fourier_k=int(session_conditioning_cfg["session_fourier_k"]),
+            session_max_index_by_subject_index=session_conditioning_cfg[
+                "session_max_index_by_subject_index"
+            ],
+            train_session_ids=metadata.get("train_session_ids"),
+            eval_session_ids=metadata.get("eval_session_ids"),
+            selected_subject_indices=selected_subject_indices,
+        )
+        if plot_df.empty:
+            return None
+
+        subject_curricula = self._resolve_subject_curricula(raw_df=raw_df, metadata=metadata)
+        plot_df["curriculum_name"] = plot_df["subject_id"].map(
+            lambda subject_id: subject_curricula.get(
+                normalize_subject_id(subject_id),
+                "Unknown",
+            )
+        )
+        embedding_columns = [
+            column for column in plot_df.columns if column.startswith("embedding_")
+        ]
+        if len(embedding_columns) < 2:
+            logger.info(
+                "Skipping session-context state-space plot because subject_embedding_size < 2."
+            )
+            return None
+
+        dim_pairs = list(itertools.combinations(embedding_columns, 2))
+        ncols = min(3, len(dim_pairs))
+        block_rows = int(np.ceil(len(dim_pairs) / ncols))
+        subject_keys = list(
+            dict.fromkeys(
+                [
+                    (
+                        int(row.subject_index),
+                        normalize_subject_id(row.subject_id),
+                    )
+                    for row in plot_df.itertuples(index=False)
+                ]
+            )
+        )
+        fig, axes = plt.subplots(
+            block_rows * len(subject_keys),
+            ncols,
+            figsize=(5.6 * ncols, 4.5 * block_rows * len(subject_keys)),
+            squeeze=False,
+        )
+
+        session_index_min = float(plot_df["session_index"].min())
+        session_index_max = float(plot_df["session_index"].max())
+        if session_index_min == session_index_max:
+            session_index_max = session_index_min + 1.0
+        cmap = plt.get_cmap("viridis")
+        norm = plt.Normalize(vmin=session_index_min, vmax=session_index_max)
+        marker_by_split = {"train": "o", "eval": "s", "full": "^"}
+
+        for subject_position, (subject_index, subject_id) in enumerate(subject_keys):
+            subject_rows = plot_df[
+                plot_df["subject_index"].astype(int) == int(subject_index)
+            ].copy()
+            subject_rows = subject_rows.sort_values("session_index").reset_index(drop=True)
+            curriculum_name = str(subject_rows["curriculum_name"].iloc[0])
+            train_count = int((subject_rows["session_split"] == "train").sum())
+            eval_count = int((subject_rows["session_split"] == "eval").sum())
+
+            for pair_index, (x_column, y_column) in enumerate(dim_pairs):
+                ax = axes[
+                    subject_position * block_rows + pair_index // ncols,
+                    pair_index % ncols,
+                ]
+                ax.plot(
+                    subject_rows[x_column],
+                    subject_rows[y_column],
+                    color="0.75",
+                    linewidth=1.1,
+                    alpha=0.8,
+                    zorder=1,
+                )
+                for split_name, marker in marker_by_split.items():
+                    split_rows = subject_rows[subject_rows["session_split"] == split_name]
+                    if split_rows.empty:
+                        continue
+                    ax.scatter(
+                        split_rows[x_column],
+                        split_rows[y_column],
+                        c=split_rows["session_index"].to_numpy(dtype=float),
+                        cmap=cmap,
+                        norm=norm,
+                        marker=marker,
+                        s=62,
+                        edgecolors="black",
+                        linewidths=0.45,
+                        alpha=0.95,
+                        zorder=2,
+                    )
+                ax.axhline(0, color="0.85", linewidth=1)
+                ax.axvline(0, color="0.85", linewidth=1)
+                ax.set_xlabel(x_column.replace("_", " ").title())
+                ax.set_ylabel(y_column.replace("_", " ").title())
+                ax.set_title(
+                    f"Subj {subject_index} ({subject_id}) | {curriculum_name} | "
+                    f"S={int(subject_rows['subject_max_session_index'].iloc[0])} "
+                    f"(train={train_count}, eval={eval_count})\n"
+                    f"{x_column} vs {y_column}"
+                )
+
+            for empty_index in range(len(dim_pairs), block_rows * ncols):
+                axes[
+                    subject_position * block_rows + empty_index // ncols,
+                    empty_index % ncols,
+                ].axis("off")
+
+        legend_handles = [
+            Line2D(
+                [0],
+                [0],
+                color="0.75",
+                linewidth=1.1,
+                label="Session trajectory",
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="w",
+                markerfacecolor="0.45",
+                markeredgecolor="black",
+                markersize=7,
+                linewidth=0,
+                label="Train session",
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="s",
+                color="w",
+                markerfacecolor="0.45",
+                markeredgecolor="black",
+                markersize=7,
+                linewidth=0,
+                label="Eval session",
+            ),
+        ]
+        if (plot_df["session_split"] == "full").any():
+            legend_handles.append(
+                Line2D(
+                    [0],
+                    [0],
+                    marker="^",
+                    color="w",
+                    markerfacecolor="0.45",
+                    markeredgecolor="black",
+                    markersize=7,
+                    linewidth=0,
+                    label="Other session",
+                )
+            )
+
+        scalar_mappable = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+        scalar_mappable.set_array([])
+        colorbar = fig.colorbar(
+            scalar_mappable,
+            ax=axes.ravel().tolist(),
+            shrink=0.92,
+            pad=0.02,
+        )
+        colorbar.set_label("Per-subject session index")
+        fig.legend(
+            handles=legend_handles,
+            loc="lower center",
+            ncol=min(4, len(legend_handles)),
+            frameon=False,
+        )
+        fig.suptitle("Session-Conditioned Subject Context State Space", fontsize=14)
+        fig.tight_layout(rect=(0, 0.06, 1, 0.96))
         return fig
 
     def _remove_media_files(self, paths: list[Any]) -> None:
@@ -629,7 +942,10 @@ class GruTrainer(ModelTrainer):
             ignore_policy=ignore_policy,
         )
 
-        plot_paths: dict[str, Any] = {"subject_embedding_state_space": None}
+        plot_paths: dict[str, Any] = {
+            "subject_embedding_state_space": None,
+            "subject_session_context_state_space": None,
+        }
         if is_multisubject:
             try:
                 subject_embedding_fig = self._plot_subject_embedding_state_space(
@@ -642,6 +958,22 @@ class GruTrainer(ModelTrainer):
                     subject_embedding_fig.savefig(subject_embedding_path)
                     plt.close(subject_embedding_fig)
                     plot_paths["subject_embedding_state_space"] = str(subject_embedding_path)
+                subject_session_context_fig = (
+                    self._plot_subject_session_context_state_space(
+                        params=params,
+                        raw_df=bundle.raw,
+                        metadata=metadata,
+                    )
+                )
+                if subject_session_context_fig is not None:
+                    subject_session_context_path = (
+                        stage_dir / "subject_session_context_state_space.png"
+                    )
+                    subject_session_context_fig.savefig(subject_session_context_path)
+                    plt.close(subject_session_context_fig)
+                    plot_paths["subject_session_context_state_space"] = str(
+                        subject_session_context_path
+                    )
             except Exception as exc:
                 logger.warning(
                     "Initialization subject-embedding plotting failed for %s: %s",
@@ -649,19 +981,32 @@ class GruTrainer(ModelTrainer):
                     exc,
                 )
 
-        if wandb_run is not None and plot_paths["subject_embedding_state_space"]:
-            plot_payload = {
-                "checkpoint/fig/subject_embedding_state_space": wandb.Image(
+        if wandb_run is not None and (
+            plot_paths["subject_embedding_state_space"]
+            or plot_paths["subject_session_context_state_space"]
+        ):
+            plot_payload = {}
+            if plot_paths["subject_embedding_state_space"]:
+                plot_payload["checkpoint/fig/subject_embedding_state_space"] = wandb.Image(
                     str(plot_paths["subject_embedding_state_space"])
                 )
-            }
+            if plot_paths["subject_session_context_state_space"]:
+                plot_payload["checkpoint/fig/subject_session_context_state_space"] = (
+                    wandb.Image(str(plot_paths["subject_session_context_state_space"]))
+                )
             if wandb_step is None:
                 wandb_run.log(plot_payload)
             else:
                 wandb_run.log(plot_payload, step=wandb_step)
             if not keep_media_files:
-                self._remove_media_files([plot_paths["subject_embedding_state_space"]])
+                self._remove_media_files(
+                    [
+                        plot_paths["subject_embedding_state_space"],
+                        plot_paths["subject_session_context_state_space"],
+                    ]
+                )
                 plot_paths["subject_embedding_state_space"] = None
+                plot_paths["subject_session_context_state_space"] = None
 
         n_action_logits_full = _require_n_action_logits(
             dataset,
@@ -757,13 +1102,6 @@ class GruTrainer(ModelTrainer):
         }
         output["multisubject"] = bool(is_multisubject)
 
-        _log_dataset_split_details(
-            dataset=dataset,
-            dataset_train=dataset_train,
-            dataset_eval=dataset_eval,
-        )
-        _log_heldout_dataset_details(self.heldout_data)
-
         key = jax.random.PRNGKey(self.seed)
         output["random_key"] = [int(x) for x in np.asarray(key).reshape(-1)]
 
@@ -843,6 +1181,23 @@ class GruTrainer(ModelTrainer):
                 max_n_subjects=max_n_subjects,
                 context="GruTrainer",
             )
+
+        _log_dataset_split_details(
+            dataset=dataset,
+            dataset_train=dataset_train,
+            dataset_eval=dataset_eval,
+        )
+        _log_heldout_dataset_details(self.heldout_data)
+        if is_multisubject:
+            self._log_session_conditioning_details(
+                metadata=metadata,
+                dataset=dataset,
+                session_conditioning_cfg=session_conditioning_cfg,
+            )
+            if bool(session_conditioning_cfg["enabled"]) and bool(
+                self.training.get("plot_session_context_state_space", True)
+            ):
+                self._resolve_session_context_plot_subject_indices(metadata=metadata)
 
         expected_output_size = 2 if ignore_policy == "exclude" else 3
         args = types.SimpleNamespace(
@@ -1122,6 +1477,7 @@ class GruTrainer(ModelTrainer):
 
                 checkpoint_plot_paths: dict[str, Any] = {
                     "subject_embedding_state_space": None,
+                    "subject_session_context_state_space": None,
                 }
                 if is_multisubject:
                     try:
@@ -1138,6 +1494,24 @@ class GruTrainer(ModelTrainer):
                             plt.close(subject_embedding_fig_ckpt)
                             checkpoint_plot_paths["subject_embedding_state_space"] = str(
                                 subject_embedding_path_ckpt
+                            )
+                        subject_session_context_fig_ckpt = (
+                            self._plot_subject_session_context_state_space(
+                                params=params,
+                                raw_df=bundle.raw,
+                                metadata=metadata,
+                            )
+                        )
+                        if subject_session_context_fig_ckpt is not None:
+                            subject_session_context_path_ckpt = (
+                                checkpoint_dir / "subject_session_context_state_space.png"
+                            )
+                            subject_session_context_fig_ckpt.savefig(
+                                subject_session_context_path_ckpt
+                            )
+                            plt.close(subject_session_context_fig_ckpt)
+                            checkpoint_plot_paths["subject_session_context_state_space"] = str(
+                                subject_session_context_path_ckpt
                             )
                     except Exception as exc:
                         logger.warning(
@@ -1236,21 +1610,43 @@ class GruTrainer(ModelTrainer):
                 if (
                     wandb_run is not None
                     and args.checkpoint_log_eval_to_wandb
-                    and checkpoint_plot_paths["subject_embedding_state_space"]
+                    and (
+                        checkpoint_plot_paths["subject_embedding_state_space"]
+                        or checkpoint_plot_paths["subject_session_context_state_space"]
+                    )
                 ):
-                    wandb_run.log(
-                        {
-                            "checkpoint/fig/subject_embedding_state_space": wandb.Image(
-                                str(checkpoint_plot_paths["subject_embedding_state_space"])
+                    checkpoint_plot_payload = {}
+                    if checkpoint_plot_paths["subject_embedding_state_space"]:
+                        checkpoint_plot_payload[
+                            "checkpoint/fig/subject_embedding_state_space"
+                        ] = wandb.Image(
+                            str(checkpoint_plot_paths["subject_embedding_state_space"])
+                        )
+                    if checkpoint_plot_paths["subject_session_context_state_space"]:
+                        checkpoint_plot_payload[
+                            "checkpoint/fig/subject_session_context_state_space"
+                        ] = wandb.Image(
+                            str(
+                                checkpoint_plot_paths[
+                                    "subject_session_context_state_space"
+                                ]
                             )
-                        },
+                        )
+                    wandb_run.log(
+                        checkpoint_plot_payload,
                         step=int(steps_completed),
                     )
                     if not args.checkpoint_keep_media_files:
                         self._remove_media_files(
-                            [checkpoint_plot_paths["subject_embedding_state_space"]]
+                            [
+                                checkpoint_plot_paths["subject_embedding_state_space"],
+                                checkpoint_plot_paths[
+                                    "subject_session_context_state_space"
+                                ],
+                            ]
                         )
                         checkpoint_plot_paths["subject_embedding_state_space"] = None
+                        checkpoint_plot_paths["subject_session_context_state_space"] = None
 
                 if (
                     wandb_run is not None
@@ -1413,6 +1809,27 @@ class GruTrainer(ModelTrainer):
                         {
                             "fig/subject_embedding_state_space": wandb.Image(
                                 str(subject_embedding_path)
+                            )
+                        }
+                    )
+            subject_session_context_fig = self._plot_subject_session_context_state_space(
+                params=params,
+                raw_df=bundle.raw,
+                metadata=metadata,
+            )
+            if subject_session_context_fig is not None:
+                subject_session_context_path = self._save_figure(
+                    subject_session_context_fig,
+                    "subject_session_context_state_space.png",
+                )
+                output["subject_session_context_state_space_path"] = str(
+                    subject_session_context_path
+                )
+                if wandb_run is not None:
+                    wandb_run.log(
+                        {
+                            "fig/subject_session_context_state_space": wandb.Image(
+                                str(subject_session_context_path)
                             )
                         }
                     )

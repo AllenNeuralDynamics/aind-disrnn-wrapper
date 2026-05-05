@@ -388,6 +388,10 @@ class TestGruTrainer(unittest.TestCase):
         subject_artifacts = output["subject_artifacts"]
         self.assertIn("session_context_map", subject_artifacts)
         self.assertTrue(Path(subject_artifacts["session_context_map"]).exists())
+        self.assertIn("subject_session_context_state_space_path", output)
+        self.assertTrue(Path(output["subject_session_context_state_space_path"]).exists())
+        before_training = output["initial_evaluations"]["before_training"]
+        self.assertTrue(before_training["plot_paths"]["subject_session_context_state_space"])
         saved_cfg = json.loads((self.output_dir / "scalar_session" / "gru_config.json").read_text())
         self.assertEqual(saved_cfg["architecture"]["session_encoding_type"], "scalar")
         self.assertEqual(saved_cfg["architecture"]["session_integration_type"], "direct")

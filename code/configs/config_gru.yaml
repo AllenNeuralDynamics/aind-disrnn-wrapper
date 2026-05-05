@@ -132,6 +132,10 @@ model:
     checkpoint_keep_media_files: true
     checkpoint_run_heldout_eval: true
     checkpoint_include_final_in_heldout: true
+    session_conditioning_verbose_logging: true
+    plot_session_context_state_space: true
+    session_context_plot_max_subjects: 3
+    session_context_plot_subject_indices: null
     initialization_eval_before_training: true  # run/log checkpoint-style eval before training
     save_output_df: false
   run_name_component: gru_H${.architecture.hidden_size}
