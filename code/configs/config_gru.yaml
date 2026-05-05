@@ -124,7 +124,7 @@ model:
     n_steps: 20
     loss: categorical
     loss_param: 1
-    lambda_reg_session: 0.0   # 0 disables zero-mean session-delta regularization; try 1e-3 to 1e-2
+    lambda_reg_session: 0.0   # 0 disables zero-mean session-delta regularization; try 1.0
     max_grad_norm: 1.0
     checkpoint_every_n_steps: 10
     checkpoint_eval_on_eval_split: true
