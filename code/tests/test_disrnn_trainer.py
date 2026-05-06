@@ -617,6 +617,7 @@ class TestDisrnnTrainer(unittest.TestCase):
         )
 
         self.assertEqual(config.obs_size, 2)
+        self.assertEqual(config.x_names, ["prev choice", "prev reward"])
         self.assertEqual(config.session_encoding_type, "fourier")
         self.assertEqual(config.session_integration_type, "pre_mlp")
         self.assertEqual(config.session_fourier_k, 3)
@@ -624,6 +625,59 @@ class TestDisrnnTrainer(unittest.TestCase):
         self.assertEqual(config.session_delta_hidden_size, 11)
         self.assertEqual(config.session_n_pretrain_steps, 4)
         self.assertEqual(config.session_n_warmup_steps, 3)
+
+    def test_multisubject_session_conditioning_uses_trailing_observation_names(self):
+        trainer = DisrnnTrainer(
+            architecture={
+                "multisubject": True,
+                "latent_size": 4,
+                "update_net_n_units_per_layer": 8,
+                "update_net_n_layers": 2,
+                "choice_net_n_units_per_layer": 4,
+                "choice_net_n_layers": 1,
+                "activation": "leaky_relu",
+                "subject_embedding_size": 3,
+                "session_encoding_type": "scalar",
+            },
+            penalties={
+                "latent_penalty": 1e-3,
+                "choice_net_latent_penalty": 1e-3,
+                "update_net_obs_penalty": 1e-3,
+                "update_net_latent_penalty": 1e-3,
+                "subject_penalty": 1e-3,
+                "update_net_subject_penalty": 1e-3,
+                "choice_net_subject_penalty": 1e-3,
+            },
+            training={
+                "lr": 1e-3,
+                "n_steps": 0,
+                "n_warmup_steps": 0,
+                "loss": "penalized_categorical",
+                "loss_param": 1.0,
+                "max_grad_norm": 1.0,
+                "plot_subject_index": 0,
+            },
+            output_dir=str(self.output_dir),
+            seed=42,
+        )
+
+        dummy_dataset = types.SimpleNamespace(
+            _xs=np.zeros((5, 2, 4), dtype=float),
+            x_names=["Session Index", "prev choice", "prev reward"],
+            y_names=["choice"],
+        )
+        config, _ = trainer._build_network_configs(
+            dataset=dummy_dataset,
+            ignore_policy="exclude",
+            metadata={
+                "multisubject": True,
+                "num_subjects": 2,
+                "session_max_index_by_subject_index": [3, 3],
+            },
+        )
+
+        self.assertEqual(config.obs_size, 2)
+        self.assertEqual(config.x_names, ["prev choice", "prev reward"])
 
     def test_multisubject_session_conditioning_resolves_default_curriculum_steps(self):
         multisubject_bundle = self._make_multisubject_bundle()
@@ -922,7 +976,7 @@ class TestDisrnnTrainer(unittest.TestCase):
         config = MultisubjectDisRnnConfig(
             obs_size=2,
             output_size=2,
-            x_names=["Subject ID", "prev choice", "prev reward"],
+            x_names=["prev choice", "prev reward"],
             y_names=["choice"],
             latent_size=4,
             update_net_n_units_per_layer=8,

@@ -92,6 +92,32 @@ def _get_architecture_value(
     return default
 
 
+def _resolve_disrnn_observation_x_names(
+    dataset: Any,
+    *,
+    obs_size: int,
+    context: str,
+) -> list[str]:
+    """Return the behavioral observation labels consumed by the disRNN core.
+
+    Multisubject runs prepend subject and optional session index features to
+    the dataset tensor, but upstream disRNN configs validate ``x_names``
+    against ``obs_size`` only. We therefore keep the trailing observation
+    labels and drop any packed context feature names.
+    """
+    resolved_obs_size = int(obs_size)
+    if resolved_obs_size <= 0:
+        raise ValueError(f"{context} requires obs_size > 0, got {resolved_obs_size}.")
+
+    x_names = list(getattr(dataset, "x_names", []) or [])
+    if len(x_names) < resolved_obs_size:
+        raise ValueError(
+            f"{context} expected at least {resolved_obs_size} x_names entries, "
+            f"got {x_names}."
+        )
+    return x_names[-resolved_obs_size:]
+
+
 def _bind_session_curriculum_lambda(
     make_network: Any,
     *,
@@ -299,11 +325,16 @@ class DisrnnTrainer(ModelTrainer):
             packed_context_feature_count = (
                 2 if bool(session_conditioning_cfg["enabled"]) else 1
             )
+            obs_size = int(dataset._xs.shape[2] - packed_context_feature_count)
 
             config = local_multisubject_disrnn.MultisubjectDisRnnConfig(
-                obs_size=int(dataset._xs.shape[2] - packed_context_feature_count),
+                obs_size=obs_size,
                 output_size=output_size,
-                x_names=dataset.x_names,
+                x_names=_resolve_disrnn_observation_x_names(
+                    dataset,
+                    obs_size=obs_size,
+                    context="Multisubject disRNN config",
+                ),
                 y_names=dataset.y_names,
                 latent_size=self.architecture["latent_size"],
                 update_net_n_units_per_layer=self.architecture[
@@ -365,10 +396,15 @@ class DisrnnTrainer(ModelTrainer):
                 subject_embedding_size=None,
                 context="DisrnnTrainer",
             )
+            obs_size = int(dataset._xs.shape[2])
             config = disrnn.DisRnnConfig(
-                obs_size=dataset._xs.shape[2],
+                obs_size=obs_size,
                 output_size=output_size,
-                x_names=dataset.x_names,
+                x_names=_resolve_disrnn_observation_x_names(
+                    dataset,
+                    obs_size=obs_size,
+                    context="Single-subject disRNN config",
+                ),
                 y_names=dataset.y_names,
                 latent_size=self.architecture["latent_size"],
                 update_net_n_units_per_layer=self.architecture[
