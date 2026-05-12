@@ -398,6 +398,9 @@ def _build_local_heldout_bundle(
     source_data_cfg: Mapping[str, Any],
     fine_tune_cfg: Mapping[str, Any],
 ) -> DatasetBundle:
+    skip_subjects_with_insufficient_sessions = bool(
+        fine_tune_cfg.get("skip_subjects_with_insufficient_sessions", True)
+    )
     metadata = {
         "subject_ids": list(heldout_subject_ids),
         "mature_only": bool(source_data_cfg.get("mature_only", True)),
@@ -428,6 +431,7 @@ def _build_local_heldout_bundle(
         batch_size=fine_tune_cfg.get("batch_size"),
         batch_mode=str(fine_tune_cfg.get("batch_mode", "single")),
         metadata=metadata,
+        skip_subjects_with_insufficient_sessions=skip_subjects_with_insufficient_sessions,
     )
 
 
@@ -573,6 +577,16 @@ def _build_global_heldout_bundle(
         source_data_cfg=source_data_cfg,
         fine_tune_cfg=fine_tune_cfg,
     )
+    skipped_subject_rows = list(
+        local_bundle.metadata.get("skipped_subjects_with_insufficient_sessions") or []
+    )
+    if skipped_subject_rows:
+        logger.warning(
+            "Skipped %d held-out subject(s) during fine-tuning bundle construction due to "
+            "insufficient sessions for the inherited eval_every_n: %s",
+            len(skipped_subject_rows),
+            [row.get("subject_id") for row in skipped_subject_rows],
+        )
     source_subject_id_to_index, source_index_to_subject_id = load_subject_index_map(
         source_run.subject_index_map_path
     )

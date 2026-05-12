@@ -21,6 +21,7 @@ heldout_finetuning:
   train_example_sessions_per_subject: 1
   eval_example_sessions_per_subject: 1
   example_max_subjects: 6
+  skip_subjects_with_insufficient_sessions: true
   keep_media_files: true
 
 output:

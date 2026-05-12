@@ -323,6 +323,7 @@ def _build_multisubject_bundle(
     batch_size: int | None,
     batch_mode: Literal["single", "rolling", "random"],
     metadata: Mapping[str, object],
+    skip_subjects_with_insufficient_sessions: bool = False,
 ) -> DatasetBundle:
     """Build a merged multisubject dataset bundle from a trial dataframe."""
     if "subject_id" not in df.columns:
@@ -343,6 +344,7 @@ def _build_multisubject_bundle(
     logger.info("Resolved multisubject training order: %s", subject_order)
 
     prepared_subjects: list[dict[str, object]] = []
+    skipped_subjects_with_insufficient_sessions: list[dict[str, object]] = []
     for subject_id in subject_order:
         subject_df = prepared_df[prepared_df["subject_id"] == subject_id].copy()
         if subject_df.empty:
@@ -378,6 +380,24 @@ def _build_multisubject_bundle(
                 eval_every_n=eval_every_n,
             )
         except ValueError as exc:
+            if skip_subjects_with_insufficient_sessions:
+                logger.warning(
+                    "Skipping subject_id=%s because only %d valid sessions remain after "
+                    "filtering, which is insufficient for eval_every_n=%d: %s",
+                    subject_id,
+                    len(session_ids),
+                    eval_every_n,
+                    exc,
+                )
+                skipped_subjects_with_insufficient_sessions.append(
+                    {
+                        "subject_id": normalize_subject_id(subject_id),
+                        "num_valid_sessions": int(len(session_ids)),
+                        "eval_every_n": int(eval_every_n),
+                        "reason": str(exc),
+                    }
+                )
+                continue
             raise ValueError(
                 "Failed to construct a per-subject train/eval split for "
                 f"subject_id={subject_id!r}: only {len(session_ids)} valid sessions remain "
@@ -552,6 +572,9 @@ def _build_multisubject_bundle(
             "subject_curricula": subject_curricula,
             "batch_size": batch_size,
             "batch_mode": batch_mode,
+            "skipped_subjects_with_insufficient_sessions": (
+                skipped_subjects_with_insufficient_sessions
+            ),
         }
     )
     logger.info(
