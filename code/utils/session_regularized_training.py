@@ -177,6 +177,7 @@ def train_network_with_session_regularization(
     session_regularization_scale: float,
     session_curriculum_lambda_schedule: SessionCurriculumSchedule | None = None,
     opt: optax.GradientTransformation = optax.adam(1e-3),
+    parameter_update_mask: Any | None = None,
     random_key: jax.Array | None = None,
     opt_state: optax.OptState | None = None,
     params: Any | None = None,
@@ -227,6 +228,11 @@ def train_network_with_session_regularization(
         )
     if opt_state is None:
         opt_state = opt.init(params)
+    if parameter_update_mask is not None:
+        parameter_update_mask = jax.tree_util.tree_map(
+            lambda leaf: jnp.asarray(leaf),
+            parameter_update_mask,
+        )
 
     xs_eval = ys_eval = None
     if validation_dataset is not None:
@@ -287,6 +293,12 @@ def train_network_with_session_regularization(
             key,
             session_curriculum_lambda,
         )
+        if parameter_update_mask is not None:
+            grads = jax.tree_util.tree_map(
+                lambda grad, mask: grad * mask,
+                grads,
+                parameter_update_mask,
+            )
         grads, next_opt_state = opt.update(grads, current_opt_state)
         clipped_grads = optimizers.clip_grads(grads, max_grad_norm)
         next_params = optax.apply_updates(current_params, clipped_grads)

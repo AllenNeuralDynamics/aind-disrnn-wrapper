@@ -1,0 +1,24 @@
+source_run:
+  model_dir: /path/to/trained/model_run
+  checkpoint_policy: best_eval
+
+heldout_finetuning:
+  n_steps: 50
+  lr: 1e-2
+  checkpoint_every_n_steps: 10
+  batch_size: null
+  batch_mode: single
+  checkpoint_plot_split_examples_every_n: 10
+  checkpoint_save_output_df_every_n: 0
+  train_example_sessions_per_subject: 1
+  eval_example_sessions_per_subject: 1
+  example_max_subjects: 6
+  keep_media_files: true
+
+output:
+  output_root: /results/heldout_subject_finetuning
+  run_name_suffix: null
+
+wandb: {}
+
+seed: null

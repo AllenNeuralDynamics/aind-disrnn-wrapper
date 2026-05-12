@@ -821,16 +821,26 @@ def convert_upstream_params_to_local_multisubject(
     return converted
 
 
-def extract_subject_embeddings_from_params(params: dict[str, Any]) -> np.ndarray:
-    """Return effective subject embeddings from local or upstream params."""
+def resolve_subject_embedding_module_key(params: Mapping[str, Any]) -> str:
+    """Return the local module key that owns the subject-embedding table."""
     if SUBJECT_MODULE_KEY in params and SUBJECT_TABLE_KEY in params[SUBJECT_MODULE_KEY]:
-        return np.asarray(params[SUBJECT_MODULE_KEY][SUBJECT_TABLE_KEY], dtype=float)
-
+        return SUBJECT_MODULE_KEY
     if (
         GRU_SUBJECT_MODULE_KEY in params
         and SUBJECT_TABLE_KEY in params[GRU_SUBJECT_MODULE_KEY]
     ):
-        return np.asarray(params[GRU_SUBJECT_MODULE_KEY][SUBJECT_TABLE_KEY], dtype=float)
+        return GRU_SUBJECT_MODULE_KEY
+    raise KeyError("Could not locate local subject embeddings in params.")
+
+
+def extract_subject_embeddings_from_params(params: dict[str, Any]) -> np.ndarray:
+    """Return effective subject embeddings from local or upstream params."""
+    try:
+        subject_module_key = resolve_subject_embedding_module_key(params)
+    except KeyError:
+        subject_module_key = None
+    if subject_module_key is not None:
+        return np.asarray(params[subject_module_key][SUBJECT_TABLE_KEY], dtype=float)
 
     if UPSTREAM_SUBJECT_LINEAR_KEY in params:
         linear_params = params[UPSTREAM_SUBJECT_LINEAR_KEY]
@@ -898,17 +908,62 @@ def expand_local_multisubject_params(
 ) -> dict[str, Any]:
     """Append new subject rows to local multisubject params."""
     expanded = convert_upstream_params_to_local_multisubject(params)
-    expanded.setdefault(SUBJECT_MODULE_KEY, {})
-    if SUBJECT_TABLE_KEY not in expanded[SUBJECT_MODULE_KEY]:
-        raise KeyError("Local multisubject params do not contain subject embeddings.")
-
-    subject_embeddings = np.asarray(expanded[SUBJECT_MODULE_KEY][SUBJECT_TABLE_KEY], dtype=float)
-    expanded[SUBJECT_MODULE_KEY][SUBJECT_TABLE_KEY] = expand_subject_embeddings_array(
+    subject_module_key = resolve_subject_embedding_module_key(expanded)
+    subject_embeddings = np.asarray(
+        expanded[subject_module_key][SUBJECT_TABLE_KEY],
+        dtype=float,
+    )
+    expanded[subject_module_key][SUBJECT_TABLE_KEY] = expand_subject_embeddings_array(
         subject_embeddings,
         n_new_subjects=n_new_subjects,
         init=init,
     )
     return expanded
+
+
+def build_subject_embedding_update_mask(
+    params: Mapping[str, Any],
+    *,
+    trainable_subject_indices: Sequence[int],
+) -> dict[str, Any]:
+    """Return a params-shaped mask that updates only selected subject rows."""
+
+    def _zeros_like_tree(value: Any) -> Any:
+        if isinstance(value, Mapping):
+            return {key: _zeros_like_tree(child) for key, child in value.items()}
+        return np.zeros_like(np.asarray(value))
+
+    subject_module_key = resolve_subject_embedding_module_key(params)
+    subject_embeddings = np.asarray(params[subject_module_key][SUBJECT_TABLE_KEY], dtype=float)
+    if subject_embeddings.ndim != 2:
+        raise ValueError(
+            "Subject embeddings must be a 2D array to build a row-level update mask."
+        )
+
+    mask = _zeros_like_tree(params)
+    embedding_mask = np.zeros_like(subject_embeddings, dtype=float)
+    for raw_index in trainable_subject_indices:
+        subject_index = int(raw_index)
+        if subject_index < 0 or subject_index >= subject_embeddings.shape[0]:
+            raise ValueError(
+                "trainable_subject_indices contains an out-of-range subject index: "
+                f"{subject_index} for table with {subject_embeddings.shape[0]} rows."
+            )
+        embedding_mask[subject_index, :] = 1.0
+    mask[subject_module_key][SUBJECT_TABLE_KEY] = embedding_mask
+    return mask
+
+
+def extend_session_context(
+    session_context: Mapping[str, Any],
+    *,
+    appended_rows: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Return a copy of session_context with appended per-subject rows."""
+    extended = copy.deepcopy(dict(session_context))
+    existing_rows = list(extended.get("per_subject", []))
+    extended["per_subject"] = existing_rows + [dict(row) for row in appended_rows]
+    return extended
 
 
 def append_subjects_to_index_maps(

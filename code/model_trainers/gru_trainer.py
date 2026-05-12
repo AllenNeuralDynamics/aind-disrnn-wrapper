@@ -2257,15 +2257,52 @@ class GruTrainer(ModelTrainer):
                 f"df_sessions={len(session_order)} model_sessions={n_sessions_full}"
             )
 
-        eval_every_n = int(metadata.get("eval_every_n", 2))
-        if eval_every_n <= 0:
-            raise ValueError(f"Invalid eval_every_n in metadata: {eval_every_n}")
+        train_session_ids_meta = metadata.get("train_session_ids")
+        eval_session_ids_meta = metadata.get("eval_session_ids")
+        if train_session_ids_meta is not None or eval_session_ids_meta is not None:
+            if not isinstance(train_session_ids_meta, list) or not isinstance(
+                eval_session_ids_meta, list
+            ):
+                raise ValueError(
+                    "metadata.train_session_ids and metadata.eval_session_ids must both be lists "
+                    "when either is provided."
+                )
+            session_index_by_id = {
+                session_id: index for index, session_id in enumerate(session_order)
+            }
+            missing_train_sessions = [
+                session_id
+                for session_id in train_session_ids_meta
+                if session_id not in session_index_by_id
+            ]
+            missing_eval_sessions = [
+                session_id
+                for session_id in eval_session_ids_meta
+                if session_id not in session_index_by_id
+            ]
+            if missing_train_sessions or missing_eval_sessions:
+                raise ValueError(
+                    "Split example metadata references sessions not present in output_df. "
+                    f"Missing train={missing_train_sessions}, missing eval={missing_eval_sessions}"
+                )
+            train_indices = np.asarray(
+                [session_index_by_id[session_id] for session_id in train_session_ids_meta],
+                dtype=int,
+            )
+            eval_indices = np.asarray(
+                [session_index_by_id[session_id] for session_id in eval_session_ids_meta],
+                dtype=int,
+            )
+        else:
+            eval_every_n = int(metadata.get("eval_every_n", 2))
+            if eval_every_n <= 0:
+                raise ValueError(f"Invalid eval_every_n in metadata: {eval_every_n}")
 
-        eval_indices = np.arange(eval_every_n - 1, n_sessions_full, eval_every_n)
-        train_indices = np.array(
-            [idx for idx in range(n_sessions_full) if idx not in set(eval_indices)],
-            dtype=int,
-        )
+            eval_indices = np.arange(eval_every_n - 1, n_sessions_full, eval_every_n)
+            train_indices = np.array(
+                [idx for idx in range(n_sessions_full) if idx not in set(eval_indices)],
+                dtype=int,
+            )
 
         split_summaries: dict[str, Any] = {}
         sessions_per_subject_by_split = {

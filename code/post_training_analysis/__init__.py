@@ -14,6 +14,9 @@ from post_training_analysis.generative_analysis import (
     run_post_training_analysis_from_saved_histories,
     simulate_model_sessions,
 )
+from post_training_analysis.heldout_finetuning import (
+    run_heldout_subject_finetuning_from_config,
+)
 from post_training_analysis.likelihood_comparison import (
     run_prediction_likelihood_comparison,
 )
@@ -25,6 +28,7 @@ __all__ = [
     "compute_switch_stats",
     "load_animal_session_history",
     "resolve_model_run",
+    "run_heldout_subject_finetuning_from_config",
     "run_post_training_analysis",
     "run_post_training_analysis_from_histories",
     "run_post_training_analysis_from_saved_histories",
