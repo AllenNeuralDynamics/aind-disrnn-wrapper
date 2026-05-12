@@ -2,13 +2,13 @@ from post_training_analysis import run_heldout_subject_finetuning_from_config
 
 config = {
     "source_run": {
-        "model_dir": "/absolute/path/to/trained_multisubject_run",
+        "model_dir": "/data/result-gru-ffc255a1",
         "checkpoint_policy": "best_eval",
     },
     "heldout_subjects": {
-        "test_subject_start": 10
+        "test_subject_start": 10,
         "test_subject_end": 15
-    }
+    },
     "heldout_finetuning": {
         "n_steps": 500,
         "lr": 1e-3,
