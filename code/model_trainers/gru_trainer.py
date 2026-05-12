@@ -349,14 +349,15 @@ class GruTrainer(ModelTrainer):
             raise ValueError(
                 "Session-context plotting requires metadata.session_context for multisubject runs."
             )
+        requested_subject_indices = metadata.get("plot_subject_indices")
+        if requested_subject_indices is None:
+            requested_subject_indices = self.training.get("session_context_plot_subject_indices")
         return resolve_session_context_plot_subject_indices(
             session_context,
-            requested_subject_indices=self.training.get("session_context_plot_subject_indices"),
+            requested_subject_indices=requested_subject_indices,
             max_subjects=int(self.training.get("session_context_plot_max_subjects", 3)),
             random_seed=(
-                None
-                if self.training.get("session_context_plot_subject_indices") is not None
-                else int(self.seed or 0)
+                None if requested_subject_indices is not None else int(self.seed or 0)
             ),
         )
 
@@ -528,6 +529,20 @@ class GruTrainer(ModelTrainer):
             raw_df=raw_df,
             metadata=metadata,
         )
+        requested_plot_subject_indices = metadata.get("plot_subject_indices")
+        if requested_plot_subject_indices is not None:
+            requested_plot_subject_indices = {
+                int(value) for value in requested_plot_subject_indices
+            }
+            plot_df = plot_df[
+                plot_df["subject_index"].astype(int).isin(requested_plot_subject_indices)
+            ].copy()
+            if plot_df.empty:
+                logger.info(
+                    "Skipping subject embedding state-space plot because no requested plot "
+                    "subjects are present."
+                )
+                return None
         if "curriculum_name" not in plot_df.columns:
             plot_df["curriculum_name"] = "Unknown"
         else:

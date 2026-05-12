@@ -652,7 +652,15 @@ def _build_global_heldout_bundle(
             "session_max_index_by_subject_index": session_max_index_by_subject_index,
             "train_session_ids": list(local_bundle.metadata.get("train_session_ids") or []),
             "eval_session_ids": list(local_bundle.metadata.get("eval_session_ids") or []),
-            "heldout_subject_ids": list(added_subject_ids),
+            "heldout_subject_ids": list(retained_heldout_subject_ids),
+            "heldout_subject_indices": [
+                int(updated_subject_id_to_index[subject_id])
+                for subject_id in retained_heldout_subject_ids
+            ],
+            "plot_subject_indices": [
+                int(updated_subject_id_to_index[subject_id])
+                for subject_id in retained_heldout_subject_ids
+            ],
             "multisubject": True,
         }
     )
@@ -816,6 +824,33 @@ def _save_state_space_figures(
     return plot_paths
 
 
+def _log_checkpoint_plot_paths_to_wandb(
+    *,
+    wandb_run: Any,
+    plot_paths: Mapping[str, str | None],
+    step: int,
+) -> None:
+    try:
+        import wandb
+    except ModuleNotFoundError:
+        logger.warning("wandb is unavailable; skipping checkpoint image logging.")
+        return
+
+    payload: dict[str, Any] = {}
+    subject_embedding_path = plot_paths.get("subject_embedding_state_space")
+    if subject_embedding_path:
+        payload["checkpoint/fig/subject_embedding_state_space"] = wandb.Image(
+            str(subject_embedding_path)
+        )
+    subject_session_context_path = plot_paths.get("subject_session_context_state_space")
+    if subject_session_context_path:
+        payload["checkpoint/fig/subject_session_context_state_space"] = wandb.Image(
+            str(subject_session_context_path)
+        )
+    if payload:
+        wandb_run.log(payload, step=int(step))
+
+
 def _evaluate_checkpoint(
     *,
     model_type: str,
@@ -830,6 +865,7 @@ def _evaluate_checkpoint(
     step: int,
     loss_name: str,
     loss_param: Any,
+    wandb_run: Any | None = None,
 ) -> dict[str, Any]:
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     _save_params(checkpoint_dir / "params.json", params)
@@ -927,6 +963,12 @@ def _evaluate_checkpoint(
         bundle=bundle,
         checkpoint_dir=checkpoint_dir,
     )
+    if wandb_run is not None:
+        _log_checkpoint_plot_paths_to_wandb(
+            wandb_run=wandb_run,
+            plot_paths=record["plot_paths"],
+            step=int(step),
+        )
 
     plot_examples_every_n = int(fine_tune_cfg.get("checkpoint_plot_split_examples_every_n", 0))
     save_output_df_every_n = int(fine_tune_cfg.get("checkpoint_save_output_df_every_n", 0))
@@ -956,7 +998,10 @@ def _evaluate_checkpoint(
             params=params,
             metadata=dict(bundle.metadata),
             n_action_logits=n_action_logits_full,
+            wandb_run=wandb_run,
             log_scope=f"Checkpoint step {step}",
+            wandb_step=int(step),
+            wandb_key_prefix="checkpoint",
         )
         if not bool(fine_tune_cfg.get("keep_media_files", True)):
             trainer._cleanup_split_example_media(split_summaries)
@@ -1243,20 +1288,21 @@ def run_heldout_subject_finetuning_from_config(
                 optimization_history["validation_loss"].extend(
                     np.asarray(chunk_losses["validation_loss"], dtype=float).tolist()
                 )
-            checkpoint_record = _evaluate_checkpoint(
-                model_type=resolved_source_run.model_type,
-                trainer=trainer,
-                params=params,
-                make_train_network=make_train_network,
+                checkpoint_record = _evaluate_checkpoint(
+                    model_type=resolved_source_run.model_type,
+                    trainer=trainer,
+                    params=params,
+                    make_train_network=make_train_network,
                 make_eval_network=make_eval_network,
                 bundle=bundle,
                 source_run=resolved_source_run,
                 fine_tune_cfg=resolved_config["heldout_finetuning"],
-                checkpoint_dir=checkpoints_root / f"step_{step}",
-                step=step,
-                loss_name=loss_name,
-                loss_param=loss_param,
-            )
+                    checkpoint_dir=checkpoints_root / f"step_{step}",
+                    step=step,
+                    loss_name=loss_name,
+                    loss_param=loss_param,
+                    wandb_run=wandb_run,
+                )
             checkpoint_records.append(checkpoint_record)
             if wandb_run is not None:
                 wandb_run.log(
