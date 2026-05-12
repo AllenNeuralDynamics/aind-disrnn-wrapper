@@ -5,6 +5,10 @@ config = {
         "model_dir": "/absolute/path/to/trained_multisubject_run",
         "checkpoint_policy": "best_eval",
     },
+    "heldout_subjects": {
+        "test_subject_start": 10
+        "test_subject_end": 15
+    }
     "heldout_finetuning": {
         "n_steps": 500,
         "lr": 1e-3,
@@ -15,7 +19,7 @@ config = {
         "checkpoint_save_output_df_every_n": 0,
         "train_example_sessions_per_subject": 1,
         "eval_example_sessions_per_subject": 1,
-        "example_max_subjects": 3,
+        "example_max_subjects": 1,
         "keep_media_files": False,
     },
     "output": {
