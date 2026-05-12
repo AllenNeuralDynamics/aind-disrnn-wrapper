@@ -372,10 +372,20 @@ def _build_multisubject_bundle(
             str(session_id): int(index)
             for index, session_id in enumerate(session_ids, start=1)
         }
-        train_session_ids, eval_session_ids = compute_train_eval_session_ids(
-            session_ids,
-            eval_every_n=eval_every_n,
-        )
+        try:
+            train_session_ids, eval_session_ids = compute_train_eval_session_ids(
+                session_ids,
+                eval_every_n=eval_every_n,
+            )
+        except ValueError as exc:
+            raise ValueError(
+                "Failed to construct a per-subject train/eval split for "
+                f"subject_id={subject_id!r}: only {len(session_ids)} valid sessions remain "
+                f"after filtering, with eval_every_n={eval_every_n}. "
+                "This commonly happens when low-ranked held-out subjects have too few mature "
+                "sessions. Choose subjects with more sessions, reduce eval_every_n in the "
+                "source training config, or specify explicit subject IDs."
+            ) from exc
         subject_df["subject_session_index"] = subject_df["ses_idx"].map(
             lambda session_id: session_index_by_session_id[str(session_id)]
         )
