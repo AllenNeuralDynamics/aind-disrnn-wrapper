@@ -679,14 +679,6 @@ def _build_global_heldout_bundle(
     )
 
 
-def _bind_session_curriculum_lambda(
-    make_network: Any,
-    *,
-    session_curriculum_lambda: float,
-) -> Any:
-    return lambda: make_network(session_curriculum_lambda)
-
-
 def _infer_n_action_logits(
     dataset: Any,
     yhat: np.ndarray | None = None,
@@ -1175,11 +1167,8 @@ def run_heldout_subject_finetuning_from_config(
                     bundle.metadata.get("session_max_index_by_subject_index") or []
                 ),
             )
-            make_train_network = _bind_session_curriculum_lambda(
-                gru_make_network,
-                session_curriculum_lambda=1.0,
-            )
-            make_eval_network = make_train_network
+            make_train_network = gru_make_network
+            make_eval_network = gru_make_network
             runtime_model_config = model_config
         else:
             disrnn_config, noiseless_config = trainer._build_network_configs(
@@ -1187,13 +1176,11 @@ def run_heldout_subject_finetuning_from_config(
                 ignore_policy=ignore_policy,
                 metadata=bundle.metadata,
             )
-            make_train_network = _bind_session_curriculum_lambda(
-                trainer._make_network_factory(disrnn_config, multisubject=True),
-                session_curriculum_lambda=1.0,
+            make_train_network = trainer._make_network_factory(
+                disrnn_config, multisubject=True
             )
-            make_eval_network = _bind_session_curriculum_lambda(
-                trainer._make_network_factory(noiseless_config, multisubject=True),
-                session_curriculum_lambda=1.0,
+            make_eval_network = trainer._make_network_factory(
+                noiseless_config, multisubject=True
             )
             runtime_model_config = asdict(disrnn_config)
 
