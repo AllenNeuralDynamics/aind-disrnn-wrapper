@@ -246,12 +246,34 @@ def _maybe_start_wandb_run(
     tags = list(init_kwargs.pop("tags", []) or [])
     tags.extend(["heldout_subject_finetuning", str(source_run.model_type)])
     init_kwargs.setdefault("dir", str(run_dir))
-    init_kwargs.setdefault("name", run_dir.name)
+    source_wandb_cfg = _normalize_mapping(_normalize_mapping(source_run.run_config).get("wandb"))
+    default_name = source_wandb_cfg.get("name") or run_dir.name
+    init_kwargs.setdefault("name", str(default_name))
     return wandb.init(
         **init_kwargs,
         config=resolved_config,
         tags=tags,
     )
+
+
+def _update_wandb_run_name_for_heldout_subjects(
+    *,
+    wandb_run: Any,
+    resolved_config: Mapping[str, Any],
+    source_run: Any,
+    heldout_subject_ids: Sequence[Any],
+) -> None:
+    configured_name = _normalize_mapping(resolved_config.get("wandb")).get("name")
+    source_wandb_cfg = _normalize_mapping(_normalize_mapping(source_run.run_config).get("wandb"))
+    base_name = configured_name or source_wandb_cfg.get("name") or wandb_run.name or "heldout_finetuning"
+    ids_str = "-".join(str(subject_id) for subject_id in heldout_subject_ids)
+    new_name = f"{base_name}_heldout-{ids_str}" if ids_str else str(base_name)
+    wandb_run.name = new_name
+    try:
+        wandb_run.config.update({"resolved_heldout_subject_ids": list(heldout_subject_ids)})
+    except Exception:
+        logger.warning("Failed to update W&B config with resolved held-out subject IDs.")
+    logger.info("Updated W&B run name to: %s", new_name)
 
 
 def _resolve_runtime_config(
@@ -680,7 +702,7 @@ def _build_global_heldout_bundle(
     )
     return (
         global_bundle,
-        added_subject_ids,
+        retained_heldout_subject_ids,
         appended_subject_indices,
         updated_subject_id_to_index,
         updated_index_to_subject_id,
@@ -1169,6 +1191,13 @@ def run_heldout_subject_finetuning_from_config(
             fine_tune_cfg=resolved_config["heldout_finetuning"],
             architecture=architecture,
         )
+        if wandb_run is not None:
+            _update_wandb_run_name_for_heldout_subjects(
+                wandb_run=wandb_run,
+                resolved_config=resolved_config,
+                source_run=resolved_source_run,
+                heldout_subject_ids=heldout_subject_ids,
+            )
         source_params = _load_params(resolved_source_run.params_path)
         params = expand_local_multisubject_params(
             source_params,
