@@ -1288,21 +1288,21 @@ def run_heldout_subject_finetuning_from_config(
                 optimization_history["validation_loss"].extend(
                     np.asarray(chunk_losses["validation_loss"], dtype=float).tolist()
                 )
-                checkpoint_record = _evaluate_checkpoint(
-                    model_type=resolved_source_run.model_type,
-                    trainer=trainer,
-                    params=params,
-                    make_train_network=make_train_network,
+            checkpoint_record = _evaluate_checkpoint(
+                model_type=resolved_source_run.model_type,
+                trainer=trainer,
+                params=params,
+                make_train_network=make_train_network,
                 make_eval_network=make_eval_network,
                 bundle=bundle,
                 source_run=resolved_source_run,
                 fine_tune_cfg=resolved_config["heldout_finetuning"],
-                    checkpoint_dir=checkpoints_root / f"step_{step}",
-                    step=step,
-                    loss_name=loss_name,
-                    loss_param=loss_param,
-                    wandb_run=wandb_run,
-                )
+                checkpoint_dir=checkpoints_root / f"step_{step}",
+                step=step,
+                loss_name=loss_name,
+                loss_param=loss_param,
+                wandb_run=wandb_run,
+            )
             checkpoint_records.append(checkpoint_record)
             if wandb_run is not None:
                 wandb_run.log(
