@@ -28,8 +28,8 @@ from utils.multisubject import (
     prepend_session_index_to_multisubject_dataset,
     resolve_session_context_plot_subject_indices,
     save_session_context_map,
-    session_regularization_index_arrays_from_session_context,
     session_indices_for_split,
+    session_regularization_index_arrays_from_session_context,
 )
 
 
@@ -208,6 +208,33 @@ class TestMultisubjectUtils(unittest.TestCase):
         )
         self.assertEqual(session_indices_for_split(metadata, split_name="train"), [1, 3, 2])
         self.assertEqual(session_indices_for_split(metadata, split_name="eval"), [2, 1])
+
+    def test_session_indices_for_split_prefers_explicit_full_session_ids(self):
+        session_context = {
+            "indexing": "1_based",
+            "per_subject": [
+                {
+                    "subject_id": "train_subject",
+                    "subject_index": 0,
+                    "ordered_session_ids": ["train_subject__s1", "train_subject__s2"],
+                    "ordered_source_session_ids": ["s1", "s2"],
+                },
+                {
+                    "subject_id": "heldout_subject",
+                    "subject_index": 1,
+                    "ordered_session_ids": ["heldout_subject__s1", "heldout_subject__s2"],
+                    "ordered_source_session_ids": ["s1", "s2"],
+                },
+            ],
+        }
+        metadata = {
+            "session_context": session_context,
+            "full_session_ids": ["heldout_subject__s1", "heldout_subject__s2"],
+            "train_session_ids": ["heldout_subject__s1"],
+            "eval_session_ids": ["heldout_subject__s2"],
+        }
+
+        self.assertEqual(session_indices_for_split(metadata, split_name="full"), [1, 2])
 
     def test_save_session_context_map_round_trips_json(self):
         with tempfile.TemporaryDirectory(prefix="session_context_map_") as tmpdir:

@@ -567,6 +567,7 @@ def _build_multisubject_bundle(
             "multisubject": True,
             "num_trials": int(len(raw_df)),
             "num_sessions": int(len(full_session_ids)),
+            "full_session_ids": full_session_ids,
             "train_session_ids": train_session_ids,
             "eval_session_ids": eval_session_ids,
             "subject_curricula": subject_curricula,

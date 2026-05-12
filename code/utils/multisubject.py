@@ -665,7 +665,11 @@ def session_indices_for_split(
         )
     session_id_to_index = merged_session_index_lookup_from_session_context(session_context)
     if split_name == "full":
-        ordered_session_ids = ordered_session_ids_from_session_context(session_context)
+        explicit_full_session_ids = metadata.get("full_session_ids")
+        if explicit_full_session_ids is not None:
+            ordered_session_ids = [str(session_id) for session_id in explicit_full_session_ids]
+        else:
+            ordered_session_ids = ordered_session_ids_from_session_context(session_context)
     elif split_name == "train":
         ordered_session_ids = [str(session_id) for session_id in metadata.get("train_session_ids") or []]
     elif split_name == "eval":
