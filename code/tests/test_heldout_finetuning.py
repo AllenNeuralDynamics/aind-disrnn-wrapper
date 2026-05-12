@@ -402,6 +402,14 @@ class TestHeldoutSubjectFinetuning(unittest.TestCase):
                 "model_dir": str(model_dir),
                 "checkpoint_policy": "best_eval",
             },
+            "heldout_subjects": {
+                "test_subject_ids": None,
+                "test_subject_start": None,
+                "test_subject_end": None,
+                "mature_only": None,
+                "curricula": None,
+                "cols_to_retain": None,
+            },
             "heldout_finetuning": {
                 "n_steps": 2,
                 "lr": 1e-2,
@@ -501,3 +509,37 @@ class TestHeldoutSubjectFinetuning(unittest.TestCase):
         config = self._make_runner_config(model_dir=model_dir)
         with self.assertRaisesRegex(ValueError, "held-out subject selectors"):
             run_heldout_subject_finetuning_from_config(config, output_root=self.output_root)
+
+    def test_runner_allows_config_override_for_heldout_selectors(self) -> None:
+        model_dir, _, _ = self._create_gru_source_run(session_conditioning=False)
+        cfg_path = model_dir / "inputs.yaml"
+        cfg = OmegaConf.load(cfg_path)
+        cfg.data.test_subject_ids = None
+        OmegaConf.save(cfg, f=str(cfg_path))
+
+        config = self._make_runner_config(model_dir=model_dir)
+        config["heldout_subjects"] = {
+            "test_subject_ids": list(self.heldout_subject_ids),
+            "test_subject_start": None,
+            "test_subject_end": None,
+            "mature_only": True,
+            "curricula": ["Uncoupled Baiting"],
+            "cols_to_retain": None,
+        }
+
+        captured_selector: dict[str, object] = {}
+
+        def _fake_load_selector(*, heldout_selector):
+            captured_selector.update(dict(heldout_selector))
+            return self.heldout_snapshot_df.copy(), list(self.heldout_subject_ids)
+
+        with mock.patch(
+            "post_training_analysis.heldout_finetuning._load_heldout_snapshot_selection",
+            side_effect=_fake_load_selector,
+        ):
+            run_heldout_subject_finetuning_from_config(config, output_root=self.output_root)
+
+        self.assertEqual(
+            captured_selector["test_subject_ids"],
+            list(self.heldout_subject_ids),
+        )

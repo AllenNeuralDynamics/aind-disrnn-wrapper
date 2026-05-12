@@ -106,9 +106,26 @@ def _coerce_optional_int(value: Any) -> int | None:
     return int(value)
 
 
+def _normalize_optional_list(value: Any) -> list[Any] | None:
+    if value is None:
+        return None
+    if isinstance(value, list):
+        return list(value)
+    if isinstance(value, Sequence) and not isinstance(value, str):
+        return list(value)
+    return [value]
+
+
+def _selector_fields_present(selector_cfg: Mapping[str, Any]) -> bool:
+    return any(
+        selector_cfg.get(key) is not None
+        for key in ("test_subject_ids", "test_subject_start", "test_subject_end")
+    )
+
+
 def _heldout_selector_from_data_config(data_cfg: Mapping[str, Any]) -> dict[str, Any]:
     selector = {
-        "test_subject_ids": data_cfg.get("test_subject_ids"),
+        "test_subject_ids": _normalize_optional_list(data_cfg.get("test_subject_ids")),
         "test_subject_start": _coerce_optional_int(data_cfg.get("test_subject_start")),
         "test_subject_end": _coerce_optional_int(data_cfg.get("test_subject_end")),
         "mature_only": bool(data_cfg.get("mature_only", True)),
@@ -124,6 +141,63 @@ def _heldout_selector_from_data_config(data_cfg: Mapping[str, Any]) -> dict[str,
             "Source run does not define held-out subject selectors. Expected one of "
             "data.test_subject_ids or data.test_subject_start/end in the source run config."
         )
+    return selector
+
+
+def _resolve_heldout_selector(
+    *,
+    config: Mapping[str, Any],
+    source_data_cfg: Mapping[str, Any],
+) -> dict[str, Any]:
+    override_cfg = _normalize_mapping(config.get("heldout_subjects"))
+    if not override_cfg or not _selector_fields_present(override_cfg):
+        selector = _heldout_selector_from_data_config(source_data_cfg)
+        logger.info(
+            "Using held-out subject selectors from the source training run: ids=%s start=%s end=%s",
+            selector["test_subject_ids"],
+            selector["test_subject_start"],
+            selector["test_subject_end"],
+        )
+        return selector
+
+    test_subject_ids = _normalize_optional_list(override_cfg.get("test_subject_ids"))
+    test_subject_start = _coerce_optional_int(override_cfg.get("test_subject_start"))
+    test_subject_end = _coerce_optional_int(override_cfg.get("test_subject_end"))
+    if test_subject_ids is not None and (
+        test_subject_start is not None or test_subject_end is not None
+    ):
+        raise ValueError(
+            "Specify either heldout_subjects.test_subject_ids or "
+            "heldout_subjects.test_subject_start/end, not both."
+        )
+
+    selector = {
+        "test_subject_ids": test_subject_ids,
+        "test_subject_start": test_subject_start,
+        "test_subject_end": test_subject_end,
+        "mature_only": bool(
+            override_cfg["mature_only"]
+            if "mature_only" in override_cfg and override_cfg["mature_only"] is not None
+            else source_data_cfg.get("mature_only", True)
+        ),
+        "curricula": list(
+            override_cfg["curricula"]
+            if "curricula" in override_cfg and override_cfg["curricula"] is not None
+            else source_data_cfg.get("curricula") or []
+        ),
+        "cols_to_retain": (
+            override_cfg["cols_to_retain"]
+            if "cols_to_retain" in override_cfg
+            and override_cfg["cols_to_retain"] is not None
+            else source_data_cfg.get("cols_to_retain")
+        ),
+    }
+    logger.info(
+        "Using held-out subject selectors from the fine-tuning config: ids=%s start=%s end=%s",
+        selector["test_subject_ids"],
+        selector["test_subject_start"],
+        selector["test_subject_end"],
+    )
     return selector
 
 
@@ -191,9 +265,12 @@ def _resolve_runtime_config(
         raise ValueError("Config must set source_run.model_dir.")
 
     fine_tune_cfg = _normalize_mapping(config.get("heldout_finetuning"))
-    output_cfg = _normalize_mapping(config.get("output"))
     source_data_cfg = _normalize_mapping(_normalize_mapping(source_run.run_config).get("data"))
     source_model_cfg = _normalize_mapping(_normalize_mapping(source_run.run_config).get("model"))
+    heldout_selector = _resolve_heldout_selector(
+        config=config,
+        source_data_cfg=source_data_cfg,
+    )
 
     if "n_steps" not in fine_tune_cfg:
         raise ValueError("Config must set heldout_finetuning.n_steps.")
@@ -218,6 +295,7 @@ def _resolve_runtime_config(
     resolved["output"]["output_root"] = str(
         _resolved_output_root(config, output_root_override=output_root_override)
     )
+    resolved["heldout_subjects"] = heldout_selector
     resolved["heldout_finetuning"] = {
         "n_steps": int(fine_tune_cfg["n_steps"]),
         "lr": float(fine_tune_cfg["lr"]),
@@ -477,6 +555,7 @@ def _maybe_prepend_session_indices(
 def _build_global_heldout_bundle(
     *,
     source_run: Any,
+    heldout_selector: Mapping[str, Any],
     fine_tune_cfg: Mapping[str, Any],
     architecture: Mapping[str, Any],
 ) -> tuple[DatasetBundle, list[Any], list[int], dict[Any, int], dict[int, Any]]:
@@ -485,7 +564,6 @@ def _build_global_heldout_bundle(
             "Held-out fine-tuning requires outputs/subject_index_map.json in the source run."
         )
     source_data_cfg = _normalize_mapping(_normalize_mapping(source_run.run_config).get("data"))
-    heldout_selector = _heldout_selector_from_data_config(source_data_cfg)
     heldout_df, heldout_subject_ids = _load_heldout_snapshot_selection(
         heldout_selector=heldout_selector
     )
@@ -978,10 +1056,7 @@ def run_heldout_subject_finetuning_from_config(
         source_run=resolved_source_run,
         output_root_override=output_root,
     )
-    source_data_cfg = _normalize_mapping(
-        _normalize_mapping(resolved_source_run.run_config).get("data")
-    )
-    heldout_selector = _heldout_selector_from_data_config(source_data_cfg)
+    heldout_selector = _normalize_mapping(resolved_config.get("heldout_subjects"))
     run_dir = _resolve_output_run_dir(
         resolved_config=resolved_config,
         source_run=resolved_source_run,
@@ -1004,6 +1079,17 @@ def run_heldout_subject_finetuning_from_config(
         run_dir=run_dir,
         source_run=resolved_source_run,
     )
+    logger.info(
+        "Starting held-out subject fine-tuning: source_model_dir=%s model_type=%s checkpoint=%s "
+        "heldout_ids=%s heldout_start=%s heldout_end=%s output_dir=%s",
+        resolved_source_run.model_dir,
+        resolved_source_run.model_type,
+        resolved_source_run.checkpoint_label,
+        heldout_selector.get("test_subject_ids"),
+        heldout_selector.get("test_subject_start"),
+        heldout_selector.get("test_subject_end"),
+        run_dir,
+    )
 
     try:
         if resolved_source_run.model_type == "gru":
@@ -1023,6 +1109,7 @@ def run_heldout_subject_finetuning_from_config(
 
         bundle, heldout_subject_ids, appended_subject_indices, _, _ = _build_global_heldout_bundle(
             source_run=resolved_source_run,
+            heldout_selector=heldout_selector,
             fine_tune_cfg=resolved_config["heldout_finetuning"],
             architecture=architecture,
         )
@@ -1264,6 +1351,15 @@ def run_heldout_subject_finetuning_from_config(
             for key, value in summary["metrics"].items():
                 wandb_run.summary[f"final/{key}"] = float(value)
             wandb_run.summary["output_dir"] = str(run_dir)
+        logger.info(
+            "Completed held-out subject fine-tuning: output_dir=%s summary=%s "
+            "checkpoint_metrics=%s final_train_likelihood=%s final_eval_likelihood=%s",
+            run_dir,
+            outputs_dir / "output_summary.json",
+            outputs_dir / "checkpoint_metrics.json",
+            summary["metrics"].get("train_likelihood"),
+            summary["metrics"].get("eval_likelihood"),
+        )
 
         return {
             "output_dir": str(run_dir),

@@ -2,6 +2,14 @@ source_run:
   model_dir: /path/to/trained/model_run
   checkpoint_policy: best_eval
 
+heldout_subjects:
+  test_subject_ids: null
+  test_subject_start: null
+  test_subject_end: null
+  mature_only: null
+  curricula: null
+  cols_to_retain: null
+
 heldout_finetuning:
   n_steps: 50
   lr: 1e-2
