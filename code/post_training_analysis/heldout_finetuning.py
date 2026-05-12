@@ -577,6 +577,7 @@ def _build_global_heldout_bundle(
         source_data_cfg=source_data_cfg,
         fine_tune_cfg=fine_tune_cfg,
     )
+    retained_heldout_subject_ids = list(local_bundle.metadata.get("subject_ids") or [])
     skipped_subject_rows = list(
         local_bundle.metadata.get("skipped_subjects_with_insufficient_sessions") or []
     )
@@ -587,17 +588,21 @@ def _build_global_heldout_bundle(
             len(skipped_subject_rows),
             [row.get("subject_id") for row in skipped_subject_rows],
         )
+    if not retained_heldout_subject_ids:
+        raise ValueError(
+            "No held-out subjects remain after filtering and per-subject split validation."
+        )
     source_subject_id_to_index, source_index_to_subject_id = load_subject_index_map(
         source_run.subject_index_map_path
     )
     updated_subject_id_to_index, updated_index_to_subject_id = append_subjects_to_index_maps(
         source_subject_id_to_index,
         source_index_to_subject_id,
-        heldout_subject_ids,
+        retained_heldout_subject_ids,
     )
     added_subject_ids = [
         subject_id
-        for subject_id in heldout_subject_ids
+        for subject_id in retained_heldout_subject_ids
         if subject_id not in source_subject_id_to_index
     ]
     if not added_subject_ids:
