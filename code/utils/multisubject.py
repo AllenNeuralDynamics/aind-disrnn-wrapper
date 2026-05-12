@@ -25,6 +25,21 @@ def _json_default(value: Any) -> Any:
     raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
 
+def _normalize_jsonable(value: Any) -> Any:
+    """Recursively normalize metadata into JSON-friendly Python objects."""
+    if isinstance(value, Mapping):
+        return {str(key): _normalize_jsonable(child) for key, child in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_normalize_jsonable(child) for child in value]
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
+
+
 def normalize_subject_id(value: Any) -> Any:
     """Convert numpy scalars to plain Python scalars for stable mappings."""
     if isinstance(value, np.generic):
@@ -1018,6 +1033,20 @@ def save_subject_index_map(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w") as f:
         json.dump(payload, f, indent=2, default=_json_default)
+    return output_path
+
+
+def save_multisubject_metadata(
+    path: str | Path,
+    *,
+    metadata: Mapping[str, Any],
+) -> Path:
+    """Persist dataset metadata as a JSON artifact for later debugging/inspection."""
+    output_path = Path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = _normalize_jsonable(dict(metadata))
+    with output_path.open("w") as f:
+        json.dump(payload, f, indent=2)
     return output_path
 
 

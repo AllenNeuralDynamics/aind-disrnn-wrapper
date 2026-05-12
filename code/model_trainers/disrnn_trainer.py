@@ -51,6 +51,7 @@ from utils.multisubject import (
     ordered_session_context_rows,
     prepend_session_index_to_multisubject_split_datasets,
     resolve_session_context_plot_subject_indices,
+    save_multisubject_metadata,
     save_subject_index_map,
     save_session_context_map,
     session_regularization_index_arrays_from_session_context,
@@ -502,9 +503,14 @@ class DisrnnTrainer(ModelTrainer):
         )
         subject_embeddings_path = self.output_dir / "subject_embeddings.pkl"
         subject_embeddings_df.to_pickle(subject_embeddings_path)
+        multisubject_metadata_path = save_multisubject_metadata(
+            self.output_dir / "multisubject_metadata.json",
+            metadata=metadata,
+        )
         artifacts = {
             "subject_index_map": str(subject_index_map_path),
             "subject_embeddings": str(subject_embeddings_path),
+            "multisubject_metadata": str(multisubject_metadata_path),
         }
         if str(self.architecture.get("session_encoding_type", "none")).strip().lower() != "none":
             session_context = metadata.get("session_context")

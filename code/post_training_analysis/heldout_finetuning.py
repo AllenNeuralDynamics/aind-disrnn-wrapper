@@ -1390,6 +1390,7 @@ def run_heldout_subject_finetuning_from_config(
                 "model_config": str(model_config_path),
                 "subject_index_map": subject_artifacts["subject_index_map"],
                 "subject_embeddings": subject_artifacts["subject_embeddings"],
+                "multisubject_metadata": subject_artifacts["multisubject_metadata"],
                 "loss_curve": str(loss_curve_path),
                 "likelihood_curve": str(likelihood_curve_path),
             },
