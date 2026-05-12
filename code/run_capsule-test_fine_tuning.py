@@ -1,8 +1,17 @@
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+
+
 from post_training_analysis import run_heldout_subject_finetuning_from_config
 
 config = {
     "source_run": {
-        "model_dir": "/data/result-gru-ffc255a1",
+        # "model_dir": "/data/result-gru-ffc255a1",
+        "model_dir": "/data/result-gru-16bc52a9",
         "checkpoint_policy": "best_eval",
     },
     "heldout_subjects": {
