@@ -856,6 +856,79 @@ model:
             ],
             1,
         )
+        session_point = stats["session_level"]["post_switch_by_reward"]["rewarded"][
+            "points"
+        ][0]
+        self.assertEqual(session_point["subject_id"], "m4")
+        self.assertEqual(session_point["session_id"], "m4_s1")
+        self.assertEqual(session_point["source_ses_idx"], "m4_s1")
+        self.assertEqual(session_point["animal_n"], 6)
+        self.assertEqual(session_point["simulated_effective_n"], 2)
+        self.assertAlmostEqual(session_point["simulated_probability"], 0.75)
+        self.assertAlmostEqual(session_point["delta_probability"], -0.25)
+
+        rewarded_session_aggregate = stats["session_aggregate"]["post_switch_by_reward"][
+            "rewarded"
+        ]
+        self.assertEqual(rewarded_session_aggregate["n_sessions"], 1)
+        self.assertAlmostEqual(rewarded_session_aggregate["animal_mean"], 1.0)
+        self.assertAlmostEqual(rewarded_session_aggregate["simulated_mean"], 0.75)
+        self.assertAlmostEqual(rewarded_session_aggregate["delta_mean"], -0.25)
+        self.assertEqual(
+            stats["quantitative_summary"]["session_mean"]["post_switch_by_reward"][
+                "n_rows"
+            ],
+            1,
+        )
+
+    def test_compute_switch_stats_session_level_matches_source_sessions_only(self):
+        stats = compute_switch_stats(
+            animal_sessions=[
+                self._session(
+                    subject_id="m1",
+                    ses_idx="m1_s1",
+                    choice_history=[0, 1, 0, 1, 0, 1],
+                    reward_history=[0, 1, 0, 1, 0, 1],
+                ),
+                self._session(
+                    subject_id="m1",
+                    ses_idx="m1_s2",
+                    choice_history=[0, 1, 0, 1, 0, 1],
+                    reward_history=[0, 1, 0, 1, 0, 1],
+                ),
+            ],
+            simulated_sessions=[
+                self._session(
+                    subject_id="m1",
+                    ses_idx="m1_s1__rollout_0",
+                    source_ses_idx="m1_s1",
+                    choice_history=[0, 1, 0, 1, 0, 1],
+                    reward_history=[0, 1, 0, 1, 0, 1],
+                ),
+                self._session(
+                    subject_id="m1",
+                    ses_idx="m1_extra__rollout_0",
+                    source_ses_idx="m1_extra",
+                    choice_history=[0, 1, 0, 1, 0, 1],
+                    reward_history=[0, 1, 0, 1, 0, 1],
+                ),
+            ],
+            window_size=1,
+        )
+
+        rewarded_points = stats["session_level"]["post_switch_by_reward"]["rewarded"][
+            "points"
+        ]
+        self.assertEqual(
+            [point["session_id"] for point in rewarded_points],
+            ["m1_s1"],
+        )
+        self.assertEqual(
+            stats["session_level"]["post_switch_by_reward"]["rewarded"]["summary"][
+                "n_sessions"
+            ],
+            1,
+        )
 
     def test_save_switch_figures_includes_subject_level_scatter_plots(self):
         try:
@@ -865,7 +938,7 @@ model:
 
         animal_sessions = [
             self._session(
-                subject_id="m4",
+                subject_id="m4/a",
                 ses_idx="m4_s1",
                 choice_history=[0, 1, 0, 1, 0, 1, 0, 1],
                 reward_history=[0, 1, 1, 1, 1, 1, 1, 0],
@@ -873,7 +946,7 @@ model:
         ]
         simulated_sessions = [
             self._session(
-                subject_id="m4",
+                subject_id="m4/a",
                 ses_idx="m4_s1__rollout_0",
                 source_ses_idx="m4_s1",
                 choice_history=[0, 1, 0],
@@ -893,6 +966,7 @@ model:
             )
             self.assertIn("post_switch_by_reward_pooled", figure_paths)
             self.assertIn("post_switch_by_reward_subject_scatter", figure_paths)
+            self.assertIn("post_switch_by_reward_session_scatter", figure_paths)
             self.assertIn("post_switch_delta_by_reward", figure_paths)
             self.assertIn("post_switch_delta_by_reward_no_stats", figure_paths)
             self.assertIn("post_switch_delta_by_reward_and_run_length", figure_paths)
@@ -904,9 +978,24 @@ model:
                 "post_switch_by_reward_and_run_length_subject_scatter",
                 figure_paths,
             )
+            self.assertIn(
+                "post_switch_by_reward_and_run_length_session_scatter",
+                figure_paths,
+            )
+            self.assertIn(
+                "post_switch_by_reward_session_scatter__subject_m4_a",
+                figure_paths,
+            )
+            self.assertIn(
+                "post_switch_by_reward_and_run_length_session_scatter__subject_m4_a",
+                figure_paths,
+            )
             self.assertTrue(
                 figure_paths["post_switch_by_reward_subject_scatter"]
                 .name.endswith(".png")
+            )
+            self.assertTrue(
+                figure_paths["post_switch_by_reward_session_scatter"].exists()
             )
             self.assertTrue(
                 figure_paths[
@@ -1183,6 +1272,28 @@ model:
             stats["quantitative_summary"]["subject_mean"]["abstract"][1]["n_rows"],
             2,
         )
+        session_points = {
+            point["session_id"]: point
+            for point in stats["session_level"]["abstract"][1]["a"]["points"]
+        }
+        self.assertEqual(set(session_points), {"m1_s1", "m1_s2", "m2_s1", "m2_s2"})
+        self.assertEqual(session_points["m1_s1"]["subject_id"], "m1")
+        self.assertEqual(session_points["m1_s1"]["animal_total"], 1)
+        self.assertAlmostEqual(session_points["m1_s1"]["simulated_probability"], 0.5)
+        self.assertEqual(session_points["m1_s1"]["simulated_total_effective"], 1)
+        self.assertAlmostEqual(session_points["m1_s1"]["delta_probability"], -0.5)
+        session_aggregate_rows = {
+            row["pattern"]: row
+            for row in stats["session_aggregate"]["abstract"][1]["rows"]
+        }
+        self.assertEqual(
+            session_aggregate_rows["a"]["n_sessions"],
+            4,
+        )
+        self.assertEqual(
+            stats["quantitative_summary"]["session_mean"]["abstract"][1]["n_rows"],
+            2,
+        )
 
     def test_save_history_dependent_switch_figures_creates_expected_outputs(self):
         try:
@@ -1270,6 +1381,13 @@ model:
             self.assertIn("history_pattern_subject_level_abstract_nback_1", figure_paths)
             self.assertIn("history_pattern_subject_level_abstract_nback_2", figure_paths)
             self.assertIn("history_pattern_subject_level_abstract_nback_3", figure_paths)
+            self.assertIn("history_pattern_session_level_abstract_nback_1", figure_paths)
+            self.assertIn("history_pattern_session_level_abstract_nback_2", figure_paths)
+            self.assertIn("history_pattern_session_level_abstract_nback_3", figure_paths)
+            self.assertIn(
+                "history_pattern_session_level_abstract_nback_1__subject_m1",
+                figure_paths,
+            )
             for path in figure_paths.values():
                 self.assertTrue(path.name.endswith(".png"))
                 self.assertTrue(path.exists())
@@ -1710,9 +1828,19 @@ model:
                 "delta_significance_summary",
                 summary_payload["history_dependent"],
             )
+            self.assertIn(
+                "session_mean",
+                summary_payload["switch_triggered"]["quantitative_summary"],
+            )
+            self.assertIn(
+                "session_mean",
+                summary_payload["history_dependent"]["quantitative_summary"],
+            )
 
             switch_payload = json.loads(Path(result["switch_stats"]).read_text())
             self.assertIn("subject_aggregate", switch_payload)
+            self.assertIn("session_level", switch_payload)
+            self.assertIn("session_aggregate", switch_payload)
             self.assertIn("quantitative_summary", switch_payload)
             self.assertIn("delta_significance_summary", switch_payload)
 
@@ -1720,6 +1848,8 @@ model:
                 Path(result["history_dependent_switch_stats"]).read_text()
             )
             self.assertIn("subject_aggregate", history_payload)
+            self.assertIn("session_level", history_payload)
+            self.assertIn("session_aggregate", history_payload)
             self.assertIn("quantitative_summary", history_payload)
             self.assertIn("delta_significance_summary", history_payload)
 

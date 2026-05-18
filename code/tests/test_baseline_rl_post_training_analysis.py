@@ -186,16 +186,41 @@ class TestBaselineRlPostTrainingAnalysis(unittest.TestCase):
         simulated_history_path = output_dir / "simulated_session_history.pkl"
         simulated_history_path.write_bytes(b"simulated")
         switch_stats_path = output_dir / "switch_stats.json"
-        switch_stats_path.write_text(json.dumps({"window_size": 10}))
+        switch_stats_path.write_text(
+            json.dumps({"window_size": 10, "session_level": {}, "session_aggregate": {}})
+        )
         history_stats_path = output_dir / "history_dependent_switch_stats.json"
-        history_stats_path.write_text(json.dumps({"config": {"max_trials_back": 3}}))
+        history_stats_path.write_text(
+            json.dumps(
+                {
+                    "config": {"max_trials_back": 3},
+                    "session_level": {},
+                    "session_aggregate": {},
+                }
+            )
+        )
         quantitative_summary_path = output_dir / "model_vs_animal_quantitative_summary.json"
-        quantitative_summary_path.write_text(json.dumps({"switch_triggered": {}}))
+        quantitative_summary_path.write_text(
+            json.dumps(
+                {
+                    "switch_triggered": {"quantitative_summary": {"session_mean": {}}},
+                    "history_dependent": {"quantitative_summary": {"session_mean": {}}},
+                }
+            )
+        )
         switch_figure_path = output_dir / "figures" / "pooled_switch_probability.png"
         switch_figure_path.parent.mkdir(parents=True, exist_ok=True)
         switch_figure_path.write_text("switch")
         history_figure_path = output_dir / "figures" / "history_pattern_comparison_abstract.png"
         history_figure_path.write_text("history")
+        session_switch_figure_path = (
+            output_dir / "figures" / "post_switch_by_reward_session_scatter.png"
+        )
+        session_switch_figure_path.write_text("session-switch")
+        session_history_figure_path = (
+            output_dir / "figures" / "history_pattern_session_level_abstract_nback_1.png"
+        )
+        session_history_figure_path.write_text("session-history")
         return {
             "simulated_session_history": str(simulated_history_path),
             "switch_stats": str(switch_stats_path),
@@ -204,6 +229,12 @@ class TestBaselineRlPostTrainingAnalysis(unittest.TestCase):
             "figure_paths": {
                 "pooled_switch_probability": str(switch_figure_path),
                 "history_pattern_comparison_abstract": str(history_figure_path),
+                "post_switch_by_reward_session_scatter": str(
+                    session_switch_figure_path
+                ),
+                "history_pattern_session_level_abstract_nback_1": str(
+                    session_history_figure_path
+                ),
             },
             "output_dir": str(output_dir),
         }
@@ -264,6 +295,14 @@ class TestBaselineRlPostTrainingAnalysis(unittest.TestCase):
             self.assertIn(
                 "model_vs_animal_quantitative_summary_path",
                 result["models"]["QLearning_L1F1_CK1_softmax"],
+            )
+            self.assertIn(
+                "post_switch_by_reward_session_scatter",
+                result["models"]["QLearning_L1F1_CK1_softmax"]["figure_paths"],
+            )
+            self.assertIn(
+                "history_pattern_session_level_abstract_nback_1",
+                result["models"]["QLearning_L1F1_CK1_softmax"]["figure_paths"],
             )
             self.assertTrue(Path(result["animal_session_history"]).exists())
             self.assertTrue(Path(result["model_summary_csv"]).exists())

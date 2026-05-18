@@ -520,12 +520,18 @@ def compute_switch_stats(
         animal_with_switches,
         simulated_with_switches,
     )
+    session_level = _compute_session_level_comparison(
+        animal_with_switches,
+        simulated_with_switches,
+    )
     subject_aggregate = _build_switch_subject_aggregate(subject_level)
+    session_aggregate = _build_switch_session_aggregate(session_level)
     delta_significance_summary = _build_switch_delta_significance_summary(subject_level)
     quantitative_summary = _build_switch_quantitative_summary(
         animal_summary=animal_summary,
         simulated_summary=simulated_summary,
         subject_aggregate=subject_aggregate,
+        session_aggregate=session_aggregate,
     )
 
     return {
@@ -535,6 +541,8 @@ def compute_switch_stats(
         "comparison": _compare_switch_summaries(animal_summary, simulated_summary),
         "subject_level": subject_level,
         "subject_aggregate": subject_aggregate,
+        "session_level": session_level,
+        "session_aggregate": session_aggregate,
         "delta_significance_summary": delta_significance_summary,
         "quantitative_summary": quantitative_summary,
     }
@@ -613,10 +621,31 @@ def compute_history_dependent_switch_stats(
         max_trials_back=max_trials_back,
         subject_min_trials=subject_min_trials,
     )
+    animal_session_stats = _build_session_history_pattern_summary(
+        animal_records,
+        max_trials_back=max_trials_back,
+        average_rollouts_by_source=False,
+    )
+    simulated_session_stats = _build_session_history_pattern_summary(
+        simulated_records,
+        max_trials_back=max_trials_back,
+        average_rollouts_by_source=True,
+    )
+    session_level = _build_session_history_pattern_comparison(
+        animal_session_stats,
+        simulated_session_stats,
+        max_trials_back=max_trials_back,
+        session_min_trials=subject_min_trials,
+    )
     subject_aggregate = _build_history_subject_aggregate(
         subject_level,
         max_trials_back=max_trials_back,
         subject_min_trials=subject_min_trials,
+    )
+    session_aggregate = _build_history_session_aggregate(
+        session_level,
+        max_trials_back=max_trials_back,
+        session_min_trials=subject_min_trials,
     )
     delta_significance_summary = _build_history_delta_significance_summary(
         subject_level,
@@ -626,6 +655,7 @@ def compute_history_dependent_switch_stats(
     quantitative_summary = _build_history_quantitative_summary(
         comparison=comparison,
         subject_aggregate=subject_aggregate,
+        session_aggregate=session_aggregate,
         max_trials_back=max_trials_back,
     )
 
@@ -641,6 +671,8 @@ def compute_history_dependent_switch_stats(
         "comparison": comparison,
         "subject_level": subject_level,
         "subject_aggregate": subject_aggregate,
+        "session_level": session_level,
+        "session_aggregate": session_aggregate,
         "delta_significance_summary": delta_significance_summary,
         "quantitative_summary": quantitative_summary,
     }
@@ -1507,6 +1539,8 @@ def _extract_history_pattern_count_record(
         "subject_id": _normalize_identifier(row.get("subject_id")),
         "ses_idx": str(row.get("ses_idx")),
         "source_ses_idx": row.get("source_ses_idx"),
+        "session_date": row.get("session_date"),
+        "curriculum_name": row.get("curriculum_name"),
         "counts": counts,
     }
 
@@ -1625,10 +1659,14 @@ def _average_history_pattern_records_by_source(
     averaged_records: list[dict[str, Any]] = []
     subject_session_counts: dict[Any, int] = {}
     for (subject_id, source_ses_idx), group_records in grouped.items():
+        first_record = group_records[0]
         averaged_records.append(
             {
                 "subject_id": subject_id,
+                "ses_idx": source_ses_idx,
                 "source_ses_idx": source_ses_idx,
+                "session_date": first_record.get("session_date"),
+                "curriculum_name": first_record.get("curriculum_name"),
                 "counts": _average_history_pattern_count_trees(
                     [
                         _as_dict(record.get("counts", {}))
@@ -1953,6 +1991,47 @@ def _build_subject_history_pattern_summary(
     return summaries
 
 
+def _build_session_history_pattern_summary(
+    records: Sequence[Mapping[str, Any]],
+    *,
+    max_trials_back: int,
+    average_rollouts_by_source: bool,
+) -> dict[tuple[Any, str], dict[str, Any]]:
+    if not records:
+        return {}
+
+    if average_rollouts_by_source and all(
+        record.get("source_ses_idx") not in (None, "") for record in records
+    ):
+        grouped_records = _average_history_records_for_sessions(
+            records,
+            max_trials_back=max_trials_back,
+        )
+    else:
+        grouped_records = _collect_direct_history_records_for_sessions(
+            records,
+            max_trials_back=max_trials_back,
+        )
+
+    summaries: dict[tuple[Any, str], dict[str, Any]] = {}
+    for record in grouped_records:
+        session_key = _canonical_session_key(record)
+        summaries[session_key] = {
+            "subject_id": session_key[0],
+            "session_id": session_key[1],
+            "source_ses_idx": session_key[1],
+            "session_date": record.get("session_date"),
+            "curriculum_name": str(record.get("curriculum_name") or "Unknown"),
+            "patterns": _finalize_history_pattern_count_tree(
+                _copy_history_pattern_count_tree(
+                    _as_dict(record.get("counts", {})),
+                    max_trials_back=max_trials_back,
+                )
+            ),
+        }
+    return summaries
+
+
 def _average_history_records_for_subjects(
     records: Sequence[Mapping[str, Any]],
     *,
@@ -1971,6 +2050,18 @@ def _average_history_records_for_subjects(
             )
         )
     return per_subject_records, subject_session_counts
+
+
+def _average_history_records_for_sessions(
+    records: Sequence[Mapping[str, Any]],
+    *,
+    max_trials_back: int,
+) -> list[dict[str, Any]]:
+    averaged_records, _ = _average_history_pattern_records_by_source(
+        records,
+        max_trials_back=max_trials_back,
+    )
+    return averaged_records
 
 
 def _collect_direct_history_records_for_subjects(
@@ -2001,6 +2092,30 @@ def _collect_direct_history_records_for_subjects(
             for subject_id, session_keys in session_keys_by_subject.items()
         },
     )
+
+
+def _collect_direct_history_records_for_sessions(
+    records: Sequence[Mapping[str, Any]],
+    *,
+    max_trials_back: int,
+) -> list[dict[str, Any]]:
+    direct_records: list[dict[str, Any]] = []
+    for record in records:
+        session_key = _canonical_session_key(record)
+        direct_records.append(
+            {
+                "subject_id": session_key[0],
+                "ses_idx": session_key[1],
+                "source_ses_idx": session_key[1],
+                "session_date": record.get("session_date"),
+                "curriculum_name": record.get("curriculum_name"),
+                "counts": _copy_history_pattern_count_tree(
+                    _as_dict(record.get("counts", {})),
+                    max_trials_back=max_trials_back,
+                ),
+            }
+        )
+    return direct_records
 
 
 def _build_subject_history_pattern_comparison(
@@ -2051,6 +2166,54 @@ def _build_subject_history_pattern_comparison(
     return subject_level
 
 
+def _build_session_history_pattern_comparison(
+    animal_session_stats: Mapping[tuple[Any, str], Mapping[str, Any]],
+    simulated_session_stats: Mapping[tuple[Any, str], Mapping[str, Any]],
+    *,
+    max_trials_back: int,
+    session_min_trials: int,
+) -> dict[str, dict[int, dict[str, dict[str, Any]]]]:
+    session_level: dict[str, dict[int, dict[str, dict[str, Any]]]] = {
+        pattern_type: {
+            n_back: {}
+            for n_back in range(1, int(max_trials_back) + 1)
+        }
+        for pattern_type in _HISTORY_PATTERN_TYPES
+    }
+    matched_session_keys = [
+        session_key
+        for session_key in animal_session_stats.keys()
+        if session_key in simulated_session_stats
+    ]
+
+    for pattern_type in _HISTORY_PATTERN_TYPES:
+        for n_back in range(1, int(max_trials_back) + 1):
+            patterns = _collect_session_history_patterns(
+                animal_session_stats,
+                simulated_session_stats,
+                matched_session_keys=matched_session_keys,
+                pattern_type=pattern_type,
+                n_back=n_back,
+            )
+            for pattern in patterns:
+                points = _build_session_history_pattern_points(
+                    animal_session_stats,
+                    simulated_session_stats,
+                    matched_session_keys=matched_session_keys,
+                    pattern_type=pattern_type,
+                    n_back=n_back,
+                    pattern=pattern,
+                )
+                session_level[pattern_type][n_back][pattern] = {
+                    "points": points,
+                    "summary": _summarize_session_history_pattern_points(
+                        points,
+                        min_trials=session_min_trials,
+                    ),
+                }
+    return session_level
+
+
 def _collect_subject_history_patterns(
     animal_subject_stats: Mapping[Any, Mapping[str, Any]],
     simulated_subject_stats: Mapping[Any, Mapping[str, Any]],
@@ -2069,6 +2232,34 @@ def _collect_subject_history_patterns(
         simulated_bucket = _as_dict(
             _as_dict(
                 _as_dict(simulated_subject_stats.get(subject_id, {})).get("patterns", {})
+            ).get(pattern_type, {})
+        )
+        patterns.update(_as_dict(animal_bucket.get(n_back, {})).keys())
+        patterns.update(_as_dict(simulated_bucket.get(n_back, {})).keys())
+    return sorted(str(pattern) for pattern in patterns)
+
+
+def _collect_session_history_patterns(
+    animal_session_stats: Mapping[tuple[Any, str], Mapping[str, Any]],
+    simulated_session_stats: Mapping[tuple[Any, str], Mapping[str, Any]],
+    *,
+    matched_session_keys: Sequence[tuple[Any, str]],
+    pattern_type: str,
+    n_back: int,
+) -> list[str]:
+    patterns = set()
+    for session_key in matched_session_keys:
+        animal_bucket = _as_dict(
+            _as_dict(
+                _as_dict(animal_session_stats.get(session_key, {})).get("patterns", {})
+            ).get(pattern_type, {})
+        )
+        simulated_bucket = _as_dict(
+            _as_dict(
+                _as_dict(simulated_session_stats.get(session_key, {})).get(
+                    "patterns",
+                    {},
+                )
             ).get(pattern_type, {})
         )
         patterns.update(_as_dict(animal_bucket.get(n_back, {})).keys())
@@ -2161,22 +2352,83 @@ def _build_subject_history_pattern_points(
     return points
 
 
+def _build_session_history_pattern_points(
+    animal_session_stats: Mapping[tuple[Any, str], Mapping[str, Any]],
+    simulated_session_stats: Mapping[tuple[Any, str], Mapping[str, Any]],
+    *,
+    matched_session_keys: Sequence[tuple[Any, str]],
+    pattern_type: str,
+    n_back: int,
+    pattern: str,
+) -> list[dict[str, Any]]:
+    points = []
+    for session_key in matched_session_keys:
+        animal_metrics = _as_dict(animal_session_stats.get(session_key, {}))
+        simulated_metrics = _as_dict(simulated_session_stats.get(session_key, {}))
+        animal_leaf = _as_dict(
+            _as_dict(
+                _as_dict(
+                    _as_dict(animal_metrics.get("patterns", {})).get(pattern_type, {})
+                ).get(n_back, {})
+            ).get(pattern, {})
+        )
+        simulated_leaf = _as_dict(
+            _as_dict(
+                _as_dict(
+                    _as_dict(simulated_metrics.get("patterns", {})).get(pattern_type, {})
+                ).get(n_back, {})
+            ).get(pattern, {})
+        )
+        points.append(
+            {
+                "subject_id": animal_metrics.get("subject_id", session_key[0]),
+                "session_id": animal_metrics.get("session_id", session_key[1]),
+                "source_ses_idx": animal_metrics.get("source_ses_idx", session_key[1]),
+                "session_date": animal_metrics.get(
+                    "session_date",
+                    simulated_metrics.get("session_date"),
+                ),
+                "curriculum_name": str(
+                    animal_metrics.get("curriculum_name")
+                    or simulated_metrics.get("curriculum_name")
+                    or "Unknown"
+                ),
+                "animal_probability": _coerce_probability(
+                    animal_leaf.get("switch_probability")
+                ),
+                "animal_total": _normalize_count_output(animal_leaf.get("total", 0.0)),
+                "animal_ci_low": _coerce_probability(animal_leaf.get("ci_low")),
+                "animal_ci_high": _coerce_probability(animal_leaf.get("ci_high")),
+                "simulated_probability": _coerce_probability(
+                    simulated_leaf.get("switch_probability")
+                ),
+                "simulated_total_effective": _normalize_count_output(
+                    simulated_leaf.get("total", 0.0)
+                ),
+                "simulated_ci_low": _coerce_probability(simulated_leaf.get("ci_low")),
+                "simulated_ci_high": _coerce_probability(simulated_leaf.get("ci_high")),
+                "delta_probability": _finite_difference(
+                    _coerce_probability(simulated_leaf.get("switch_probability")),
+                    _coerce_probability(animal_leaf.get("switch_probability")),
+                ),
+            }
+        )
+    return points
+
+
 def _summarize_subject_history_pattern_points(
     points: Sequence[Mapping[str, Any]],
     *,
     min_trials: int,
 ) -> dict[str, Any]:
-    valid_points = _select_valid_subject_history_pattern_points(
+    return _summarize_group_history_pattern_points(
         points,
-        min_trials=min_trials,
+        selector=lambda rows: _select_valid_subject_history_pattern_points(
+            rows,
+            min_trials=min_trials,
+        ),
+        count_label="n_subjects",
     )
-    xs = [float(point["animal_probability"]) for point in valid_points]
-    ys = [float(point["simulated_probability"]) for point in valid_points]
-    return {
-        "n_subjects": len(valid_points),
-        "correlation": _pearson_correlation(xs, ys),
-        "rmse": _rmse(xs, ys),
-    }
 
 
 def _select_valid_subject_history_pattern_points(
@@ -2198,6 +2450,59 @@ def _select_valid_subject_history_pattern_points(
             continue
         valid_points.append(dict(point))
     return valid_points
+
+
+def _select_valid_session_history_pattern_points(
+    points: Sequence[Mapping[str, Any]],
+    *,
+    min_trials: int,
+) -> list[dict[str, Any]]:
+    valid_points = []
+    for point in points:
+        animal_probability = _coerce_probability(point.get("animal_probability"))
+        simulated_probability = _coerce_probability(point.get("simulated_probability"))
+        animal_total = point.get("animal_total")
+        simulated_total = point.get("simulated_total_effective")
+        if animal_probability is None or simulated_probability is None:
+            continue
+        if animal_total is None or simulated_total is None:
+            continue
+        if float(animal_total) < float(min_trials) or float(simulated_total) < float(min_trials):
+            continue
+        valid_points.append(dict(point))
+    return valid_points
+
+
+def _summarize_session_history_pattern_points(
+    points: Sequence[Mapping[str, Any]],
+    *,
+    min_trials: int,
+) -> dict[str, Any]:
+    return _summarize_group_history_pattern_points(
+        points,
+        selector=lambda rows: _select_valid_session_history_pattern_points(
+            rows,
+            min_trials=min_trials,
+        ),
+        count_label="n_sessions",
+    )
+
+
+def _summarize_group_history_pattern_points(
+    points: Sequence[Mapping[str, Any]],
+    *,
+    selector,
+    count_label: str,
+) -> dict[str, Any]:
+    valid_points = list(selector(points))
+    xs = [float(point["animal_probability"]) for point in valid_points]
+    ys = [float(point["simulated_probability"]) for point in valid_points]
+    return {
+        count_label: len(valid_points),
+        "correlation": _pearson_correlation(xs, ys),
+        "rmse": _rmse(xs, ys),
+        "bias": _mean_difference(xs, ys),
+    }
 
 
 def _compute_subject_level_comparison(
@@ -2271,6 +2576,20 @@ def _prepare_subject_metric_records(
     ):
         return _average_rollout_metric_counts(session_counts)
     return _collect_direct_metric_counts(session_counts)
+
+
+def _canonical_source_session_id_from_record(record: Mapping[str, Any]) -> str:
+    source_session_id = record.get("source_ses_idx")
+    if source_session_id in (None, ""):
+        source_session_id = record.get("ses_idx")
+    return str(source_session_id)
+
+
+def _canonical_session_key(record: Mapping[str, Any]) -> tuple[Any, str]:
+    return (
+        _normalize_identifier(record.get("subject_id")),
+        _canonical_source_session_id_from_record(record),
+    )
 
 
 def _build_subject_level_metric_summary(
@@ -2370,6 +2689,102 @@ def _build_subject_level_metric_summary(
     return summaries
 
 
+def _prepare_session_metric_records(
+    session_rows,
+    *,
+    average_rollouts_by_source: bool,
+) -> list[dict[str, Any]]:
+    session_counts = [
+        _extract_subject_metric_counts(row)
+        for row in _iter_session_records(session_rows)
+    ]
+    if not session_counts:
+        return []
+
+    if average_rollouts_by_source and all(
+        record["source_ses_idx"] not in (None, "") for record in session_counts
+    ):
+        return _average_rollout_metric_counts_by_session(session_counts)
+    return _collect_direct_metric_counts_by_session(session_counts)
+
+
+def _build_session_level_metric_summary(
+    session_rows,
+    *,
+    average_rollouts_by_source: bool,
+    subject_curriculum_map: Mapping[Any, str] | None = None,
+) -> dict[tuple[Any, str], dict[str, Any]]:
+    session_records = _prepare_session_metric_records(
+        session_rows,
+        average_rollouts_by_source=average_rollouts_by_source,
+    )
+    if not session_records:
+        return {}
+
+    curriculum_lookup = (
+        dict(subject_curriculum_map) if isinstance(subject_curriculum_map, Mapping) else {}
+    )
+    summaries: dict[tuple[Any, str], dict[str, Any]] = {}
+    for record in session_records:
+        session_key = _canonical_session_key(record)
+        summaries[session_key] = {
+            "subject_id": session_key[0],
+            "session_id": session_key[1],
+            "source_ses_idx": session_key[1],
+            "session_date": record.get("session_date"),
+            "curriculum_name": str(
+                record.get("curriculum_name")
+                or curriculum_lookup.get(session_key[0], "Unknown")
+                or "Unknown"
+            ),
+            "post_switch_by_reward": {
+                reward_condition: {
+                    "probability": _probability_from_counts(
+                        _as_dict(record["reward"]).get(reward_condition, {})
+                    ),
+                    "n": _normalize_count_output(
+                        _as_dict(_as_dict(record["reward"]).get(reward_condition, {})).get(
+                            "n",
+                            0.0,
+                        )
+                    ),
+                    "ci_low": None,
+                    "ci_high": None,
+                }
+                for reward_condition in _REWARD_CONDITIONS
+            },
+            "post_switch_by_reward_and_run_length": {
+                reward_condition: {
+                    run_condition: {
+                        "probability": _probability_from_counts(
+                            _as_dict(
+                                _as_dict(record["reward_and_run_length"]).get(
+                                    reward_condition,
+                                    {},
+                                )
+                            ).get(run_condition, {})
+                        ),
+                        "n": _normalize_count_output(
+                            _as_dict(
+                                _as_dict(record["reward_and_run_length"]).get(
+                                    reward_condition,
+                                    {},
+                                )
+                            )
+                            .get(run_condition, {})
+                            .get("n", 0.0)
+                        ),
+                        "ci_low": None,
+                        "ci_high": None,
+                    }
+                    for run_condition in _RUN_LENGTH_CONDITIONS
+                }
+                for reward_condition in _REWARD_CONDITIONS
+            },
+        }
+    return summaries
+
+
 def _average_rollout_metric_counts(
     session_counts: Sequence[Mapping[str, Any]],
 ) -> tuple[dict[Any, list[dict[str, Any]]], dict[Any, int]]:
@@ -2432,6 +2847,67 @@ def _average_rollout_metric_counts(
     return per_subject_records, subject_session_counts
 
 
+def _average_rollout_metric_counts_by_session(
+    session_counts: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    grouped: dict[tuple[Any, str], list[Mapping[str, Any]]] = {}
+    for record in session_counts:
+        grouped.setdefault(_canonical_session_key(record), []).append(record)
+
+    averaged_records: list[dict[str, Any]] = []
+    for session_key, records in grouped.items():
+        averaged_reward = _new_reward_count_tree()
+        averaged_reward_run = _new_reward_run_count_tree()
+        n_records = float(len(records))
+        first_record = records[0]
+
+        for reward_condition in _REWARD_CONDITIONS:
+            pooled_successes = sum(
+                float(record["reward"][reward_condition]["successes"])
+                for record in records
+            )
+            pooled_n = sum(float(record["reward"][reward_condition]["n"]) for record in records)
+            averaged_reward[reward_condition]["successes"] = pooled_successes / n_records
+            averaged_reward[reward_condition]["n"] = pooled_n / n_records
+            for run_condition in _RUN_LENGTH_CONDITIONS:
+                pooled_run_successes = sum(
+                    float(
+                        record["reward_and_run_length"][reward_condition][run_condition][
+                            "successes"
+                        ]
+                    )
+                    for record in records
+                )
+                pooled_run_n = sum(
+                    float(
+                        record["reward_and_run_length"][reward_condition][run_condition][
+                            "n"
+                        ]
+                    )
+                    for record in records
+                )
+                averaged_reward_run[reward_condition][run_condition]["successes"] = (
+                    pooled_run_successes / n_records
+                )
+                averaged_reward_run[reward_condition][run_condition]["n"] = (
+                    pooled_run_n / n_records
+                )
+
+        averaged_records.append(
+            {
+                "subject_id": session_key[0],
+                "ses_idx": session_key[1],
+                "source_ses_idx": session_key[1],
+                "session_date": first_record.get("session_date"),
+                "curriculum_name": first_record.get("curriculum_name"),
+                "reward": averaged_reward,
+                "reward_and_run_length": averaged_reward_run,
+            }
+        )
+
+    return averaged_records
+
+
 def _collect_direct_metric_counts(
     session_counts: Sequence[Mapping[str, Any]],
 ) -> tuple[dict[Any, list[dict[str, Any]]], dict[Any, int]]:
@@ -2460,6 +2936,28 @@ def _collect_direct_metric_counts(
         for subject_id, session_keys in session_keys_by_subject.items()
     }
     return per_subject_records, subject_session_counts
+
+
+def _collect_direct_metric_counts_by_session(
+    session_counts: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    direct_records: list[dict[str, Any]] = []
+    for record in session_counts:
+        session_key = _canonical_session_key(record)
+        direct_records.append(
+            {
+                "subject_id": session_key[0],
+                "ses_idx": session_key[1],
+                "source_ses_idx": session_key[1],
+                "session_date": record.get("session_date"),
+                "curriculum_name": record.get("curriculum_name"),
+                "reward": _copy_reward_count_tree(record["reward"]),
+                "reward_and_run_length": _copy_reward_run_count_tree(
+                    record["reward_and_run_length"]
+                ),
+            }
+        )
+    return direct_records
 
 
 def _extract_subject_metric_counts(row: Mapping[str, Any]) -> dict[str, Any]:
@@ -2493,9 +2991,71 @@ def _extract_subject_metric_counts(row: Mapping[str, Any]) -> dict[str, Any]:
         "subject_id": _normalize_identifier(row.get("subject_id")),
         "ses_idx": str(row.get("ses_idx")),
         "source_ses_idx": row.get("source_ses_idx"),
+        "session_date": row.get("session_date"),
+        "curriculum_name": row.get("curriculum_name"),
         "reward": reward_counts,
         "reward_and_run_length": reward_run_counts,
     }
+
+
+def _compute_session_level_comparison(
+    animal_sessions,
+    simulated_sessions,
+) -> dict[str, Any]:
+    subject_curriculum_map = _resolve_subject_curriculum_map(
+        animal_sessions,
+        fallback_rows=simulated_sessions,
+    )
+    animal_session_stats = _build_session_level_metric_summary(
+        animal_sessions,
+        average_rollouts_by_source=False,
+        subject_curriculum_map=subject_curriculum_map,
+    )
+    simulated_session_stats = _build_session_level_metric_summary(
+        simulated_sessions,
+        average_rollouts_by_source=True,
+        subject_curriculum_map=subject_curriculum_map,
+    )
+    matched_session_keys = [
+        session_key
+        for session_key in animal_session_stats.keys()
+        if session_key in simulated_session_stats
+    ]
+
+    comparison = {
+        "post_switch_by_reward": {},
+        "post_switch_by_reward_and_run_length": {},
+    }
+    for reward_condition in _REWARD_CONDITIONS:
+        points = _build_session_comparison_points(
+            animal_session_stats,
+            simulated_session_stats,
+            matched_session_keys=matched_session_keys,
+            reward_condition=reward_condition,
+        )
+        comparison["post_switch_by_reward"][reward_condition] = {
+            "points": points,
+            "summary": _summarize_session_comparison_points(points),
+        }
+
+    for reward_condition in _REWARD_CONDITIONS:
+        comparison["post_switch_by_reward_and_run_length"][reward_condition] = {}
+        for run_condition in _RUN_LENGTH_CONDITIONS:
+            points = _build_session_comparison_points(
+                animal_session_stats,
+                simulated_session_stats,
+                matched_session_keys=matched_session_keys,
+                reward_condition=reward_condition,
+                run_condition=run_condition,
+            )
+            comparison["post_switch_by_reward_and_run_length"][reward_condition][
+                run_condition
+            ] = {
+                "points": points,
+                "summary": _summarize_session_comparison_points(points),
+            }
+
+    return comparison
 
 
 def _build_subject_comparison_points(
@@ -2583,16 +3143,11 @@ def _build_subject_comparison_points(
 def _summarize_subject_comparison_points(
     points: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any]:
-    valid_points = _select_valid_subject_points(points)
-    xs = [float(point["animal_probability"]) for point in valid_points]
-    ys = [float(point["simulated_probability"]) for point in valid_points]
-
-    return {
-        "n_subjects": len(valid_points),
-        "correlation": _pearson_correlation(xs, ys),
-        "rmse": _rmse(xs, ys),
-        "bias": _mean_difference(xs, ys),
-    }
+    return _summarize_group_comparison_points(
+        points,
+        selector=_select_valid_subject_points,
+        count_label="n_subjects",
+    )
 
 
 def _select_valid_subject_points(
@@ -2609,6 +3164,126 @@ def _select_valid_subject_points(
             continue
         valid_points.append(dict(point))
     return valid_points
+
+
+def _build_session_comparison_points(
+    animal_session_stats: Mapping[tuple[Any, str], Mapping[str, Any]],
+    simulated_session_stats: Mapping[tuple[Any, str], Mapping[str, Any]],
+    *,
+    matched_session_keys: Sequence[tuple[Any, str]],
+    reward_condition: str,
+    run_condition: str | None = None,
+) -> list[dict[str, Any]]:
+    points = []
+    for session_key in matched_session_keys:
+        animal_metrics = _as_dict(animal_session_stats.get(session_key, {}))
+        simulated_metrics = _as_dict(simulated_session_stats.get(session_key, {}))
+        if run_condition is None:
+            animal_leaf = _as_dict(
+                _as_dict(animal_metrics.get("post_switch_by_reward", {})).get(
+                    reward_condition,
+                    {},
+                )
+            )
+            simulated_leaf = _as_dict(
+                _as_dict(simulated_metrics.get("post_switch_by_reward", {})).get(
+                    reward_condition,
+                    {},
+                )
+            )
+        else:
+            animal_leaf = _as_dict(
+                _as_dict(
+                    _as_dict(
+                        animal_metrics.get("post_switch_by_reward_and_run_length", {})
+                    ).get(reward_condition, {})
+                ).get(run_condition, {})
+            )
+            simulated_leaf = _as_dict(
+                _as_dict(
+                    _as_dict(
+                        simulated_metrics.get("post_switch_by_reward_and_run_length", {})
+                    ).get(reward_condition, {})
+                ).get(run_condition, {})
+            )
+
+        points.append(
+            {
+                "subject_id": animal_metrics.get("subject_id", session_key[0]),
+                "session_id": animal_metrics.get("session_id", session_key[1]),
+                "source_ses_idx": animal_metrics.get("source_ses_idx", session_key[1]),
+                "session_date": animal_metrics.get(
+                    "session_date",
+                    simulated_metrics.get("session_date"),
+                ),
+                "curriculum_name": str(
+                    animal_metrics.get("curriculum_name")
+                    or simulated_metrics.get("curriculum_name")
+                    or "Unknown"
+                ),
+                "animal_probability": _coerce_probability(animal_leaf.get("probability")),
+                "animal_n": _normalize_count_output(animal_leaf.get("n", 0)),
+                "animal_ci_low": _coerce_probability(animal_leaf.get("ci_low")),
+                "animal_ci_high": _coerce_probability(animal_leaf.get("ci_high")),
+                "simulated_probability": _coerce_probability(
+                    simulated_leaf.get("probability")
+                ),
+                "simulated_effective_n": _normalize_count_output(
+                    simulated_leaf.get("n", 0)
+                ),
+                "simulated_ci_low": _coerce_probability(simulated_leaf.get("ci_low")),
+                "simulated_ci_high": _coerce_probability(simulated_leaf.get("ci_high")),
+                "delta_probability": _finite_difference(
+                    _coerce_probability(simulated_leaf.get("probability")),
+                    _coerce_probability(animal_leaf.get("probability")),
+                ),
+            }
+        )
+    return points
+
+
+def _select_valid_session_points(
+    points: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    valid_points = []
+    for point in points:
+        animal_probability = _coerce_probability(point.get("animal_probability"))
+        simulated_probability = _coerce_probability(point.get("simulated_probability"))
+        animal_n = point.get("animal_n")
+        if animal_probability is None or simulated_probability is None:
+            continue
+        if animal_n is None or float(animal_n) < float(_SUBJECT_LEVEL_MIN_ANIMAL_N):
+            continue
+        valid_points.append(dict(point))
+    return valid_points
+
+
+def _summarize_session_comparison_points(
+    points: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    return _summarize_group_comparison_points(
+        points,
+        selector=_select_valid_session_points,
+        count_label="n_sessions",
+    )
+
+
+def _summarize_group_comparison_points(
+    points: Sequence[Mapping[str, Any]],
+    *,
+    selector,
+    count_label: str,
+) -> dict[str, Any]:
+    valid_points = list(selector(points))
+    xs = [float(point["animal_probability"]) for point in valid_points]
+    ys = [float(point["simulated_probability"]) for point in valid_points]
+
+    return {
+        count_label: len(valid_points),
+        "correlation": _pearson_correlation(xs, ys),
+        "rmse": _rmse(xs, ys),
+        "bias": _mean_difference(xs, ys),
+    }
 
 
 def _new_reward_count_tree() -> dict[str, dict[str, float]]:
@@ -2792,6 +3467,41 @@ def _build_switch_subject_aggregate(
     }
 
 
+def _build_switch_session_aggregate(
+    session_level: Mapping[str, Any],
+) -> dict[str, Any]:
+    reward_level = _as_dict(session_level.get("post_switch_by_reward", {}))
+    reward_run_level = _as_dict(
+        session_level.get("post_switch_by_reward_and_run_length", {})
+    )
+    return {
+        "post_switch_by_reward": {
+            reward_condition: _build_session_aggregate_leaf(
+                list(_as_dict(reward_level.get(reward_condition, {})).get("points", [])),
+                selector=_select_valid_session_points,
+            )
+            for reward_condition in _REWARD_CONDITIONS
+        },
+        "post_switch_by_reward_and_run_length": {
+            reward_condition: {
+                run_condition: _build_session_aggregate_leaf(
+                    list(
+                        _as_dict(
+                            _as_dict(reward_run_level.get(reward_condition, {})).get(
+                                run_condition,
+                                {},
+                            )
+                        ).get("points", [])
+                    ),
+                    selector=_select_valid_session_points,
+                )
+                for run_condition in _RUN_LENGTH_CONDITIONS
+            }
+            for reward_condition in _REWARD_CONDITIONS
+        },
+    }
+
+
 def _build_history_subject_aggregate(
     subject_level: Mapping[str, Any],
     *,
@@ -2829,10 +3539,72 @@ def _build_history_subject_aggregate(
     return subject_aggregate
 
 
+def _build_history_session_aggregate(
+    session_level: Mapping[str, Any],
+    *,
+    max_trials_back: int,
+    session_min_trials: int,
+) -> dict[str, dict[int, dict[str, Any]]]:
+    session_aggregate: dict[str, dict[int, dict[str, Any]]] = {
+        pattern_type: {}
+        for pattern_type in _HISTORY_PATTERN_TYPES
+    }
+    for pattern_type in _HISTORY_PATTERN_TYPES:
+        pattern_group = _as_dict(session_level.get(pattern_type, {}))
+        for n_back in range(1, int(max_trials_back) + 1):
+            panel_group = _as_dict(pattern_group.get(n_back, {}))
+            rows = []
+            for pattern in sorted(panel_group):
+                aggregate_row = _build_session_aggregate_leaf(
+                    list(_as_dict(panel_group.get(pattern, {})).get("points", [])),
+                    selector=lambda points, min_trials=session_min_trials: (
+                        _select_valid_session_history_pattern_points(
+                            points,
+                            min_trials=min_trials,
+                        )
+                    ),
+                )
+                aggregate_row["pattern"] = str(pattern)
+                rows.append(aggregate_row)
+            session_aggregate[pattern_type][n_back] = {
+                "rows": rows,
+                "summary": _summarize_probability_rows(
+                    rows,
+                    weight_key="n_sessions",
+                ),
+            }
+    return session_aggregate
+
+
 def _build_subject_aggregate_leaf(
     points: Sequence[Mapping[str, Any]],
     *,
     selector,
+) -> dict[str, Any]:
+    return _build_group_aggregate_leaf(
+        points,
+        selector=selector,
+        count_label="n_subjects",
+    )
+
+
+def _build_session_aggregate_leaf(
+    points: Sequence[Mapping[str, Any]],
+    *,
+    selector,
+) -> dict[str, Any]:
+    return _build_group_aggregate_leaf(
+        points,
+        selector=selector,
+        count_label="n_sessions",
+    )
+
+
+def _build_group_aggregate_leaf(
+    points: Sequence[Mapping[str, Any]],
+    *,
+    selector,
+    count_label: str,
 ) -> dict[str, Any]:
     valid_points = list(selector(points))
     animal_values = [float(point["animal_probability"]) for point in valid_points]
@@ -2847,7 +3619,7 @@ def _build_subject_aggregate_leaf(
         "delta_sem": _sem(delta_values) if delta_values else math.nan,
         "delta_median": _median(delta_values) if delta_values else math.nan,
         "delta_iqr": _iqr(delta_values) if delta_values else math.nan,
-        "n_subjects": len(valid_points),
+        count_label: len(valid_points),
     }
 
 
@@ -2856,6 +3628,7 @@ def _build_switch_quantitative_summary(
     animal_summary: Mapping[str, Any],
     simulated_summary: Mapping[str, Any],
     subject_aggregate: Mapping[str, Any],
+    session_aggregate: Mapping[str, Any],
 ) -> dict[str, Any]:
     pooled_reward_rows = _build_switch_pooled_reward_rows(
         animal_summary=animal_summary,
@@ -2867,6 +3640,8 @@ def _build_switch_quantitative_summary(
     )
     subject_reward_rows = _build_switch_subject_reward_rows(subject_aggregate)
     subject_reward_run_rows = _build_switch_subject_reward_run_rows(subject_aggregate)
+    session_reward_rows = _build_switch_session_reward_rows(session_aggregate)
+    session_reward_run_rows = _build_switch_session_reward_run_rows(session_aggregate)
     return {
         "pooled": {
             "post_switch_by_reward": _summarize_probability_rows(
@@ -2896,6 +3671,20 @@ def _build_switch_quantitative_summary(
                 weight_key="n_subjects",
             ),
         },
+        "session_mean": {
+            "post_switch_by_reward": _summarize_probability_rows(
+                session_reward_rows,
+                weight_key="n_sessions",
+            ),
+            "post_switch_by_reward_and_run_length": _summarize_probability_rows(
+                session_reward_run_rows,
+                weight_key="n_sessions",
+            ),
+            "overall": _summarize_probability_rows(
+                [*session_reward_rows, *session_reward_run_rows],
+                weight_key="n_sessions",
+            ),
+        },
     }
 
 
@@ -2903,21 +3692,27 @@ def _build_history_quantitative_summary(
     *,
     comparison: Mapping[str, Any],
     subject_aggregate: Mapping[str, Any],
+    session_aggregate: Mapping[str, Any],
     max_trials_back: int,
 ) -> dict[str, Any]:
-    summary: dict[str, Any] = {"pooled": {}, "subject_mean": {}}
+    summary: dict[str, Any] = {"pooled": {}, "subject_mean": {}, "session_mean": {}}
     pooled_overall_rows: list[dict[str, Any]] = []
     subject_overall_rows: list[dict[str, Any]] = []
+    session_overall_rows: list[dict[str, Any]] = []
     for pattern_type in _HISTORY_PATTERN_TYPES:
         pooled_group = _as_dict(comparison.get(pattern_type, {}))
         subject_group = _as_dict(subject_aggregate.get(pattern_type, {}))
+        session_group = _as_dict(session_aggregate.get(pattern_type, {}))
         pattern_pooled_summary: dict[str, Any] = {}
         pattern_subject_summary: dict[str, Any] = {}
+        pattern_session_summary: dict[str, Any] = {}
         pattern_pooled_rows: list[dict[str, Any]] = []
         pattern_subject_rows: list[dict[str, Any]] = []
+        pattern_session_rows: list[dict[str, Any]] = []
         for n_back in range(1, int(max_trials_back) + 1):
             pooled_rows = list(_as_dict(pooled_group.get(n_back, {})).get("rows", []))
             subject_rows = list(_as_dict(subject_group.get(n_back, {})).get("rows", []))
+            session_rows = list(_as_dict(session_group.get(n_back, {})).get("rows", []))
             pattern_pooled_summary[n_back] = _summarize_probability_rows(
                 pooled_rows,
                 weight_key="effective_weight",
@@ -2926,10 +3721,16 @@ def _build_history_quantitative_summary(
                 subject_rows,
                 weight_key="n_subjects",
             )
+            pattern_session_summary[n_back] = _summarize_probability_rows(
+                session_rows,
+                weight_key="n_sessions",
+            )
             pattern_pooled_rows.extend(pooled_rows)
             pattern_subject_rows.extend(subject_rows)
+            pattern_session_rows.extend(session_rows)
             pooled_overall_rows.extend(pooled_rows)
             subject_overall_rows.extend(subject_rows)
+            session_overall_rows.extend(session_rows)
         pattern_pooled_summary["overall"] = _summarize_probability_rows(
             pattern_pooled_rows,
             weight_key="effective_weight",
@@ -2938,8 +3739,13 @@ def _build_history_quantitative_summary(
             pattern_subject_rows,
             weight_key="n_subjects",
         )
+        pattern_session_summary["overall"] = _summarize_probability_rows(
+            pattern_session_rows,
+            weight_key="n_sessions",
+        )
         summary["pooled"][pattern_type] = pattern_pooled_summary
         summary["subject_mean"][pattern_type] = pattern_subject_summary
+        summary["session_mean"][pattern_type] = pattern_session_summary
     summary["pooled"]["overall"] = _summarize_probability_rows(
         pooled_overall_rows,
         weight_key="effective_weight",
@@ -2947,6 +3753,10 @@ def _build_history_quantitative_summary(
     summary["subject_mean"]["overall"] = _summarize_probability_rows(
         subject_overall_rows,
         weight_key="n_subjects",
+    )
+    summary["session_mean"]["overall"] = _summarize_probability_rows(
+        session_overall_rows,
+        weight_key="n_sessions",
     )
     return summary
 
@@ -3260,11 +4070,45 @@ def _build_switch_subject_reward_rows(
     ]
 
 
+def _build_switch_session_reward_rows(
+    session_aggregate: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    reward_group = _as_dict(session_aggregate.get("post_switch_by_reward", {}))
+    return [
+        {"condition": reward_condition, **_as_dict(reward_group.get(reward_condition, {}))}
+        for reward_condition in _REWARD_CONDITIONS
+    ]
+
+
 def _build_switch_subject_reward_run_rows(
     subject_aggregate: Mapping[str, Any],
 ) -> list[dict[str, Any]]:
     reward_run_group = _as_dict(
         subject_aggregate.get("post_switch_by_reward_and_run_length", {})
+    )
+    rows = []
+    for reward_condition in _REWARD_CONDITIONS:
+        for run_condition in _RUN_LENGTH_CONDITIONS:
+            rows.append(
+                {
+                    "reward_condition": reward_condition,
+                    "run_condition": run_condition,
+                    **_as_dict(
+                        _as_dict(reward_run_group.get(reward_condition, {})).get(
+                            run_condition,
+                            {},
+                        )
+                    ),
+                }
+            )
+    return rows
+
+
+def _build_switch_session_reward_run_rows(
+    session_aggregate: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    reward_run_group = _as_dict(
+        session_aggregate.get("post_switch_by_reward_and_run_length", {})
     )
     rows = []
     for reward_condition in _REWARD_CONDITIONS:
@@ -4265,6 +5109,62 @@ def _save_switch_figures(
         "post_switch_by_reward_and_run_length_subject_scatter"
     ] = reward_run_subject_scatter_path
 
+    reward_session_scatter_path = output_dir / "post_switch_by_reward_session_scatter.png"
+    _plot_post_switch_by_reward_session_scatter(
+        plt,
+        switch_stats,
+        reward_session_scatter_path,
+    )
+    figure_paths["post_switch_by_reward_session_scatter"] = reward_session_scatter_path
+
+    reward_run_session_scatter_path = (
+        output_dir / "post_switch_by_reward_and_run_length_session_scatter.png"
+    )
+    _plot_post_switch_by_reward_and_run_length_session_scatter(
+        plt,
+        switch_stats,
+        reward_run_session_scatter_path,
+    )
+    figure_paths[
+        "post_switch_by_reward_and_run_length_session_scatter"
+    ] = reward_run_session_scatter_path
+
+    session_level_by_subject_dir = output_dir / "session_level_by_subject"
+    subject_ids = _collect_switch_session_subject_ids(switch_stats)
+    for subject_id in subject_ids:
+        safe_subject_id = _safe_filename_component(subject_id)
+        subject_reward_path = (
+            session_level_by_subject_dir
+            / f"post_switch_by_reward_session_scatter__subject_{safe_subject_id}.png"
+        )
+        _plot_post_switch_by_reward_session_scatter_for_subject(
+            plt,
+            switch_stats,
+            subject_reward_path,
+            subject_id=subject_id,
+        )
+        figure_paths[
+            f"post_switch_by_reward_session_scatter__subject_{safe_subject_id}"
+        ] = subject_reward_path
+
+        subject_reward_run_path = (
+            session_level_by_subject_dir
+            / (
+                "post_switch_by_reward_and_run_length_session_scatter"
+                f"__subject_{safe_subject_id}.png"
+            )
+        )
+        _plot_post_switch_by_reward_and_run_length_session_scatter_for_subject(
+            plt,
+            switch_stats,
+            subject_reward_run_path,
+            subject_id=subject_id,
+        )
+        figure_paths[
+            "post_switch_by_reward_and_run_length_session_scatter"
+            f"__subject_{safe_subject_id}"
+        ] = subject_reward_run_path
+
     return figure_paths
 
 
@@ -4350,6 +5250,49 @@ def _save_history_dependent_switch_figures(
         figure_paths[
             f"history_pattern_subject_level_{pattern_type}_nback_{n_back}"
         ] = subject_path
+
+    session_level_by_subject_dir = output_dir / "session_level_by_subject"
+    subject_ids = _collect_history_session_subject_ids(
+        history_stats,
+        pattern_type=pattern_type,
+        max_trials_back=max_trials_back,
+    )
+    for n_back in range(1, max_trials_back + 1):
+        session_path = (
+            output_dir / f"history_pattern_session_level_{pattern_type}_nback_{n_back}.png"
+        )
+        _plot_history_pattern_session_level_figure(
+            plt,
+            history_stats,
+            session_path,
+            pattern_type=pattern_type,
+            n_back=n_back,
+        )
+        figure_paths[
+            f"history_pattern_session_level_{pattern_type}_nback_{n_back}"
+        ] = session_path
+
+        for subject_id in subject_ids:
+            safe_subject_id = _safe_filename_component(subject_id)
+            subject_session_path = (
+                session_level_by_subject_dir
+                / (
+                    f"history_pattern_session_level_{pattern_type}_nback_{n_back}"
+                    f"__subject_{safe_subject_id}.png"
+                )
+            )
+            _plot_history_pattern_session_level_figure_for_subject(
+                plt,
+                history_stats,
+                subject_session_path,
+                pattern_type=pattern_type,
+                n_back=n_back,
+                subject_id=subject_id,
+            )
+            figure_paths[
+                f"history_pattern_session_level_{pattern_type}_nback_{n_back}"
+                f"__subject_{safe_subject_id}"
+            ] = subject_session_path
 
     return figure_paths
 
@@ -4700,6 +5643,100 @@ def _plot_post_switch_by_reward_subject_scatter(
     plt.close(fig)
 
 
+def _plot_post_switch_by_reward_session_scatter(
+    plt,
+    switch_stats: Mapping[str, Any],
+    output_path: Path,
+) -> None:
+    fig, axes = plt.subplots(1, 2, figsize=(12, 6))
+    session_level = _as_dict(switch_stats.get("session_level", {}))
+    reward_stats = _as_dict(session_level.get("post_switch_by_reward", {}))
+    curriculum_to_color = _build_curriculum_color_map(
+        [
+            point.get("curriculum_name", "Unknown")
+            for reward_condition in _REWARD_CONDITIONS
+            for point in _select_valid_session_points(
+                list(_as_dict(reward_stats.get(reward_condition, {})).get("points", []))
+            )
+        ],
+        plt,
+    )
+
+    for axis, reward_condition, label in zip(
+        axes,
+        _REWARD_CONDITIONS,
+        ("Rewarded", "Unrewarded"),
+        strict=False,
+    ):
+        panel_stats = _as_dict(reward_stats.get(reward_condition, {}))
+        _plot_session_level_scatter_panel(
+            ax=axis,
+            points=list(panel_stats.get("points", [])),
+            summary=_as_dict(panel_stats.get("summary", {})),
+            title=label,
+            curriculum_to_color=curriculum_to_color,
+        )
+
+    fig.suptitle("Session-Level Post-switch Probability By Reward", fontsize=14)
+    _add_curriculum_legend_to_figure(fig, curriculum_to_color)
+    fig.tight_layout(rect=(0.0, 0.12, 1.0, 0.94))
+    fig.savefig(output_path)
+    plt.close(fig)
+
+
+def _plot_post_switch_by_reward_session_scatter_for_subject(
+    plt,
+    switch_stats: Mapping[str, Any],
+    output_path: Path,
+    *,
+    subject_id: Any,
+) -> None:
+    fig, axes = plt.subplots(1, 2, figsize=(12, 6))
+    session_level = _as_dict(switch_stats.get("session_level", {}))
+    reward_stats = _as_dict(session_level.get("post_switch_by_reward", {}))
+    curriculum_to_color = _build_curriculum_color_map(
+        [
+            point.get("curriculum_name", "Unknown")
+            for reward_condition in _REWARD_CONDITIONS
+            for point in _select_valid_session_points(
+                _filter_points_for_subject(
+                    list(_as_dict(reward_stats.get(reward_condition, {})).get("points", [])),
+                    subject_id=subject_id,
+                )
+            )
+        ],
+        plt,
+    )
+
+    for axis, reward_condition, label in zip(
+        axes,
+        _REWARD_CONDITIONS,
+        ("Rewarded", "Unrewarded"),
+        strict=False,
+    ):
+        filtered_points = _filter_points_for_subject(
+            list(_as_dict(reward_stats.get(reward_condition, {})).get("points", [])),
+            subject_id=subject_id,
+        )
+        _plot_session_level_scatter_panel(
+            ax=axis,
+            points=filtered_points,
+            summary=_summarize_session_comparison_points(filtered_points),
+            title=label,
+            curriculum_to_color=curriculum_to_color,
+        )
+
+    fig.suptitle(
+        f"Session-Level Post-switch Probability By Reward ({subject_id})",
+        fontsize=14,
+    )
+    _add_curriculum_legend_to_figure(fig, curriculum_to_color)
+    fig.tight_layout(rect=(0.0, 0.12, 1.0, 0.94))
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path)
+    plt.close(fig)
+
+
 def _plot_post_switch_by_reward_and_run_length_subject_scatter(
     plt,
     switch_stats: Mapping[str, Any],
@@ -4764,6 +5801,145 @@ def _plot_post_switch_by_reward_and_run_length_subject_scatter(
     plt.close(fig)
 
 
+def _plot_post_switch_by_reward_and_run_length_session_scatter(
+    plt,
+    switch_stats: Mapping[str, Any],
+    output_path: Path,
+) -> None:
+    fig, axes = plt.subplots(2, 2, figsize=(12, 12))
+    session_level = _as_dict(switch_stats.get("session_level", {}))
+    reward_run_stats = _as_dict(
+        session_level.get("post_switch_by_reward_and_run_length", {})
+    )
+    curriculum_to_color = _build_curriculum_color_map(
+        [
+            point.get("curriculum_name", "Unknown")
+            for reward_condition in _REWARD_CONDITIONS
+            for run_condition in _RUN_LENGTH_CONDITIONS
+            for point in _select_valid_session_points(
+                list(
+                    _as_dict(
+                        _as_dict(reward_run_stats.get(reward_condition, {})).get(
+                            run_condition,
+                            {},
+                        )
+                    ).get("points", [])
+                )
+            )
+        ],
+        plt,
+    )
+    panel_definitions = [
+        ("rewarded", "run_length_1", "Rewarded / Run=1"),
+        ("rewarded", "run_length_gt1", "Rewarded / Run>1"),
+        ("unrewarded", "run_length_1", "Unrewarded / Run=1"),
+        ("unrewarded", "run_length_gt1", "Unrewarded / Run>1"),
+    ]
+
+    for axis, (reward_condition, run_condition, label) in zip(
+        axes.flatten(),
+        panel_definitions,
+        strict=False,
+    ):
+        panel_stats = _as_dict(
+            _as_dict(reward_run_stats.get(reward_condition, {})).get(
+                run_condition,
+                {},
+            )
+        )
+        _plot_session_level_scatter_panel(
+            ax=axis,
+            points=list(panel_stats.get("points", [])),
+            summary=_as_dict(panel_stats.get("summary", {})),
+            title=label,
+            curriculum_to_color=curriculum_to_color,
+        )
+
+    fig.suptitle(
+        "Session-Level Post-switch Probability By Reward And Run Length",
+        fontsize=14,
+    )
+    _add_curriculum_legend_to_figure(fig, curriculum_to_color)
+    fig.tight_layout(rect=(0.0, 0.12, 1.0, 0.96))
+    fig.savefig(output_path)
+    plt.close(fig)
+
+
+def _plot_post_switch_by_reward_and_run_length_session_scatter_for_subject(
+    plt,
+    switch_stats: Mapping[str, Any],
+    output_path: Path,
+    *,
+    subject_id: Any,
+) -> None:
+    fig, axes = plt.subplots(2, 2, figsize=(12, 12))
+    session_level = _as_dict(switch_stats.get("session_level", {}))
+    reward_run_stats = _as_dict(
+        session_level.get("post_switch_by_reward_and_run_length", {})
+    )
+    curriculum_to_color = _build_curriculum_color_map(
+        [
+            point.get("curriculum_name", "Unknown")
+            for reward_condition in _REWARD_CONDITIONS
+            for run_condition in _RUN_LENGTH_CONDITIONS
+            for point in _select_valid_session_points(
+                _filter_points_for_subject(
+                    list(
+                        _as_dict(
+                            _as_dict(reward_run_stats.get(reward_condition, {})).get(
+                                run_condition,
+                                {},
+                            )
+                        ).get("points", [])
+                    ),
+                    subject_id=subject_id,
+                )
+            )
+        ],
+        plt,
+    )
+    panel_definitions = [
+        ("rewarded", "run_length_1", "Rewarded / Run=1"),
+        ("rewarded", "run_length_gt1", "Rewarded / Run>1"),
+        ("unrewarded", "run_length_1", "Unrewarded / Run=1"),
+        ("unrewarded", "run_length_gt1", "Unrewarded / Run>1"),
+    ]
+
+    for axis, (reward_condition, run_condition, label) in zip(
+        axes.flatten(),
+        panel_definitions,
+        strict=False,
+    ):
+        filtered_points = _filter_points_for_subject(
+            list(
+                _as_dict(
+                    _as_dict(reward_run_stats.get(reward_condition, {})).get(
+                        run_condition,
+                        {},
+                    )
+                ).get("points", [])
+            ),
+            subject_id=subject_id,
+        )
+        _plot_session_level_scatter_panel(
+            ax=axis,
+            points=filtered_points,
+            summary=_summarize_session_comparison_points(filtered_points),
+            title=label,
+            curriculum_to_color=curriculum_to_color,
+        )
+
+    fig.suptitle(
+        f"Session-Level Post-switch Probability By Reward And Run Length ({subject_id})",
+        fontsize=14,
+    )
+    _add_curriculum_legend_to_figure(fig, curriculum_to_color)
+    fig.tight_layout(rect=(0.0, 0.12, 1.0, 0.96))
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path)
+    plt.close(fig)
+
+
 def _plot_subject_level_scatter_panel(
     *,
     ax,
@@ -4772,7 +5948,56 @@ def _plot_subject_level_scatter_panel(
     title: str,
     curriculum_to_color: Mapping[str, Any],
 ) -> None:
-    valid_points = _select_valid_subject_points(points)
+    _plot_probability_scatter_panel(
+        ax=ax,
+        points=points,
+        summary=summary,
+        title=title,
+        curriculum_to_color=curriculum_to_color,
+        selector=_select_valid_subject_points,
+        count_label="n_subjects",
+        x_label="Animal p_switch(t+1)",
+        y_label="Simulation p_switch(t+1)",
+        empty_label="No valid subjects",
+    )
+
+
+def _plot_session_level_scatter_panel(
+    *,
+    ax,
+    points: Sequence[Mapping[str, Any]],
+    summary: Mapping[str, Any],
+    title: str,
+    curriculum_to_color: Mapping[str, Any],
+) -> None:
+    _plot_probability_scatter_panel(
+        ax=ax,
+        points=points,
+        summary=summary,
+        title=title,
+        curriculum_to_color=curriculum_to_color,
+        selector=_select_valid_session_points,
+        count_label="n_sessions",
+        x_label="Animal p_switch(t+1)",
+        y_label="Simulation p_switch(t+1)",
+        empty_label="No valid sessions",
+    )
+
+
+def _plot_probability_scatter_panel(
+    *,
+    ax,
+    points: Sequence[Mapping[str, Any]],
+    summary: Mapping[str, Any],
+    title: str,
+    curriculum_to_color: Mapping[str, Any],
+    selector,
+    count_label: str,
+    x_label: str,
+    y_label: str,
+    empty_label: str,
+) -> None:
+    valid_points = list(selector(points))
     if valid_points:
         for point in valid_points:
             x_value = float(point["animal_probability"])
@@ -4814,7 +6039,7 @@ def _plot_subject_level_scatter_panel(
         ax.text(
             0.5,
             0.5,
-            "No valid subjects",
+            empty_label,
             transform=ax.transAxes,
             ha="center",
             va="center",
@@ -4825,12 +6050,12 @@ def _plot_subject_level_scatter_panel(
     ax.set_xlim(0.0, 1.0)
     ax.set_ylim(0.0, 1.0)
     ax.set_aspect("equal", adjustable="box")
-    ax.set_xlabel("Animal p_switch(t+1)")
-    ax.set_ylabel("Simulation p_switch(t+1)")
+    ax.set_xlabel(x_label)
+    ax.set_ylabel(y_label)
     ax.set_title(title)
     ax.grid(True, alpha=0.3)
 
-    if int(summary.get("n_subjects", 0)) >= 2:
+    if int(summary.get(count_label, 0)) >= 2:
         annotation_lines = [
             f"r={float(summary['correlation']):.3f}"
             if summary.get("correlation") is not None
@@ -4841,7 +6066,7 @@ def _plot_subject_level_scatter_panel(
             f"Bias={float(summary['bias']):.3f}"
             if summary.get("bias") is not None
             else "Bias=None",
-            f"n={int(summary['n_subjects'])}",
+            f"n={int(summary.get(count_label, 0))}",
         ]
         ax.text(
             0.05,
@@ -4852,6 +6077,65 @@ def _plot_subject_level_scatter_panel(
             fontsize=10,
             bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.8},
         )
+
+
+def _filter_points_for_subject(
+    points: Sequence[Mapping[str, Any]],
+    *,
+    subject_id: Any,
+) -> list[dict[str, Any]]:
+    normalized_subject_id = _normalize_identifier(subject_id)
+    return [
+        dict(point)
+        for point in points
+        if _normalize_identifier(point.get("subject_id")) == normalized_subject_id
+    ]
+
+
+def _collect_point_subject_ids(points: Sequence[Mapping[str, Any]]) -> list[Any]:
+    return _unique_preserve_order(
+        [
+            point.get("subject_id")
+            for point in points
+            if point.get("subject_id") not in (None, "")
+        ]
+    )
+
+
+def _collect_switch_session_subject_ids(
+    switch_stats: Mapping[str, Any],
+) -> list[Any]:
+    session_level = _as_dict(switch_stats.get("session_level", {}))
+    reward_stats = _as_dict(session_level.get("post_switch_by_reward", {}))
+    subject_ids: list[Any] = []
+    for reward_condition in _REWARD_CONDITIONS:
+        subject_ids.extend(
+            _collect_point_subject_ids(
+                list(_as_dict(reward_stats.get(reward_condition, {})).get("points", []))
+            )
+        )
+    return _unique_preserve_order(subject_ids)
+
+
+def _collect_history_session_subject_ids(
+    history_stats: Mapping[str, Any],
+    *,
+    pattern_type: str,
+    max_trials_back: int,
+) -> list[Any]:
+    session_level = _as_dict(
+        _as_dict(history_stats.get("session_level", {})).get(pattern_type, {})
+    )
+    subject_ids: list[Any] = []
+    for n_back in range(1, int(max_trials_back) + 1):
+        panel_group = _as_dict(session_level.get(n_back, {}))
+        for pattern in panel_group:
+            subject_ids.extend(
+                _collect_point_subject_ids(
+                    list(_as_dict(panel_group.get(pattern, {})).get("points", []))
+                )
+            )
+    return _unique_preserve_order(subject_ids)
 
 
 def _plot_history_pattern_comparison_figure(
@@ -5269,6 +6553,194 @@ def _plot_history_pattern_subject_level_figure(
     plt.close(fig)
 
 
+def _plot_history_pattern_session_level_figure(
+    plt,
+    history_stats: Mapping[str, Any],
+    output_path: Path,
+    *,
+    pattern_type: str,
+    n_back: int,
+) -> None:
+    config = _as_dict(history_stats.get("config", {}))
+    session_min_trials = int(
+        config.get("subject_min_trials", _DEFAULT_HISTORY_SUBJECT_MIN_TRIALS)
+    )
+    session_level = _as_dict(
+        _as_dict(history_stats.get("session_level", {})).get(pattern_type, {})
+    )
+    panel_data = _as_dict(session_level.get(n_back, {}))
+    curriculum_to_color = _build_curriculum_color_map(
+        [
+            point.get("curriculum_name", "Unknown")
+            for pattern in panel_data
+            for point in _select_valid_session_history_pattern_points(
+                list(_as_dict(panel_data.get(pattern, {})).get("points", [])),
+                min_trials=session_min_trials,
+            )
+        ],
+        plt,
+    )
+    patterns = sorted(panel_data)
+
+    if not patterns:
+        fig, ax = plt.subplots(1, 1, figsize=(6, 6))
+        ax.text(
+            0.5,
+            0.5,
+            "No matched patterns",
+            transform=ax.transAxes,
+            ha="center",
+            va="center",
+            fontsize=12,
+        )
+        ax.set_axis_off()
+        fig.suptitle(
+            f"Session-Level History Patterns ({pattern_type.capitalize()}, n_back={n_back})",
+            fontsize=14,
+        )
+        fig.tight_layout(rect=(0.0, 0.02, 1.0, 0.96))
+        fig.savefig(output_path)
+        plt.close(fig)
+        return
+
+    n_cols = min(4, len(patterns))
+    n_rows = int(math.ceil(len(patterns) / n_cols))
+    fig, axes = plt.subplots(
+        n_rows,
+        n_cols,
+        figsize=(4.5 * n_cols, 4.5 * n_rows),
+    )
+    if n_rows == 1 and n_cols == 1:
+        axes_flat = [axes]
+    elif n_rows == 1 or n_cols == 1:
+        axes_flat = list(axes)
+    else:
+        axes_flat = list(axes.flatten())
+
+    for axis, pattern in zip(axes_flat, patterns, strict=False):
+        panel = _as_dict(panel_data.get(pattern, {}))
+        _plot_history_session_pattern_scatter_panel(
+            ax=axis,
+            points=list(panel.get("points", [])),
+            summary=_as_dict(panel.get("summary", {})),
+            title=str(pattern),
+            min_trials=session_min_trials,
+            curriculum_to_color=curriculum_to_color,
+        )
+
+    for axis in axes_flat[len(patterns) :]:
+        axis.set_visible(False)
+
+    fig.suptitle(
+        f"Session-Level History Patterns ({pattern_type.capitalize()}, n_back={n_back})",
+        fontsize=14,
+    )
+    _add_curriculum_legend_to_figure(fig, curriculum_to_color)
+    fig.tight_layout(rect=(0.0, 0.12, 1.0, 0.96))
+    fig.savefig(output_path)
+    plt.close(fig)
+
+
+def _plot_history_pattern_session_level_figure_for_subject(
+    plt,
+    history_stats: Mapping[str, Any],
+    output_path: Path,
+    *,
+    pattern_type: str,
+    n_back: int,
+    subject_id: Any,
+) -> None:
+    config = _as_dict(history_stats.get("config", {}))
+    session_min_trials = int(
+        config.get("subject_min_trials", _DEFAULT_HISTORY_SUBJECT_MIN_TRIALS)
+    )
+    session_level = _as_dict(
+        _as_dict(history_stats.get("session_level", {})).get(pattern_type, {})
+    )
+    panel_data = _as_dict(session_level.get(n_back, {}))
+    curriculum_to_color = _build_curriculum_color_map(
+        [
+            point.get("curriculum_name", "Unknown")
+            for pattern in panel_data
+            for point in _select_valid_session_history_pattern_points(
+                _filter_points_for_subject(
+                    list(_as_dict(panel_data.get(pattern, {})).get("points", [])),
+                    subject_id=subject_id,
+                ),
+                min_trials=session_min_trials,
+            )
+        ],
+        plt,
+    )
+    patterns = sorted(panel_data)
+
+    if not patterns:
+        fig, ax = plt.subplots(1, 1, figsize=(6, 6))
+        ax.text(
+            0.5,
+            0.5,
+            "No matched patterns",
+            transform=ax.transAxes,
+            ha="center",
+            va="center",
+            fontsize=12,
+        )
+        ax.set_axis_off()
+        fig.suptitle(
+            f"Session-Level History Patterns ({pattern_type.capitalize()}, n_back={n_back}, {subject_id})",
+            fontsize=14,
+        )
+        fig.tight_layout(rect=(0.0, 0.02, 1.0, 0.96))
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(output_path)
+        plt.close(fig)
+        return
+
+    n_cols = min(4, len(patterns))
+    n_rows = int(math.ceil(len(patterns) / n_cols))
+    fig, axes = plt.subplots(
+        n_rows,
+        n_cols,
+        figsize=(4.5 * n_cols, 4.5 * n_rows),
+    )
+    if n_rows == 1 and n_cols == 1:
+        axes_flat = [axes]
+    elif n_rows == 1 or n_cols == 1:
+        axes_flat = list(axes)
+    else:
+        axes_flat = list(axes.flatten())
+
+    for axis, pattern in zip(axes_flat, patterns, strict=False):
+        filtered_points = _filter_points_for_subject(
+            list(_as_dict(panel_data.get(pattern, {})).get("points", [])),
+            subject_id=subject_id,
+        )
+        _plot_history_session_pattern_scatter_panel(
+            ax=axis,
+            points=filtered_points,
+            summary=_summarize_session_history_pattern_points(
+                filtered_points,
+                min_trials=session_min_trials,
+            ),
+            title=str(pattern),
+            min_trials=session_min_trials,
+            curriculum_to_color=curriculum_to_color,
+        )
+
+    for axis in axes_flat[len(patterns) :]:
+        axis.set_visible(False)
+
+    fig.suptitle(
+        f"Session-Level History Patterns ({pattern_type.capitalize()}, n_back={n_back}, {subject_id})",
+        fontsize=14,
+    )
+    _add_curriculum_legend_to_figure(fig, curriculum_to_color)
+    fig.tight_layout(rect=(0.0, 0.12, 1.0, 0.96))
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path)
+    plt.close(fig)
+
+
 def _plot_history_subject_pattern_scatter_panel(
     *,
     ax,
@@ -5278,86 +6750,47 @@ def _plot_history_subject_pattern_scatter_panel(
     min_trials: int,
     curriculum_to_color: Mapping[str, Any],
 ) -> None:
-    valid_points = _select_valid_subject_history_pattern_points(
-        points,
-        min_trials=min_trials,
+    _plot_probability_scatter_panel(
+        ax=ax,
+        points=points,
+        summary=summary,
+        title=title,
+        curriculum_to_color=curriculum_to_color,
+        selector=lambda rows: _select_valid_subject_history_pattern_points(
+            rows,
+            min_trials=min_trials,
+        ),
+        count_label="n_subjects",
+        x_label="Animal Switch Probability",
+        y_label="Simulation Switch Probability",
+        empty_label="No valid subjects",
     )
-    if valid_points:
-        for point in valid_points:
-            x_value = float(point["animal_probability"])
-            y_value = float(point["simulated_probability"])
-            curriculum_name = str(point.get("curriculum_name", "Unknown"))
-            color = curriculum_to_color.get(curriculum_name, "tab:blue")
-            xerr = _asymmetric_errorbar(
-                x_value,
-                point.get("animal_ci_low"),
-                point.get("animal_ci_high"),
-            )
-            yerr = _asymmetric_errorbar(
-                y_value,
-                point.get("simulated_ci_low"),
-                point.get("simulated_ci_high"),
-            )
-            if xerr is not None or yerr is not None:
-                ax.errorbar(
-                    [x_value],
-                    [y_value],
-                    xerr=xerr,
-                    yerr=yerr,
-                    fmt="none",
-                    ecolor=color,
-                    alpha=0.25,
-                    capsize=2,
-                    linewidth=1.1,
-                )
-            ax.scatter(
-                [x_value],
-                [y_value],
-                alpha=0.8,
-                s=45,
-                color=color,
-                edgecolors="black",
-                linewidths=0.7,
-            )
-    else:
-        ax.text(
-            0.5,
-            0.5,
-            "No valid subjects",
-            transform=ax.transAxes,
-            ha="center",
-            va="center",
-            fontsize=10,
-        )
 
-    ax.plot([0.0, 1.0], [0.0, 1.0], "k--", alpha=0.5, linewidth=1.25)
-    ax.set_xlim(0.0, 1.0)
-    ax.set_ylim(0.0, 1.0)
-    ax.set_aspect("equal", adjustable="box")
-    ax.set_xlabel("Animal Switch Probability")
-    ax.set_ylabel("Simulation Switch Probability")
-    ax.set_title(title)
-    ax.grid(True, alpha=0.3)
 
-    if int(summary.get("n_subjects", 0)) >= 2:
-        annotation_lines = [
-            f"r={float(summary['correlation']):.3f}"
-            if summary.get("correlation") is not None
-            else "r=None",
-            f"RMSE={float(summary['rmse']):.3f}"
-            if summary.get("rmse") is not None
-            else "RMSE=None",
-            f"n={int(summary.get('n_subjects', 0))}",
-        ]
-        ax.text(
-            0.05,
-            0.95,
-            "\n".join(annotation_lines),
-            transform=ax.transAxes,
-            va="top",
-            fontsize=9,
-            bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.8},
-        )
+def _plot_history_session_pattern_scatter_panel(
+    *,
+    ax,
+    points: Sequence[Mapping[str, Any]],
+    summary: Mapping[str, Any],
+    title: str,
+    min_trials: int,
+    curriculum_to_color: Mapping[str, Any],
+) -> None:
+    _plot_probability_scatter_panel(
+        ax=ax,
+        points=points,
+        summary=summary,
+        title=title,
+        curriculum_to_color=curriculum_to_color,
+        selector=lambda rows: _select_valid_session_history_pattern_points(
+            rows,
+            min_trials=min_trials,
+        ),
+        count_label="n_sessions",
+        x_label="Animal Switch Probability",
+        y_label="Simulation Switch Probability",
+        empty_label="No valid sessions",
+    )
 
 
 def _plot_delta_distribution_panel(
@@ -6048,6 +7481,15 @@ def _json_tree_to_arrays(value: Any) -> Any:
     if isinstance(value, dict):
         return {key: _json_tree_to_arrays(item) for key, item in value.items()}
     return value
+
+
+def _safe_filename_component(value: Any) -> str:
+    normalized = str(value)
+    safe = "".join(
+        ch if ch.isalnum() or ch in ("-", "_") else "_"
+        for ch in normalized
+    )
+    return safe.strip("_") or "unknown"
 
 
 def _import_dependency(module_name: str):
