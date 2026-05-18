@@ -19,7 +19,7 @@ config = {
         "test_subject_end": 15
     },
     "heldout_finetuning": {
-        "n_steps": 500,
+        "n_steps": 1000,
         "lr": 1e-3,
         "checkpoint_every_n_steps": 100,
         "batch_size": 1024,
