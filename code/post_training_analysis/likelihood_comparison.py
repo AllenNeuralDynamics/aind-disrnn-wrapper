@@ -115,6 +115,8 @@ class ResolvedLikelihoodRun:
     params_path: str | None
     baseline_output_path: str | None
     artifact_selection_reason: str | None
+    session_conditioning_enabled: bool = False
+    session_conditioning_encoding_type: str = "none"
     run_config: dict[str, Any] = field(default_factory=dict)
     model_config: dict[str, Any] = field(default_factory=dict)
 
@@ -198,6 +200,8 @@ def run_prediction_likelihood_comparison(
             "model_label": run.model_label,
             "model_type": run.model_type,
             "multisubject": run.multisubject,
+            "session_conditioning_enabled": bool(run.session_conditioning_enabled),
+            "session_conditioning_encoding_type": run.session_conditioning_encoding_type,
             "result_source": result_source,
             "splits": {},
         }
@@ -445,6 +449,12 @@ def _resolve_likelihood_run(
             artifact_selection_reason=(
                 resolved_run.checkpoint_selection_reason or resolved_run.fallback_reason
             ),
+            session_conditioning_enabled=bool(
+                resolved_run.session_conditioning_enabled
+            ),
+            session_conditioning_encoding_type=str(
+                resolved_run.session_conditioning_encoding_type
+            ),
             run_config=dict(resolved_run.run_config),
             model_config=dict(resolved_run.model_config),
         )
@@ -477,6 +487,8 @@ def _resolve_likelihood_run(
         artifact_selection_reason=(
             "Loaded final fitted parameters from outputs/baseline_rl_output.json."
         ),
+        session_conditioning_enabled=False,
+        session_conditioning_encoding_type="none",
         run_config=_to_serializable(dict(run_config)),
         model_config=_to_serializable(dict(baseline_output)),
     )
@@ -508,6 +520,10 @@ def _load_training_bundle_for_run(run: ResolvedLikelihoodRun) -> tuple[Any, Any]
             context="Likelihood comparison",
         )
         if bool(session_cfg["enabled"]):
+            _require_session_conditioning_bundle_metadata(
+                metadata,
+                context=f"{run.model_label} ({run.model_type}) likelihood comparison",
+            )
             dataset, dataset_train, dataset_eval = prepend_session_index_to_multisubject_split_datasets(
                 dataset=dataset_bundle.extras["dataset"],
                 dataset_train=dataset_bundle.train_set,
@@ -522,6 +538,27 @@ def _load_training_bundle_for_run(run: ResolvedLikelihoodRun) -> tuple[Any, Any]
                 extras={**dict(dataset_bundle.extras or {}), "dataset": dataset},
             )
     return hydra_config, dataset_bundle
+
+
+def _require_session_conditioning_bundle_metadata(
+    metadata: Mapping[str, Any],
+    *,
+    context: str,
+) -> None:
+    missing_fields: list[str] = []
+    if not isinstance(metadata.get("session_context"), Mapping):
+        missing_fields.append("session_context")
+    if not isinstance(metadata.get("train_session_ids"), list):
+        missing_fields.append("train_session_ids")
+    if not isinstance(metadata.get("eval_session_ids"), list):
+        missing_fields.append("eval_session_ids")
+    if not missing_fields:
+        return
+
+    raise ValueError(
+        f"{context} requires dataset bundle metadata fields {missing_fields} for "
+        "multisubject session-conditioned runs."
+    )
 
 
 def _evaluate_resolved_run_splits(

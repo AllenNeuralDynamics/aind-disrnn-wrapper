@@ -34,10 +34,21 @@ class TestPostTrainingAnalysis(unittest.TestCase):
         *,
         model_type: str = "gru",
         with_subject_map: bool = True,
+        session_conditioning: bool = False,
+        with_session_context_map: bool = True,
     ) -> Path:
         model_dir = root / f"{model_type}_multisubject_run"
         outputs_dir = model_dir / "outputs"
         outputs_dir.mkdir(parents=True, exist_ok=True)
+
+        architecture_yaml_lines = ["    multisubject: true"]
+        if session_conditioning:
+            architecture_yaml_lines.extend(
+                [
+                    "    session_encoding_type: scalar",
+                    "    session_integration_type: direct",
+                ]
+            )
 
         (model_dir / "inputs.yaml").write_text(
             """
@@ -57,50 +68,66 @@ model:
             + model_type
             + """
   architecture:
-    multisubject: true
+"""
+            + "\n".join(architecture_yaml_lines)
+            + """
 seed: 7
 """
         )
         if model_type == "gru":
+            gru_architecture = {
+                "multisubject": True,
+                "hidden_size": 8,
+                "subject_embedding_size": 3,
+                "subject_embedding_init": "zeros",
+            }
+            if session_conditioning:
+                gru_architecture.update(
+                    {
+                        "session_encoding_type": "scalar",
+                        "session_integration_type": "direct",
+                    }
+                )
             (outputs_dir / "gru_config.json").write_text(
                 json.dumps(
                     {
-                        "architecture": {
-                            "multisubject": True,
-                            "hidden_size": 8,
-                            "subject_embedding_size": 3,
-                            "subject_embedding_init": "zeros",
-                        },
+                        "architecture": gru_architecture,
                         "output_size": 2,
                     }
                 )
             )
         else:
-            (outputs_dir / "disrnn_config.json").write_text(
-                json.dumps(
+            disrnn_config = {
+                "obs_size": 2,
+                "output_size": 2,
+                "latent_size": 4,
+                "update_net_n_units_per_layer": 8,
+                "update_net_n_layers": 2,
+                "choice_net_n_units_per_layer": 4,
+                "choice_net_n_layers": 1,
+                "activation": "leaky_relu",
+                "noiseless_mode": False,
+                "latent_penalty": 1e-3,
+                "choice_net_latent_penalty": 1e-3,
+                "update_net_obs_penalty": 1e-3,
+                "update_net_latent_penalty": 1e-3,
+                "max_n_subjects": 2,
+                "subject_embedding_size": 3,
+                "subject_embedding_init": "zeros",
+                "use_global_subject_bottleneck": True,
+                "subj_penalty": 1e-3,
+                "update_net_subj_penalty": 1e-3,
+                "choice_net_subj_penalty": 1e-3,
+            }
+            if session_conditioning:
+                disrnn_config.update(
                     {
-                        "obs_size": 2,
-                        "output_size": 2,
-                        "latent_size": 4,
-                        "update_net_n_units_per_layer": 8,
-                        "update_net_n_layers": 2,
-                        "choice_net_n_units_per_layer": 4,
-                        "choice_net_n_layers": 1,
-                        "activation": "leaky_relu",
-                        "noiseless_mode": False,
-                        "latent_penalty": 1e-3,
-                        "choice_net_latent_penalty": 1e-3,
-                        "update_net_obs_penalty": 1e-3,
-                        "update_net_latent_penalty": 1e-3,
-                        "max_n_subjects": 2,
-                        "subject_embedding_size": 3,
-                        "subject_embedding_init": "zeros",
-                        "use_global_subject_bottleneck": True,
-                        "subj_penalty": 1e-3,
-                        "update_net_subj_penalty": 1e-3,
-                        "choice_net_subj_penalty": 1e-3,
+                        "session_encoding_type": "scalar",
+                        "session_integration_type": "direct",
                     }
                 )
+            (outputs_dir / "disrnn_config.json").write_text(
+                json.dumps(disrnn_config)
             )
         (outputs_dir / "params.json").write_text(json.dumps({}))
         if with_subject_map:
@@ -112,6 +139,7 @@ seed: 7
                     }
                 )
             )
+        if with_subject_map and with_session_context_map:
             (outputs_dir / "session_context_map.json").write_text(
                 json.dumps(
                     {
@@ -280,6 +308,154 @@ seed: 7
             ],
         )
 
+    def _assert_multisubject_simulation_uses_session_conditioning_indices(
+        self,
+        model_type: str,
+    ) -> None:
+        resolved_run = generative_analysis.ResolvedModelRun(
+            model_dir="/tmp/model",
+            inputs_path="/tmp/model/inputs.yaml",
+            outputs_dir="/tmp/model/outputs",
+            model_type=model_type,
+            split="train",
+            checkpoint_policy="final",
+            checkpoint_step=20,
+            checkpoint_label="final",
+            params_path="/tmp/model/outputs/params.json",
+            config_path=f"/tmp/model/outputs/{model_type}_config.json",
+            seed=11,
+            multisubject=True,
+            mature_only=True,
+            ignore_policy="exclude",
+            curricula=["Uncoupled Baiting"],
+            features=None,
+            selection={"subject_start": 0, "subject_end": 2},
+            session_conditioning_enabled=True,
+            session_conditioning_encoding_type="scalar",
+            subject_index_map_path="/tmp/model/outputs/subject_index_map.json",
+            session_context_map_path="/tmp/model/outputs/session_context_map.json",
+            trained_subject_ids=["m1", "m2"],
+        )
+        animal_sessions = [
+            self._session(
+                subject_id="m1",
+                ses_idx="m1__s1",
+                source_ses_idx="m1_s1",
+                choice_history=[0, 0],
+                reward_history=[1, 1],
+            ),
+            self._session(
+                subject_id="m2",
+                ses_idx="m2__s1",
+                choice_history=[0, 0],
+                reward_history=[1, 1],
+            ),
+        ]
+
+        class _FakeRunner:
+            def __init__(self) -> None:
+                self.initial_state = {"hidden": 0}
+                self.n_actions = 2
+                self.calls = []
+                self._subject_id_to_index = {"m1": 0, "m2": 1}
+                self._merged_session_index_lookup = {
+                    ("m1", "m1__s1"): 1,
+                    ("m2", "m2__s1"): 1,
+                }
+                self._source_session_index_lookup = {
+                    ("m1", "m1_s1"): 1,
+                    ("m2", "m2_s1"): 1,
+                }
+
+            def validate_subject_ids(self, subject_ids):
+                if list(subject_ids) != ["m1", "m2"]:
+                    raise ValueError("unexpected subjects")
+
+            def encode_inputs(
+                self,
+                subject_id,
+                session_id,
+                inputs,
+                *,
+                source_session_id=None,
+            ):
+                session_index = generative_analysis._resolve_session_index_for_subject(
+                    subject_id=subject_id,
+                    session_id=session_id,
+                    source_session_id=source_session_id,
+                    merged_session_index_lookup=self._merged_session_index_lookup,
+                    source_session_index_lookup=self._source_session_index_lookup,
+                )
+                encoded = [
+                    float(self._subject_id_to_index[subject_id]),
+                    float(session_index),
+                    *list(inputs),
+                ]
+                self.calls.append((subject_id, encoded))
+                return encoded
+
+            def step(self, inputs, prev_state):
+                self.calls[-1] = (self.calls[-1][0], list(inputs))
+                return [50.0, -50.0], prev_state
+
+        fake_runner = _FakeRunner()
+
+        class _FakeRng:
+            def choice(self, n_actions, p):
+                return 0
+
+        class _FakeNumpy:
+            class random:
+                @staticmethod
+                def default_rng(seed):
+                    return _FakeRng()
+
+        class _FakePandas:
+            class DataFrame:
+                @staticmethod
+                def from_records(records):
+                    return list(records)
+
+        with mock.patch.object(
+            generative_analysis,
+            "_restore_model_runner",
+            return_value=fake_runner,
+        ), mock.patch.object(
+            generative_analysis,
+            "_build_curriculum_matched_task",
+            return_value=mock.Mock(reset=mock.Mock()),
+        ), mock.patch.object(
+            generative_analysis,
+            "_step_task_reward",
+            return_value=1,
+        ), mock.patch.object(
+            generative_analysis,
+            "_import_dependency",
+            side_effect=lambda module_name: (
+                _FakeNumpy
+                if module_name == "numpy"
+                else _FakePandas
+                if module_name == "pandas"
+                else getattr(generative_analysis, module_name)
+            ),
+        ):
+            simulated = generative_analysis.simulate_model_sessions(
+                resolved_run=resolved_run,
+                animal_sessions=animal_sessions,
+                n_rollouts_per_session=1,
+            )
+
+        self.assertEqual(len(simulated), 2)
+        self.assertEqual(
+            fake_runner.calls,
+            [
+                ("m1", [0.0, 1.0, -1.0, -1.0]),
+                ("m1", [0.0, 1.0, 0.0, 1.0]),
+                ("m2", [1.0, 1.0, -1.0, -1.0]),
+                ("m2", [1.0, 1.0, 0.0, 1.0]),
+            ],
+        )
+
     def test_parse_simple_yaml_handles_saved_hydra_inputs(self):
         parsed = _parse_simple_yaml(
             """
@@ -364,6 +540,30 @@ model:
         self.assertTrue(resolved.subject_index_map_path.endswith("subject_index_map.json"))
         self.assertTrue(resolved.session_context_map_path.endswith("session_context_map.json"))
         self.assertEqual(resolved.trained_subject_ids, ["m1", "m2"])
+        self.assertFalse(resolved.session_conditioning_enabled)
+        self.assertEqual(resolved.session_conditioning_encoding_type, "none")
+
+    def test_resolve_model_run_session_conditioned_multisubject_records_artifact_contract(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            model_dir = self._write_multisubject_run_dir(
+                Path(tmpdir),
+                model_type="gru",
+                session_conditioning=True,
+            )
+
+            resolved = resolve_model_run(
+                model_dir,
+                split="train",
+                checkpoint_policy="final",
+            )
+
+        self.assertTrue(resolved.session_conditioning_enabled)
+        self.assertEqual(resolved.session_conditioning_encoding_type, "scalar")
+        self.assertEqual(
+            resolved.required_session_conditioning_artifacts,
+            ["subject_index_map.json", "session_context_map.json"],
+        )
+        self.assertEqual(resolved.missing_session_conditioning_artifacts, [])
 
     def test_resolve_model_run_multisubject_requires_subject_index_map(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -393,6 +593,23 @@ model:
                     split="heldout",
                     checkpoint_policy="final",
                 )
+
+    def test_load_multisubject_analysis_context_requires_session_context_artifact_for_session_conditioning(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            model_dir = self._write_multisubject_run_dir(
+                Path(tmpdir),
+                model_type="gru",
+                session_conditioning=True,
+                with_session_context_map=False,
+            )
+            resolved = resolve_model_run(
+                model_dir,
+                split="train",
+                checkpoint_policy="final",
+            )
+
+            with self.assertRaisesRegex(FileNotFoundError, "session_context_map.json"):
+                generative_analysis._load_multisubject_analysis_context(resolved)
 
     def test_load_animal_session_history_uses_snapshot_without_raw_nwb_loading(self):
         resolved = resolve_model_run(
@@ -1615,6 +1832,23 @@ model:
 
     def test_simulate_model_sessions_multisubject_disrnn_uses_subject_indices(self):
         self._assert_multisubject_simulation_uses_subject_indices("disrnn")
+
+    def test_simulate_model_sessions_session_conditioned_gru_uses_subject_and_session_indices(self):
+        self._assert_multisubject_simulation_uses_session_conditioning_indices("gru")
+
+    def test_simulate_model_sessions_session_conditioned_disrnn_uses_subject_and_session_indices(self):
+        self._assert_multisubject_simulation_uses_session_conditioning_indices("disrnn")
+
+    def test_resolve_session_index_for_subject_prefers_source_session_id(self):
+        resolved_index = generative_analysis._resolve_session_index_for_subject(
+            subject_id="m1",
+            session_id="m1__s1",
+            source_session_id="m1_s1",
+            merged_session_index_lookup={("m1", "m1__s1"): 7},
+            source_session_index_lookup={("m1", "m1_s1"): 3},
+        )
+
+        self.assertEqual(resolved_index, 3)
 
     def test_simulate_model_sessions_multisubject_rejects_subjects_missing_from_map(self):
         resolved_run = generative_analysis.ResolvedModelRun(

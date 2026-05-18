@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import sys
 import tempfile
 import types
 import unittest
@@ -29,6 +30,7 @@ from post_training_analysis.likelihood_comparison import (
     _evaluate_baseline_global_sessions,
     _evaluate_baseline_heldout_split,
     _evaluate_baseline_multisubject_sessions,
+    _load_training_bundle_for_run,
     _make_completed_split_result,
     _make_dataframe,
     _plot_pooled_likelihood_bars,
@@ -53,40 +55,88 @@ except ModuleNotFoundError:  # pragma: no cover - local desktop Python may be mi
     "pandas, numpy, or GRU evaluation dependencies are not installed",
 )
 class TestLikelihoodComparison(unittest.TestCase):
-    def _write_gru_run_dir(self, root: Path, *, label: str) -> Path:
+    def _write_gru_run_dir(
+        self,
+        root: Path,
+        *,
+        label: str,
+        multisubject: bool = False,
+        session_conditioning: bool = False,
+        with_session_context_map: bool = True,
+    ) -> Path:
         model_dir = root / label
         outputs_dir = model_dir / "outputs"
         checkpoints_dir = outputs_dir / "checkpoints"
         (checkpoints_dir / "step_10").mkdir(parents=True, exist_ok=True)
         (checkpoints_dir / "step_20").mkdir(parents=True, exist_ok=True)
 
+        architecture_yaml_lines = [
+            "    hidden_size: 8",
+            "    num_layers: 1",
+            f"    multisubject: {'true' if multisubject else 'false'}",
+        ]
+        if multisubject:
+            architecture_yaml_lines.extend(
+                [
+                    "    subject_embedding_size: 3",
+                    "    subject_embedding_init: zeros",
+                ]
+            )
+        if session_conditioning:
+            architecture_yaml_lines.extend(
+                [
+                    "    session_encoding_type: scalar",
+                    "    session_integration_type: direct",
+                ]
+            )
+
         (model_dir / "inputs.yaml").write_text(
             """
 data:
   type: mice_snapshot
   _target_: data_loaders.mice.MiceSnapshotDatasetLoader
-  subject_ids: [101]
+  subject_ids: """
+            + ("[101, 202]" if multisubject else "[101]")
+            + """
   mature_only: true
   ignore_policy: exclude
   eval_every_n: 2
   test_subject_ids: [202]
+  multisubject: """
+            + ("true" if multisubject else "false")
+            + """
 model:
   type: gru
   architecture:
-    hidden_size: 8
-    num_layers: 1
-    multisubject: false
+"""
+            + "\n".join(architecture_yaml_lines)
+            + """
 seed: 7
 """
         )
+        gru_architecture = {
+            "hidden_size": 8,
+            "num_layers": 1,
+            "multisubject": bool(multisubject),
+        }
+        if multisubject:
+            gru_architecture.update(
+                {
+                    "subject_embedding_size": 3,
+                    "subject_embedding_init": "zeros",
+                }
+            )
+        if session_conditioning:
+            gru_architecture.update(
+                {
+                    "session_encoding_type": "scalar",
+                    "session_integration_type": "direct",
+                }
+            )
         (outputs_dir / "gru_config.json").write_text(
             json.dumps(
                 {
-                    "architecture": {
-                        "hidden_size": 8,
-                        "num_layers": 1,
-                        "multisubject": False,
-                    },
+                    "architecture": gru_architecture,
                     "output_size": 2,
                 }
             )
@@ -113,35 +163,92 @@ seed: 7
             )
         )
         (outputs_dir / "output_summary.json").write_text(json.dumps({}))
+        if multisubject:
+            (outputs_dir / "subject_index_map.json").write_text(
+                json.dumps(
+                    {
+                        "subject_id_to_index": {"101": 0, "202": 1},
+                        "index_to_subject_id": {"0": 101, "1": 202},
+                    }
+                )
+            )
+        if multisubject and with_session_context_map:
+            (outputs_dir / "session_context_map.json").write_text(
+                json.dumps(
+                    {
+                        "indexing": "1_based",
+                        "per_subject": [
+                            {
+                                "subject_id": 101,
+                                "subject_index": 0,
+                                "ordered_session_ids": ["101__s1", "101__s2"],
+                                "ordered_source_session_ids": ["101_s1", "101_s2"],
+                            },
+                            {
+                                "subject_id": 202,
+                                "subject_index": 1,
+                                "ordered_session_ids": ["202__s1", "202__s2"],
+                                "ordered_source_session_ids": ["202_s1", "202_s2"],
+                            },
+                        ],
+                    }
+                )
+            )
         return model_dir
 
-    def _write_disrnn_run_dir(self, root: Path, *, label: str) -> Path:
+    def _write_disrnn_run_dir(
+        self,
+        root: Path,
+        *,
+        label: str,
+        multisubject: bool = False,
+        session_conditioning: bool = False,
+        with_session_context_map: bool = True,
+    ) -> Path:
         model_dir = root / label
         outputs_dir = model_dir / "outputs"
         checkpoints_dir = outputs_dir / "checkpoints"
         (checkpoints_dir / "step_5").mkdir(parents=True, exist_ok=True)
         (checkpoints_dir / "step_15").mkdir(parents=True, exist_ok=True)
 
+        architecture_yaml_lines = [
+            f"    multisubject: {'true' if multisubject else 'false'}",
+            "    latent_size: 4",
+            "    update_net_n_units_per_layer: 8",
+            "    update_net_n_layers: 2",
+            "    choice_net_n_units_per_layer: 4",
+            "    choice_net_n_layers: 1",
+            "    activation: leaky_relu",
+        ]
+        if session_conditioning:
+            architecture_yaml_lines.extend(
+                [
+                    "    session_encoding_type: scalar",
+                    "    session_integration_type: direct",
+                ]
+            )
+
         (model_dir / "inputs.yaml").write_text(
             """
 data:
   type: mice_snapshot
   _target_: data_loaders.mice.MiceSnapshotDatasetLoader
-  subject_ids: [111]
+  subject_ids: """
+            + ("[111, 222]" if multisubject else "[111]")
+            + """
   mature_only: true
   ignore_policy: exclude
   eval_every_n: 2
   test_subject_ids: [333]
+  multisubject: """
+            + ("true" if multisubject else "false")
+            + """
 model:
   type: disrnn
   architecture:
-    multisubject: false
-    latent_size: 4
-    update_net_n_units_per_layer: 8
-    update_net_n_layers: 2
-    choice_net_n_units_per_layer: 4
-    choice_net_n_layers: 1
-    activation: leaky_relu
+"""
+            + "\n".join(architecture_yaml_lines)
+            + """
   penalties:
     latent_penalty: 0.001
     choice_net_latent_penalty: 0.001
@@ -150,19 +257,37 @@ model:
 seed: 11
 """
         )
-        (outputs_dir / "disrnn_config.json").write_text(
-            json.dumps(
+        disrnn_config = {
+            "obs_size": 2,
+            "output_size": 2,
+            "latent_size": 4,
+            "update_net_n_units_per_layer": 8,
+            "update_net_n_layers": 2,
+            "choice_net_n_units_per_layer": 4,
+            "choice_net_n_layers": 1,
+            "activation": "leaky_relu",
+        }
+        if multisubject:
+            disrnn_config.update(
                 {
-                    "obs_size": 2,
-                    "output_size": 2,
-                    "latent_size": 4,
-                    "update_net_n_units_per_layer": 8,
-                    "update_net_n_layers": 2,
-                    "choice_net_n_units_per_layer": 4,
-                    "choice_net_n_layers": 1,
-                    "activation": "leaky_relu",
+                    "max_n_subjects": 2,
+                    "subject_embedding_size": 3,
+                    "subject_embedding_init": "zeros",
+                    "use_global_subject_bottleneck": True,
+                    "subj_penalty": 0.001,
+                    "update_net_subj_penalty": 0.001,
+                    "choice_net_subj_penalty": 0.001,
                 }
             )
+        if session_conditioning:
+            disrnn_config.update(
+                {
+                    "session_encoding_type": "scalar",
+                    "session_integration_type": "direct",
+                }
+            )
+        (outputs_dir / "disrnn_config.json").write_text(
+            json.dumps(disrnn_config)
         )
         (outputs_dir / "params.json").write_text(json.dumps({"final": True}))
         (checkpoints_dir / "step_5" / "params.json").write_text(json.dumps({"step": 5}))
@@ -186,6 +311,37 @@ seed: 11
             )
         )
         (outputs_dir / "output_summary.json").write_text(json.dumps({}))
+        if multisubject:
+            (outputs_dir / "subject_index_map.json").write_text(
+                json.dumps(
+                    {
+                        "subject_id_to_index": {"111": 0, "222": 1},
+                        "index_to_subject_id": {"0": 111, "1": 222},
+                    }
+                )
+            )
+        if multisubject and with_session_context_map:
+            (outputs_dir / "session_context_map.json").write_text(
+                json.dumps(
+                    {
+                        "indexing": "1_based",
+                        "per_subject": [
+                            {
+                                "subject_id": 111,
+                                "subject_index": 0,
+                                "ordered_session_ids": ["111__s1", "111__s2"],
+                                "ordered_source_session_ids": ["111_s1", "111_s2"],
+                            },
+                            {
+                                "subject_id": 222,
+                                "subject_index": 1,
+                                "ordered_session_ids": ["222__s1", "222__s2"],
+                                "ordered_source_session_ids": ["222_s1", "222_s2"],
+                            },
+                        ],
+                    }
+                )
+            )
         return model_dir
 
     def _write_baseline_run_dir(
@@ -252,6 +408,10 @@ seed: 13
         model_type: str = "gru",
         multisubject: bool = False,
         baseline_output_path: str | None = None,
+        session_conditioning_enabled: bool = False,
+        session_conditioning_encoding_type: str = "none",
+        run_config: dict[str, object] | None = None,
+        model_config: dict[str, object] | None = None,
     ) -> ResolvedLikelihoodRun:
         return ResolvedLikelihoodRun(
             model_dir=f"/tmp/{model_label}",
@@ -270,8 +430,101 @@ seed: 13
             else None,
             baseline_output_path=baseline_output_path,
             artifact_selection_reason=None,
-            run_config={"data": {"ignore_policy": "exclude"}, "model": {"type": model_type}},
-            model_config={},
+            session_conditioning_enabled=session_conditioning_enabled,
+            session_conditioning_encoding_type=session_conditioning_encoding_type,
+            run_config=run_config
+            or {"data": {"ignore_policy": "exclude"}, "model": {"type": model_type}},
+            model_config=model_config or {},
+        )
+
+    def _assert_load_training_bundle_prepends_session_indices(
+        self,
+        model_type: str,
+    ) -> None:
+        run = self._make_run(
+            model_type=model_type,
+            multisubject=True,
+            run_config={
+                "data": {"ignore_policy": "exclude"},
+                "model": {
+                    "type": model_type,
+                    "architecture": {
+                        "multisubject": True,
+                        "subject_embedding_size": 3,
+                    },
+                },
+            },
+        )
+        metadata = {
+            "num_subjects": 2,
+            "subject_ids": ["m1", "m2"],
+            "session_context": {"per_subject": []},
+            "train_session_ids": ["m1__s1"],
+            "eval_session_ids": ["m1__s2"],
+        }
+        bundle_before = types.SimpleNamespace(
+            raw="raw_rows",
+            train_set="train_before",
+            eval_set="eval_before",
+            metadata=metadata,
+            extras={"dataset": "full_before"},
+        )
+        fake_loader = mock.Mock()
+        fake_loader.load.return_value = bundle_before
+
+        fake_hydra_utils = types.ModuleType("hydra.utils")
+        fake_hydra_utils.instantiate = mock.Mock(return_value=fake_loader)
+        fake_hydra_pkg = types.ModuleType("hydra")
+        fake_hydra_pkg.utils = fake_hydra_utils
+
+        fake_omegaconf = types.ModuleType("omegaconf")
+
+        class _FakeOmegaConf:
+            @staticmethod
+            def load(_path):
+                return types.SimpleNamespace(data=object())
+
+        fake_omegaconf.OmegaConf = _FakeOmegaConf
+
+        fake_session_conditioning = types.ModuleType("models.session_conditioning")
+        fake_session_conditioning.resolve_session_conditioning_from_architecture = mock.Mock(
+            return_value={
+                "enabled": True,
+                "session_encoding_type": "scalar",
+                "session_integration_type": "direct",
+                "session_fourier_k": 4,
+                "session_delta_n_layers": 1,
+                "session_delta_hidden_size": 6,
+                "session_max_index_by_subject_index": (2, 2),
+            }
+        )
+
+        fake_multisubject = types.ModuleType("utils.multisubject")
+        fake_multisubject.prepend_session_index_to_multisubject_split_datasets = mock.Mock(
+            return_value=("full_after", "train_after", "eval_after")
+        )
+
+        with mock.patch.dict(
+            sys.modules,
+            {
+                "hydra": fake_hydra_pkg,
+                "hydra.utils": fake_hydra_utils,
+                "omegaconf": fake_omegaconf,
+                "models.session_conditioning": fake_session_conditioning,
+                "utils.multisubject": fake_multisubject,
+            },
+        ):
+            hydra_config, bundle_after = _load_training_bundle_for_run(run)
+
+        self.assertTrue(hasattr(hydra_config, "data"))
+        self.assertEqual(bundle_after.train_set, "train_after")
+        self.assertEqual(bundle_after.eval_set, "eval_after")
+        self.assertEqual(bundle_after.extras["dataset"], "full_after")
+        fake_multisubject.prepend_session_index_to_multisubject_split_datasets.assert_called_once_with(
+            dataset="full_before",
+            dataset_train="train_before",
+            dataset_eval="eval_before",
+            metadata=metadata,
         )
 
     def _make_rnn_output_df(self) -> pd.DataFrame:
@@ -396,6 +649,110 @@ seed: 13
             self.assertTrue(
                 str(resolved_baseline.baseline_output_path).endswith("baseline_rl_output.json")
             )
+
+    def test_load_training_bundle_for_run_session_conditioned_gru_prepends_session_indices(self):
+        self._assert_load_training_bundle_prepends_session_indices("gru")
+
+    def test_load_training_bundle_for_run_session_conditioned_disrnn_prepends_session_indices(self):
+        self._assert_load_training_bundle_prepends_session_indices("disrnn")
+
+    def test_load_training_bundle_for_run_session_conditioned_requires_metadata_contract(self):
+        run = self._make_run(
+            model_type="gru",
+            multisubject=True,
+            run_config={
+                "data": {"ignore_policy": "exclude"},
+                "model": {
+                    "type": "gru",
+                    "architecture": {
+                        "multisubject": True,
+                        "subject_embedding_size": 3,
+                    },
+                },
+            },
+        )
+        metadata = {
+            "num_subjects": 2,
+            "subject_ids": ["m1", "m2"],
+            "train_session_ids": ["m1__s1"],
+        }
+        bundle_before = types.SimpleNamespace(
+            raw="raw_rows",
+            train_set="train_before",
+            eval_set="eval_before",
+            metadata=metadata,
+            extras={"dataset": "full_before"},
+        )
+        fake_loader = mock.Mock()
+        fake_loader.load.return_value = bundle_before
+
+        fake_hydra_utils = types.ModuleType("hydra.utils")
+        fake_hydra_utils.instantiate = mock.Mock(return_value=fake_loader)
+        fake_hydra_pkg = types.ModuleType("hydra")
+        fake_hydra_pkg.utils = fake_hydra_utils
+
+        fake_omegaconf = types.ModuleType("omegaconf")
+
+        class _FakeOmegaConf:
+            @staticmethod
+            def load(_path):
+                return types.SimpleNamespace(data=object())
+
+        fake_omegaconf.OmegaConf = _FakeOmegaConf
+
+        fake_session_conditioning = types.ModuleType("models.session_conditioning")
+        fake_session_conditioning.resolve_session_conditioning_from_architecture = mock.Mock(
+            return_value={
+                "enabled": True,
+                "session_encoding_type": "scalar",
+                "session_integration_type": "direct",
+                "session_fourier_k": 4,
+                "session_delta_n_layers": 1,
+                "session_delta_hidden_size": 6,
+                "session_max_index_by_subject_index": (2, 2),
+            }
+        )
+
+        fake_multisubject = types.ModuleType("utils.multisubject")
+        fake_multisubject.prepend_session_index_to_multisubject_split_datasets = mock.Mock()
+
+        with mock.patch.dict(
+            sys.modules,
+            {
+                "hydra": fake_hydra_pkg,
+                "hydra.utils": fake_hydra_utils,
+                "omegaconf": fake_omegaconf,
+                "models.session_conditioning": fake_session_conditioning,
+                "utils.multisubject": fake_multisubject,
+            },
+        ):
+            with self.assertRaisesRegex(
+                ValueError,
+                "session_context.*eval_session_ids",
+            ):
+                _load_training_bundle_for_run(run)
+
+        fake_multisubject.prepend_session_index_to_multisubject_split_datasets.assert_not_called()
+
+    def test_resolve_likelihood_run_propagates_session_conditioning_metadata(self):
+        with tempfile.TemporaryDirectory(prefix="likelihood_session_conditioning_") as tmpdir:
+            root = Path(tmpdir)
+            gru_dir = self._write_gru_run_dir(
+                root,
+                label="gru_session_conditioned",
+                multisubject=True,
+                session_conditioning=True,
+            )
+
+            resolved = _resolve_likelihood_run(
+                model_dir=gru_dir,
+                model_label="GRU session conditioned",
+                model_index=0,
+                checkpoint_policy="best_eval",
+            )
+
+        self.assertTrue(resolved.session_conditioning_enabled)
+        self.assertEqual(resolved.session_conditioning_encoding_type, "scalar")
 
     def test_rnn_session_metrics_and_pooled_likelihood_use_metadata_curricula(self):
         run = self._make_run(model_type="gru")
@@ -1555,6 +1912,95 @@ seed: 13
             self.assertEqual(
                 summary_payload["models"][1]["result_source"],
                 "evaluated",
+            )
+
+    def test_run_prediction_likelihood_comparison_summary_records_session_conditioned_runs(self):
+        try:
+            import matplotlib.pyplot  # noqa: F401
+        except ModuleNotFoundError:
+            self.skipTest("matplotlib is not installed")
+
+        with tempfile.TemporaryDirectory(prefix="likelihood_session_summary_") as tmpdir:
+            root = Path(tmpdir)
+            gru_dir = self._write_gru_run_dir(
+                root,
+                label="gru_session_conditioned",
+                multisubject=True,
+                session_conditioning=True,
+            )
+
+            def fake_split_result(run: ResolvedLikelihoodRun, split_name: str, base_value: float):
+                session_rows = [
+                    {
+                        "model_index": run.model_index,
+                        "model_label": run.model_label,
+                        "model_dir": run.model_dir,
+                        "model_type": run.model_type,
+                        "multisubject": run.multisubject,
+                        "split": split_name,
+                        "subject_id": 101,
+                        "session_id": f"{split_name}_s1",
+                        "curriculum_name": "Curriculum A",
+                        "total_log_likelihood": math.log(base_value) * 2,
+                        "total_trials": 2,
+                        "likelihood": base_value,
+                    }
+                ]
+                subject_rows = [
+                    {
+                        "model_index": run.model_index,
+                        "model_label": run.model_label,
+                        "model_dir": run.model_dir,
+                        "model_type": run.model_type,
+                        "multisubject": run.multisubject,
+                        "split": split_name,
+                        "subject_id": 101,
+                        "subject_index": 0,
+                        "curriculum_name": "Curriculum A",
+                        "num_sessions": 1,
+                        "total_log_likelihood": math.log(base_value) * 2,
+                        "total_trials": 2,
+                        "likelihood": base_value,
+                    }
+                ]
+                return _make_completed_split_result(
+                    run,
+                    split_name=split_name,
+                    session_metrics_df=pd.DataFrame.from_records(session_rows),
+                    subject_metrics_df=pd.DataFrame.from_records(subject_rows),
+                )
+
+            def fake_evaluate(run: ResolvedLikelihoodRun, bundle, *, hydra_config, include_heldout):
+                return {
+                    "train": fake_split_result(run, "train", 0.81),
+                    "eval": fake_split_result(run, "eval", 0.79),
+                    "combined": fake_split_result(run, "combined", 0.80),
+                }
+
+            with mock.patch(
+                "post_training_analysis.likelihood_comparison._load_training_bundle_for_run",
+                return_value=(types.SimpleNamespace(), types.SimpleNamespace()),
+            ), mock.patch(
+                "post_training_analysis.likelihood_comparison._evaluate_resolved_run_splits",
+                side_effect=fake_evaluate,
+            ):
+                result = run_prediction_likelihood_comparison(
+                    [gru_dir],
+                    include_heldout=False,
+                )
+
+            summary_payload = json.loads(Path(result["summary"]).read_text())
+            self.assertTrue(summary_payload["models"][0]["session_conditioning_enabled"])
+            self.assertEqual(
+                summary_payload["models"][0]["session_conditioning_encoding_type"],
+                "scalar",
+            )
+
+            resolved_runs_payload = json.loads(Path(result["resolved_runs"]).read_text())
+            self.assertTrue(resolved_runs_payload[0]["session_conditioning_enabled"])
+            self.assertEqual(
+                resolved_runs_payload[0]["session_conditioning_encoding_type"],
+                "scalar",
             )
 
     def test_run_prediction_likelihood_comparison_smoke_writes_artifacts(self):
