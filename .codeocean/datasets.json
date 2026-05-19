@@ -18,6 +18,10 @@
 			"mount": "foraging_nwb_bpod"
 		},
 		{
+			"id": "4d96980e-d068-4ff6-879e-9d2f9ea281e0",
+			"mount": "mice_multisubject_train10-gru_session_conditioning_lr_1e_5-260505"
+		},
+		{
 			"id": "5beb1741-1285-46dc-bbeb-64c29a4ad158",
 			"mount": "mice_snapshot_4"
 		},
