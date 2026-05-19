@@ -39,16 +39,26 @@ from post_training_analysis import run_post_training_analysis_from_saved_histori
 #     session_partitions=("train", "eval", "combined"),
 # )
 
-
-
-# bari
+# gru, session_conditioning
 result = run_post_training_analysis_from_saved_histories(
-    simulated_session_history_path="/data/generative_runs-multisubject_train10-baseline_rl/QLearning_L1F1_CK1_softmax/simulated_session_history.pkl",
-    animal_session_history_path="/data/generative_runs-multisubject_train10-baseline_rl/animal_session_history.pkl",
+    simulated_session_history_path="/data/generative_runs-multisubject_train10-gru-260506-11-H16-lr1e-05-3643c1fec78f/train/simulated_session_history.pkl",
+    resolved_run_path="/data/generative_runs-multisubject_train10-gru-260506-11-H16-lr1e-05-3643c1fec78f/train/resolved_run.json",
     output_dir="/results",
     window_size=10,
     save_animal_session_history=False,
+    session_partitions=("train"),
 )
+
+
+
+# # bari
+# result = run_post_training_analysis_from_saved_histories(
+#     simulated_session_history_path="/data/generative_runs-multisubject_train10-baseline_rl/QLearning_L1F1_CK1_softmax/simulated_session_history.pkl",
+#     animal_session_history_path="/data/generative_runs-multisubject_train10-baseline_rl/animal_session_history.pkl",
+#     output_dir="/results",
+#     window_size=10,
+#     save_animal_session_history=False,
+# )
 
 # # hattori
 # result = run_post_training_analysis_from_saved_histories(
