@@ -828,6 +828,161 @@ model:
         self.assertEqual(resolved.resolved_subject_ids, ["m1", "m2"])
         self.assertEqual(resolved.resolved_session_ids, ["m1_s1", "m2_s1"])
 
+    def test_load_animal_session_history_multisubject_aligns_session_ids_to_training_namespace(self):
+        resolved = generative_analysis.ResolvedModelRun(
+            model_dir="/tmp/model",
+            inputs_path="/tmp/model/inputs.yaml",
+            outputs_dir="/tmp/model/outputs",
+            model_type="gru",
+            split="train",
+            checkpoint_policy="final",
+            checkpoint_step=20,
+            checkpoint_label="final",
+            params_path="/tmp/model/outputs/params.json",
+            config_path="/tmp/model/outputs/gru_config.json",
+            seed=7,
+            multisubject=True,
+            mature_only=True,
+            ignore_policy="exclude",
+            curricula=["Uncoupled Baiting"],
+            features=None,
+            selection={"subject_start": 0, "subject_end": 2},
+            subject_index_map_path="/tmp/model/outputs/subject_index_map.json",
+            session_context_map_path="/tmp/model/outputs/session_context_map.json",
+            trained_subject_ids=["m1", "m2"],
+        )
+
+        class _FakeFrameSeries:
+            def __init__(self, values):
+                self._values = list(values)
+
+            def map(self, func):
+                return [func(value) for value in self._values]
+
+        class _FakeSnapshotFrame:
+            def __init__(self, data):
+                self._data = {key: list(values) for key, values in data.items()}
+
+            def copy(self):
+                return _FakeSnapshotFrame(self._data)
+
+            def __len__(self):
+                if not self._data:
+                    return 0
+                return len(self._data[next(iter(self._data))])
+
+            def __getitem__(self, key):
+                return _FakeFrameSeries(self._data[key])
+
+            def __setitem__(self, key, value):
+                self._data[key] = list(value)
+
+        snapshot_df = _FakeSnapshotFrame(
+            {
+                "subject_id": ["m1", "m1", "m2", "m2"],
+                "ses_idx": ["m1_s1", "m1_s1", "m2_s1", "m2_s1"],
+                "trial": [0, 1, 0, 1],
+                "animal_response": [0, 1, 0, 1],
+                "earned_reward": [1, 0, 0, 1],
+                "curriculum_name": ["Uncoupled Baiting"] * 4,
+                "current_stage_actual": ["GRADUATED"] * 4,
+            }
+        )
+        built_history = [
+            {
+                "subject_id": "m1",
+                "ses_idx": "m1_s1",
+                "choice_history": [0, 1],
+                "reward_history": [1, 0],
+                "n_trials": 2,
+            },
+            {
+                "subject_id": "m2",
+                "ses_idx": "m2_s1",
+                "choice_history": [0, 1],
+                "reward_history": [0, 1],
+                "n_trials": 2,
+            },
+        ]
+        fake_snapshot_module = mock.Mock()
+        fake_snapshot_module.load_mice_snapshot.return_value = (snapshot_df, ["m1", "m2"])
+
+        fake_multisubject_module = mock.Mock()
+        fake_multisubject_module.load_session_context_map.return_value = {
+            "indexing": "1_based",
+            "per_subject": [
+                {
+                    "subject_id": "m1",
+                    "subject_index": 0,
+                    "ordered_session_ids": ["m1__m1_s1"],
+                    "ordered_source_session_ids": ["m1_s1"],
+                },
+                {
+                    "subject_id": "m2",
+                    "subject_index": 1,
+                    "ordered_session_ids": ["m2__m2_s1"],
+                    "ordered_source_session_ids": ["m2_s1"],
+                },
+            ],
+        }
+        fake_multisubject_module.ordered_session_context_rows.return_value = [
+            {
+                "subject_id": "m1",
+                "subject_index": 0,
+                "ordered_session_ids": ["m1__m1_s1"],
+                "ordered_source_session_ids": ["m1_s1"],
+            },
+            {
+                "subject_id": "m2",
+                "subject_index": 1,
+                "ordered_session_ids": ["m2__m2_s1"],
+                "ordered_source_session_ids": ["m2_s1"],
+            },
+        ]
+
+        def _fake_import_module(name):
+            if name == "utils.load_mice_snapshot":
+                return fake_snapshot_module
+            if name == "utils.multisubject":
+                return fake_multisubject_module
+            return __import__(name)
+
+        with mock.patch.object(
+            generative_analysis, "_build_session_history_dataframe", return_value=built_history
+        ), mock.patch.object(
+            generative_analysis,
+            "_align_snapshot_df_with_ignore_policy",
+            side_effect=lambda snapshot_df, ignore_policy: snapshot_df,
+        ), mock.patch.object(
+            generative_analysis,
+            "importlib",
+        ) as importlib_mock:
+            importlib_mock.import_module.side_effect = _fake_import_module
+            session_history = load_animal_session_history(resolved)
+
+        self.assertEqual(
+            session_history,
+            [
+                {
+                    "subject_id": "m1",
+                    "ses_idx": "m1__m1_s1",
+                    "source_ses_idx": "m1_s1",
+                    "choice_history": [0, 1],
+                    "reward_history": [1, 0],
+                    "n_trials": 2,
+                },
+                {
+                    "subject_id": "m2",
+                    "ses_idx": "m2__m2_s1",
+                    "source_ses_idx": "m2_s1",
+                    "choice_history": [0, 1],
+                    "reward_history": [0, 1],
+                    "n_trials": 2,
+                },
+            ],
+        )
+        self.assertEqual(resolved.resolved_session_ids, ["m1__m1_s1", "m2__m2_s1"])
+
     def test_compute_switch_stats_matches_expected_reward_conditioning(self):
         animal_sessions = [
             {

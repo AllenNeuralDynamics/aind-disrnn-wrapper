@@ -320,6 +320,11 @@ def load_animal_session_history(
     # session dataframe from this result avoids the heavier raw-data/NWB path.
     build_started_at = time.perf_counter()
     session_history = _build_session_history_dataframe(snapshot_df)
+    if resolved_run.multisubject and resolved_run.session_context_map_path:
+        session_history = _align_multisubject_session_history_to_training_ids(
+            session_history,
+            resolved_run=resolved_run,
+        )
     logger.info(
         "Built session history dataframe in %.2fs: %d session%s",
         time.perf_counter() - build_started_at,
@@ -392,7 +397,11 @@ def simulate_model_sessions(
     records = []
     completed_rollouts = 0
     for session_index, animal_row in enumerate(animal_rows, start=1):
-        source_ses_idx = str(animal_row.get("ses_idx"))
+        model_ses_idx = str(animal_row.get("ses_idx"))
+        source_ses_idx = animal_row.get("source_ses_idx")
+        if source_ses_idx in (None, ""):
+            source_ses_idx = model_ses_idx
+        source_ses_idx = str(source_ses_idx)
         subject_id = _normalize_identifier(animal_row.get("subject_id"))
         session_date = str(animal_row.get("session_date"))
         curriculum_name = animal_row.get("curriculum_name")
@@ -406,17 +415,18 @@ def simulate_model_sessions(
                 session_index,
                 total_source_sessions,
                 subject_id,
-                source_ses_idx,
+                model_ses_idx,
                 animal_row.get("n_trials"),
             )
             continue
 
         logger.info(
-            "Simulating session %d/%d: subject=%s ses_idx=%s curriculum=%s n_trials=%d "
+            "Simulating session %d/%d: subject=%s ses_idx=%s source_ses_idx=%s curriculum=%s n_trials=%d "
             "(%d rollout%s)",
             session_index,
             total_source_sessions,
             subject_id,
+            model_ses_idx,
             source_ses_idx,
             curriculum_name,
             n_trials,
@@ -448,9 +458,9 @@ def simulate_model_sessions(
                 model_inputs = (
                     runner.encode_inputs(
                         subject_id,
-                        source_ses_idx,
+                        model_ses_idx,
                         [prev_choice, prev_reward],
-                        source_session_id=animal_row.get("source_ses_idx"),
+                        source_session_id=source_ses_idx,
                     )
                     if hasattr(runner, "encode_inputs")
                     else [prev_choice, prev_reward]
@@ -4580,6 +4590,77 @@ def _build_session_history_dataframe(raw_df):
         )
 
     return pd.DataFrame.from_records(records)
+
+
+def _align_multisubject_session_history_to_training_ids(
+    session_history,
+    *,
+    resolved_run: ResolvedModelRun,
+):
+    if not resolved_run.session_context_map_path:
+        return session_history
+
+    multisubject_mod = importlib.import_module("utils.multisubject")
+    session_context = multisubject_mod.load_session_context_map(
+        resolved_run.session_context_map_path
+    )
+
+    source_to_merged: dict[tuple[Any, str], str] = {}
+    merged_to_source: dict[tuple[Any, str], str] = {}
+    for row in multisubject_mod.ordered_session_context_rows(session_context):
+        subject_id = _normalize_identifier(row.get("subject_id"))
+        ordered_session_ids = [
+            str(session_id) for session_id in row.get("ordered_session_ids") or []
+        ]
+        ordered_source_session_ids = [
+            str(session_id)
+            for session_id in (
+                row.get("ordered_source_session_ids")
+                or row.get("ordered_session_ids")
+                or []
+            )
+        ]
+        if len(ordered_source_session_ids) != len(ordered_session_ids):
+            raise ValueError(
+                "session_context ordered_source_session_ids must align 1:1 with "
+                "ordered_session_ids."
+            )
+        for merged_session_id, source_session_id in zip(
+            ordered_session_ids,
+            ordered_source_session_ids,
+        ):
+            source_to_merged[(subject_id, source_session_id)] = str(merged_session_id)
+            merged_to_source[(subject_id, str(merged_session_id))] = str(source_session_id)
+
+    aligned_records: list[dict[str, Any]] = []
+    for record in _iter_session_records(session_history):
+        subject_id = _normalize_identifier(record.get("subject_id"))
+        session_id = str(record.get("ses_idx"))
+        source_session_id = record.get("source_ses_idx")
+        if source_session_id in (None, ""):
+            source_session_id = session_id
+        source_session_id = str(source_session_id)
+
+        merged_session_id = source_to_merged.get((subject_id, source_session_id))
+        if merged_session_id is None:
+            merged_session_id = source_to_merged.get((subject_id, session_id))
+        if merged_session_id is None and (subject_id, session_id) in merged_to_source:
+            merged_session_id = str(session_id)
+            source_session_id = merged_to_source[(subject_id, session_id)]
+        if merged_session_id is None:
+            raise ValueError(
+                "Could not align multisubject animal session history to the training "
+                "session namespace for "
+                f"subject_id={subject_id!r}, ses_idx={session_id!r}, "
+                f"source_ses_idx={source_session_id!r}."
+            )
+
+        aligned_record = dict(record)
+        aligned_record["ses_idx"] = str(merged_session_id)
+        aligned_record["source_ses_idx"] = str(source_session_id)
+        aligned_records.append(aligned_record)
+
+    return _restore_input_container(session_history, aligned_records)
 
 
 def _build_nwb_name(
