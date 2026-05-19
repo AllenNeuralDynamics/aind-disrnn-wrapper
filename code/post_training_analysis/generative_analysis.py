@@ -5416,6 +5416,47 @@ def _plot_pooled_switch_probability(plt, switch_stats: Mapping[str, Any], output
     plt.close(fig)
 
 
+def _normalize_probability_bar_values(
+    probabilities: Sequence[Any],
+    sems: Sequence[Any],
+) -> tuple[list[float], list[float]]:
+    plot_probabilities: list[float] = []
+    plot_sems: list[float] = []
+    for probability, sem in zip(probabilities, sems, strict=False):
+        probability_value = _coerce_probability(probability)
+        sem_value = _coerce_probability(sem)
+        if probability_value is None:
+            plot_probabilities.append(math.nan)
+            plot_sems.append(0.0)
+            continue
+        plot_probabilities.append(probability_value)
+        plot_sems.append(0.0 if sem_value is None else sem_value)
+    return plot_probabilities, plot_sems
+
+
+def _plot_probability_bar_series(
+    ax,
+    xs: Sequence[float],
+    probabilities: Sequence[Any],
+    sems: Sequence[Any],
+    *,
+    width: float,
+    label: str,
+    alpha: float,
+    capsize: float = 4,
+) -> None:
+    plot_probabilities, plot_sems = _normalize_probability_bar_values(probabilities, sems)
+    ax.bar(
+        xs,
+        plot_probabilities,
+        width=width,
+        yerr=plot_sems,
+        capsize=capsize,
+        label=label,
+        alpha=alpha,
+    )
+
+
 def _plot_post_switch_by_reward_pooled(
     plt,
     switch_stats: Mapping[str, Any],
@@ -5441,7 +5482,15 @@ def _plot_post_switch_by_reward_pooled(
             for condition in conditions
         ]
         xs = [x + offsets[idx] for x in x_positions]
-        ax.bar(xs, probs, width=width, yerr=sems, capsize=4, label=labels[idx], alpha=0.8)
+        _plot_probability_bar_series(
+            ax,
+            xs,
+            probs,
+            sems,
+            width=width,
+            label=labels[idx],
+            alpha=0.8,
+        )
 
     ax.set_xticks(x_positions)
     ax.set_xticklabels(["Rewarded", "Unrewarded"])
@@ -5476,7 +5525,15 @@ def _plot_post_switch_by_reward(plt, switch_stats: Mapping[str, Any], output_pat
             for condition in conditions
         ]
         xs = [x + offsets[idx] for x in x_positions]
-        ax.bar(xs, probs, width=width, yerr=sems, capsize=4, label=labels[idx], alpha=0.8)
+        _plot_probability_bar_series(
+            ax,
+            xs,
+            probs,
+            sems,
+            width=width,
+            label=labels[idx],
+            alpha=0.8,
+        )
 
     ax.set_xticks(x_positions)
     ax.set_xticklabels(["Rewarded", "Unrewarded"])
@@ -5520,7 +5577,15 @@ def _plot_post_switch_by_reward_and_run_length_pooled(
             probs.append(_coerce_probability(stats.get("probability")))
             sems.append(_coerce_probability(stats.get("sem")))
         xs = [x + offsets[idx] for x in x_positions]
-        ax.bar(xs, probs, width=width, yerr=sems, capsize=4, label=labels[idx], alpha=0.8)
+        _plot_probability_bar_series(
+            ax,
+            xs,
+            probs,
+            sems,
+            width=width,
+            label=labels[idx],
+            alpha=0.8,
+        )
 
     ax.set_xticks(x_positions)
     ax.set_xticklabels([label for _, _, label in conditions])
@@ -5562,7 +5627,15 @@ def _plot_post_switch_by_reward_and_run_length(
             probs.append(_coerce_probability(stats.get(mean_key)))
             sems.append(_coerce_probability(stats.get(sem_key)))
         xs = [x + offsets[idx] for x in x_positions]
-        ax.bar(xs, probs, width=width, yerr=sems, capsize=4, label=labels[idx], alpha=0.8)
+        _plot_probability_bar_series(
+            ax,
+            xs,
+            probs,
+            sems,
+            width=width,
+            label=labels[idx],
+            alpha=0.8,
+        )
 
     ax.set_xticks(x_positions)
     ax.set_xticklabels([label for _, _, label in conditions])

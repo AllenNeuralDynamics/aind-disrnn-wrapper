@@ -1374,6 +1374,63 @@ model:
                     "post_switch_by_reward_and_run_length_subject_scatter"
                 ].name.endswith(".png")
             )
+
+    def test_save_switch_figures_handles_missing_probability_bars(self):
+        try:
+            import matplotlib.pyplot  # noqa: F401
+        except ModuleNotFoundError:
+            self.skipTest("matplotlib is not installed")
+
+        animal_sessions = [
+            self._session(
+                subject_id="m5",
+                ses_idx="m5_s1",
+                choice_history=[0, 1, 0, 1, 0, 1, 0, 1],
+                reward_history=[0, 1, 1, 1, 1, 1, 1, 0],
+            )
+        ]
+        simulated_sessions = [
+            self._session(
+                subject_id="m5",
+                ses_idx="m5_s1__rollout_0",
+                source_ses_idx="m5_s1",
+                choice_history=[0, 1, 0],
+                reward_history=[0, 1, 0],
+            )
+        ]
+        stats = compute_switch_stats(
+            animal_sessions=animal_sessions,
+            simulated_sessions=simulated_sessions,
+            window_size=1,
+        )
+        stats["animal"]["post_switch_by_reward"]["rewarded"]["probability"] = None
+        stats["animal"]["post_switch_by_reward"]["rewarded"]["sem"] = None
+        stats["subject_aggregate"]["post_switch_by_reward"]["rewarded"]["animal_mean"] = None
+        stats["subject_aggregate"]["post_switch_by_reward"]["rewarded"]["animal_sem"] = None
+        stats["animal"]["post_switch_by_reward_and_run_length"]["rewarded"]["run_length_1"][
+            "probability"
+        ] = None
+        stats["animal"]["post_switch_by_reward_and_run_length"]["rewarded"]["run_length_1"][
+            "sem"
+        ] = None
+        stats["subject_aggregate"]["post_switch_by_reward_and_run_length"]["rewarded"][
+            "run_length_1"
+        ]["animal_mean"] = None
+        stats["subject_aggregate"]["post_switch_by_reward_and_run_length"]["rewarded"][
+            "run_length_1"
+        ]["animal_sem"] = None
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            figure_paths = generative_analysis._save_switch_figures(
+                switch_stats=stats,
+                output_dir=Path(tmpdir),
+            )
+            self.assertTrue(figure_paths["post_switch_by_reward_pooled"].exists())
+            self.assertTrue(figure_paths["post_switch_by_reward"].exists())
+            self.assertTrue(
+                figure_paths["post_switch_by_reward_and_run_length_pooled"].exists()
+            )
+            self.assertTrue(figure_paths["post_switch_by_reward_and_run_length"].exists())
             self.assertTrue(
                 figure_paths["post_switch_by_reward_subject_scatter"].exists()
             )
