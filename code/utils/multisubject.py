@@ -9,6 +9,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
+from omegaconf import DictConfig, ListConfig, OmegaConf
 
 SUBJECT_MODULE_KEY = "multisubject_dis_rnn"
 GRU_SUBJECT_MODULE_KEY = "multisubject_gru"
@@ -27,6 +28,8 @@ def _json_default(value: Any) -> Any:
 
 def _normalize_jsonable(value: Any) -> Any:
     """Recursively normalize metadata into JSON-friendly Python objects."""
+    if isinstance(value, (DictConfig, ListConfig)):
+        return _normalize_jsonable(OmegaConf.to_container(value, resolve=True))
     if isinstance(value, Mapping):
         return {str(key): _normalize_jsonable(child) for key, child in value.items()}
     if isinstance(value, (list, tuple)):
@@ -1044,7 +1047,7 @@ def save_multisubject_metadata(
     """Persist dataset metadata as a JSON artifact for later debugging/inspection."""
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    payload = _normalize_jsonable(dict(metadata))
+    payload = _normalize_jsonable(metadata)
     with output_path.open("w") as f:
         json.dump(payload, f, indent=2)
     return output_path

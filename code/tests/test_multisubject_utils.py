@@ -9,6 +9,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from omegaconf import OmegaConf
 
 from models.session_conditioning import compute_session_curriculum_lambda
 from utils.multisubject import (
@@ -27,6 +28,7 @@ from utils.multisubject import (
     ordered_session_ids_from_session_context,
     prepend_session_index_to_multisubject_dataset,
     resolve_session_context_plot_subject_indices,
+    save_multisubject_metadata,
     save_session_context_map,
     session_indices_for_split,
     session_regularization_index_arrays_from_session_context,
@@ -255,6 +257,25 @@ class TestMultisubjectUtils(unittest.TestCase):
             loaded_payload = json.loads(saved_path.read_text())
 
             self.assertEqual(loaded_payload, payload)
+
+    def test_save_multisubject_metadata_normalizes_omegaconf_containers(self):
+        with tempfile.TemporaryDirectory(prefix="multisubject_metadata_") as tmpdir:
+            path = Path(tmpdir) / "multisubject_metadata.json"
+            payload = {
+                "curricula": OmegaConf.create(["coupled", "uncoupled"]),
+                "features": OmegaConf.create({"include": ["reward", "choice"]}),
+            }
+
+            saved_path = save_multisubject_metadata(path, metadata=payload)
+            loaded_payload = json.loads(saved_path.read_text())
+
+            self.assertEqual(
+                loaded_payload,
+                {
+                    "curricula": ["coupled", "uncoupled"],
+                    "features": {"include": ["reward", "choice"]},
+                },
+            )
 
     def test_ordered_session_context_rows_sorts_by_subject_index(self):
         session_context = {
