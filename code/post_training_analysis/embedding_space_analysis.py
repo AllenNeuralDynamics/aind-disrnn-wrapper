@@ -22,6 +22,7 @@ from matplotlib.lines import Line2D
 from models.session_conditioning import resolve_session_conditioning_from_architecture
 from post_training_analysis.generative_analysis import resolve_model_run
 from utils.multisubject import (
+    compute_train_eval_session_ids,
     compute_session_conditioned_context_dataframe,
     extract_subject_embeddings_from_params,
     load_session_context_map,
@@ -145,6 +146,26 @@ def _load_json_file(path: Path) -> dict[str, Any]:
     return payload
 
 
+def _reconstruct_split_session_ids_from_session_context(
+    session_context: Mapping[str, Any],
+    *,
+    eval_every_n: int,
+) -> tuple[list[str], list[str]]:
+    train_session_ids: list[str] = []
+    eval_session_ids: list[str] = []
+    for row in ordered_session_context_rows(session_context):
+        ordered_session_ids = [str(session_id) for session_id in row.get("ordered_session_ids") or []]
+        if not ordered_session_ids:
+            continue
+        subject_train_ids, subject_eval_ids = compute_train_eval_session_ids(
+            ordered_session_ids,
+            eval_every_n=int(eval_every_n),
+        )
+        train_session_ids.extend(str(session_id) for session_id in subject_train_ids)
+        eval_session_ids.extend(str(session_id) for session_id in subject_eval_ids)
+    return train_session_ids, eval_session_ids
+
+
 def _default_output_dir(model_dir: str | Path, checkpoint_label: str) -> Path:
     return (
         Path(model_dir).expanduser().resolve()
@@ -187,24 +208,42 @@ def _load_analysis_metadata(
     resolved_run: Any,
     subject_id_to_index: Mapping[Any, int],
     index_to_subject_id: Mapping[int, Any],
-) -> tuple[dict[str, Any], Path]:
+) -> tuple[dict[str, Any], Path, str]:
     outputs_dir = Path(resolved_run.outputs_dir)
     metadata_path = outputs_dir / "multisubject_metadata.json"
-    if not metadata_path.exists():
-        raise FileNotFoundError(
-            f"Embedding-space analysis requires {metadata_path}."
-        )
-
-    metadata = _load_json_file(metadata_path)
-    session_context = metadata.get("session_context")
-    if not isinstance(session_context, Mapping):
-        if getattr(resolved_run, "session_context_map_path", None):
-            session_context = load_session_context_map(resolved_run.session_context_map_path)
-        else:
+    metadata_source_path = metadata_path
+    metadata_source_type = "multisubject_metadata"
+    if metadata_path.exists():
+        metadata = _load_json_file(metadata_path)
+        session_context = metadata.get("session_context")
+        if not isinstance(session_context, Mapping):
+            if getattr(resolved_run, "session_context_map_path", None):
+                session_context = load_session_context_map(resolved_run.session_context_map_path)
+            else:
+                raise FileNotFoundError(
+                    "Embedding-space analysis requires either metadata.session_context in "
+                    f"{metadata_path} or outputs/session_context_map.json."
+                )
+    else:
+        if not getattr(resolved_run, "session_context_map_path", None):
             raise FileNotFoundError(
-                "Embedding-space analysis requires either metadata.session_context in "
-                f"{metadata_path} or outputs/session_context_map.json."
+                "Embedding-space analysis requires either outputs/multisubject_metadata.json "
+                "or outputs/session_context_map.json."
             )
+        metadata_source_path = Path(resolved_run.session_context_map_path)
+        metadata_source_type = "session_context_map_fallback"
+        session_context = load_session_context_map(metadata_source_path)
+        data_cfg = dict(getattr(resolved_run, "run_config", {}).get("data", {}) or {})
+        eval_every_n = int(data_cfg.get("eval_every_n", 2))
+        train_session_ids, eval_session_ids = _reconstruct_split_session_ids_from_session_context(
+            session_context,
+            eval_every_n=eval_every_n,
+        )
+        metadata = {
+            "session_context": dict(session_context),
+            "train_session_ids": train_session_ids,
+            "eval_session_ids": eval_session_ids,
+        }
 
     resolved_index_to_subject_id = {
         int(index): normalize_subject_id(subject_id)
@@ -241,7 +280,7 @@ def _load_analysis_metadata(
     metadata["eval_session_ids"] = [
         str(session_id) for session_id in metadata.get("eval_session_ids") or []
     ]
-    return metadata, metadata_path
+    return metadata, metadata_source_path, metadata_source_type
 
 
 def _build_subject_session_metadata(
@@ -928,7 +967,11 @@ def run_embedding_space_analysis(
     subject_id_to_index, index_to_subject_id = load_subject_index_map(
         resolved_run.subject_index_map_path
     )
-    analysis_metadata, multisubject_metadata_path = _load_analysis_metadata(
+    (
+        analysis_metadata,
+        analysis_metadata_source_path,
+        analysis_metadata_source_type,
+    ) = _load_analysis_metadata(
         resolved_run=resolved_run,
         subject_id_to_index=subject_id_to_index,
         index_to_subject_id=index_to_subject_id,
@@ -991,7 +1034,8 @@ def run_embedding_space_analysis(
         "summary_path": str(resolved_output_dir / "summary.json"),
         "subject_session_metadata_path": str(subject_session_metadata_path),
         "subject_metadata_path": str(subject_metadata_path),
-        "multisubject_metadata_path": str(multisubject_metadata_path),
+        "analysis_metadata_path": str(analysis_metadata_source_path),
+        "analysis_metadata_source_type": str(analysis_metadata_source_type),
         "checkpoint_policy": str(resolved_run.checkpoint_policy),
         "checkpoint_step": resolved_run.checkpoint_step,
         "checkpoint_label": resolved_run.checkpoint_label,

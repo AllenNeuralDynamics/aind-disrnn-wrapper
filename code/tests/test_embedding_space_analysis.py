@@ -110,6 +110,7 @@ class TestEmbeddingSpaceAnalysis(unittest.TestCase):
         root: Path,
         *,
         session_conditioning: bool = False,
+        write_multisubject_metadata: bool = True,
     ) -> Path:
         model_dir = root / ("gru_session_conditioned" if session_conditioning else "gru_standard")
         outputs_dir = model_dir / "outputs"
@@ -234,26 +235,27 @@ class TestEmbeddingSpaceAnalysis(unittest.TestCase):
         (outputs_dir / "session_context_map.json").write_text(
             json.dumps(session_context, indent=2)
         )
-        (outputs_dir / "multisubject_metadata.json").write_text(
-            json.dumps(
-                {
-                    "subject_id_to_index": subject_index_map["subject_id_to_index"],
-                    "index_to_subject_id": subject_index_map["index_to_subject_id"],
-                    "num_subjects": 2,
-                    "session_max_index_by_subject_index": [2, 2],
-                    "session_context": session_context,
-                    "train_session_ids": [
-                        "m1__m1_2024-01-02_00-00-00",
-                        "m2__m2_2024-01-03_00-00-00",
-                    ],
-                    "eval_session_ids": [
-                        "m1__m1_2024-01-01_00-00-00",
-                        "m2__m2_2024-01-04_00-00-00",
-                    ],
-                },
-                indent=2,
+        if write_multisubject_metadata:
+            (outputs_dir / "multisubject_metadata.json").write_text(
+                json.dumps(
+                    {
+                        "subject_id_to_index": subject_index_map["subject_id_to_index"],
+                        "index_to_subject_id": subject_index_map["index_to_subject_id"],
+                        "num_subjects": 2,
+                        "session_max_index_by_subject_index": [2, 2],
+                        "session_context": session_context,
+                        "train_session_ids": [
+                            "m1__m1_2024-01-02_00-00-00",
+                            "m2__m2_2024-01-03_00-00-00",
+                        ],
+                        "eval_session_ids": [
+                            "m1__m1_2024-01-01_00-00-00",
+                            "m2__m2_2024-01-04_00-00-00",
+                        ],
+                    },
+                    indent=2,
+                )
             )
-        )
         return model_dir
 
     def _make_params(
@@ -380,6 +382,24 @@ class TestEmbeddingSpaceAnalysis(unittest.TestCase):
         )
         self.assertEqual(session_df["session_index"].tolist(), [1, 2, 1, 2])
         self.assertEqual(session_df["join_status"].tolist(), ["matched", "matched", "ambiguous", "missing"])
+        self.assertEqual(session_df["session_split"].tolist(), ["train", "eval", "train", "eval"])
+
+    def test_falls_back_to_session_context_when_multisubject_metadata_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            model_dir = self._write_model_dir(
+                Path(tmpdir),
+                write_multisubject_metadata=False,
+            )
+            with mock.patch.object(
+                embedding_space_analysis,
+                "_load_han_session_table",
+                return_value=self._make_han_table(),
+            ):
+                summary = embedding_space_analysis.run_embedding_space_analysis(model_dir)
+            session_df = pd.read_csv(summary["subject_session_metadata_path"])
+
+        self.assertEqual(summary["analysis_metadata_source_type"], "session_context_map_fallback")
+        self.assertTrue(summary["analysis_metadata_path"].endswith("session_context_map.json"))
         self.assertEqual(session_df["session_split"].tolist(), ["train", "eval", "train", "eval"])
 
     def test_subject_metadata_aggregates_majority_and_means(self) -> None:
