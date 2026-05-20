@@ -36,16 +36,87 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_CHECKPOINT_POLICY = "best_eval"
 _DEFAULT_TASK_COLUMN = "curriculum_name"
+_DEFAULT_ROOM_COLUMN = "room"
 _DEFAULT_WEEKDAY_COLUMN = "weekday"
 _DEFAULT_FORAGING_EFF_COLUMN = "foraging_eff_random_seed"
 _DEFAULT_BIAS_NAIVE_COLUMN = "bias_naive"
 _DEFAULT_REACTION_TIME_COLUMN = "reaction_time_median"
 _UNKNOWN_LABEL = "Unknown"
 _MIXED_LABEL = "Mixed"
+_SPECIAL_CATEGORY_COLORS = {
+    _UNKNOWN_LABEL: "#bdbdbd",
+    _MIXED_LABEL: "#4d4d4d",
+}
+_DISTINCT_CATEGORY_COLORS = [
+    "#1f77b4",
+    "#d62728",
+    "#2ca02c",
+    "#9467bd",
+    "#8c564b",
+    "#e377c2",
+    "#17becf",
+    "#bcbd22",
+    "#ff7f0e",
+    "#7f7f7f",
+]
+_TASK_CATEGORY_COLORS = [
+    "#1f77b4",
+    "#d62728",
+    "#2ca02c",
+    "#9467bd",
+    "#8c564b",
+    "#e377c2",
+    "#17becf",
+    "#bcbd22",
+]
+_WEEKDAY_ORDER = [str(index) for index in range(1, 8)]
+_WEEKDAY_COLORS = {
+    "1": "#1f77b4",
+    "2": "#ff7f0e",
+    "3": "#2ca02c",
+    "4": "#d62728",
+    "5": "#9467bd",
+    "6": "#8c564b",
+    "7": "#e377c2",
+}
+_NUMERIC_COLOR_CONFIG: dict[str, dict[str, Any]] = {
+    "foraging_eff_random_seed_mean": {
+        "cmap": "viridis",
+        "vmin": 0.5,
+        "vmax": 1.0,
+    },
+    "bias_naive_mean": {
+        "cmap": "coolwarm",
+        "vmin": -1.0,
+        "vmax": 1.0,
+    },
+    "reaction_time_median_mean": {
+        "cmap": "viridis",
+    },
+    "session_index": {
+        "cmap": "plasma",
+    },
+    "foraging_eff_random_seed": {
+        "cmap": "viridis",
+        "vmin": 0.5,
+        "vmax": 1.0,
+    },
+    "bias_naive": {
+        "cmap": "coolwarm",
+        "vmin": -1.0,
+        "vmax": 1.0,
+    },
+    "reaction_time_median": {
+        "cmap": "viridis",
+        "vmin": 0.0,
+        "vmax": 0.5,
+    },
+}
 
 _SUBJECT_PLOT_SPECS: tuple[tuple[str, str, str, str], ...] = (
     ("rig_majority", "subject_embeddings_by_rig.png", "Rig", "categorical"),
     ("trainer_majority", "subject_embeddings_by_trainer.png", "Trainer", "categorical"),
+    ("room_majority", "subject_embeddings_by_room.png", "Room", "categorical"),
     ("task_majority", "subject_embeddings_by_task.png", "Task", "categorical"),
     (
         "foraging_eff_random_seed_mean",
@@ -120,6 +191,45 @@ def _normalize_subject_id_str(value: Any) -> str | None:
     if isinstance(normalized, float) and math.isnan(normalized):
         return None
     return str(normalized)
+
+
+def _normalize_trainer_label(value: Any) -> Any:
+    if value is None or pd.isna(value):
+        return value
+    text = str(value).strip()
+    if not text:
+        return value
+    normalized_key = re.sub(r"[\s._-]+", "", text).lower()
+    if normalized_key == "bowentan":
+        return "Bowen Tan"
+    return text
+
+
+def _normalize_weekday_label(value: Any) -> Any:
+    if value is None or pd.isna(value):
+        return value
+    text = str(value).strip()
+    if not text:
+        return value
+    weekday_name_to_index = {
+        "monday": "1",
+        "tuesday": "2",
+        "wednesday": "3",
+        "thursday": "4",
+        "friday": "5",
+        "saturday": "6",
+        "sunday": "7",
+    }
+    lowered = text.lower()
+    if lowered in weekday_name_to_index:
+        return weekday_name_to_index[lowered]
+    try:
+        numeric_value = float(text)
+    except ValueError:
+        return text
+    if numeric_value.is_integer():
+        return str(int(numeric_value))
+    return text
 
 
 def _normalize_session_date(value: Any) -> str | None:
@@ -346,6 +456,7 @@ def _resolve_han_column_map(
     df_han: pd.DataFrame,
     *,
     task_column: str,
+    room_column: str,
     weekday_column: str,
     foraging_eff_column: str,
     bias_naive_column: str,
@@ -354,6 +465,7 @@ def _resolve_han_column_map(
     column_map = {
         "rig": "rig",
         "trainer": "trainer",
+        "room": str(room_column),
         "current_stage_actual": "current_stage_actual",
         "task": str(task_column),
         "weekday": str(weekday_column),
@@ -367,7 +479,7 @@ def _resolve_han_column_map(
         raise ValueError(
             "df_han is missing required columns: "
             f"{missing_columns}. Configurable columns can be overridden with "
-            "--task-column, --weekday-column, --foraging-eff-column, "
+            "--task-column, --room-column, --weekday-column, --foraging-eff-column, "
             "--bias-naive-column, and --reaction-time-column."
         )
     return column_map
@@ -410,6 +522,9 @@ def _attach_han_metadata(
 
     for alias, actual_column in column_map.items():
         joined[alias] = joined[actual_column]
+
+    joined["trainer"] = joined["trainer"].map(_normalize_trainer_label)
+    joined["weekday"] = joined["weekday"].map(_normalize_weekday_label)
 
     for numeric_column in (
         "foraging_eff_random_seed",
@@ -455,6 +570,7 @@ def _aggregate_subject_metadata(session_df: pd.DataFrame) -> pd.DataFrame:
                 "n_sessions_ambiguous_han": int((subject_rows["join_status"] == "ambiguous").sum()),
                 "rig_majority": _majority_label(subject_rows["rig"]),
                 "trainer_majority": _majority_label(subject_rows["trainer"]),
+                "room_majority": _majority_label(subject_rows["room"]),
                 "task_majority": _majority_label(subject_rows["task"]),
                 "foraging_eff_random_seed_mean": float(
                     pd.to_numeric(
@@ -500,6 +616,70 @@ def _resolve_numeric_bounds(values: np.ndarray) -> tuple[float, float]:
     return vmin, vmax
 
 
+def _resolve_numeric_style(
+    *,
+    color_column: str,
+    values: np.ndarray,
+) -> tuple[str, float, float]:
+    config = dict(_NUMERIC_COLOR_CONFIG.get(color_column) or {})
+    cmap_name = str(config.get("cmap", "viridis"))
+    if "vmin" in config and "vmax" in config:
+        return cmap_name, float(config["vmin"]), float(config["vmax"])
+    vmin, vmax = _resolve_numeric_bounds(values)
+    return cmap_name, vmin, vmax
+
+
+def _ordered_categories_for_column(
+    values: pd.Series,
+    *,
+    color_column: str,
+) -> list[str]:
+    categories = list(dict.fromkeys(_clean_categorical_series(values).tolist()))
+    special_categories = [
+        category
+        for category in (_MIXED_LABEL, _UNKNOWN_LABEL)
+        if category in categories
+    ]
+    non_special_categories = [
+        category
+        for category in categories
+        if category not in {_MIXED_LABEL, _UNKNOWN_LABEL}
+    ]
+    if color_column == "weekday":
+        ordered = [category for category in _WEEKDAY_ORDER if category in non_special_categories]
+        extras = sorted(
+            category for category in non_special_categories if category not in set(_WEEKDAY_ORDER)
+        )
+        return [*ordered, *extras, *special_categories]
+    return [*sorted(non_special_categories), *special_categories]
+
+
+def _categorical_color_map(
+    categories: list[str],
+    *,
+    color_column: str,
+) -> dict[str, str]:
+    ordered_non_special = [
+        category for category in categories if category not in {_UNKNOWN_LABEL, _MIXED_LABEL}
+    ]
+    color_map: dict[str, str] = {}
+    if color_column in {"weekday"}:
+        for category in ordered_non_special:
+            color_map[category] = _WEEKDAY_COLORS.get(category, "#636363")
+    else:
+        palette = (
+            _TASK_CATEGORY_COLORS
+            if color_column in {"task", "task_majority"}
+            else _DISTINCT_CATEGORY_COLORS
+        )
+        for index, category in enumerate(ordered_non_special):
+            color_map[category] = palette[index % len(palette)]
+    for special_label, color in _SPECIAL_CATEGORY_COLORS.items():
+        if special_label in categories:
+            color_map[special_label] = color
+    return color_map
+
+
 def _finalize_pairwise_grid(fig: Any, axes: np.ndarray, dim_pairs: list[tuple[str, str]]) -> list[Any]:
     axes_list = list(axes.flat)
     for ax in axes_list[len(dim_pairs):]:
@@ -512,6 +692,54 @@ def _save_figure(fig: Any, path: Path) -> str:
     fig.savefig(path, bbox_inches="tight")
     plt.close(fig)
     return str(path)
+
+
+def _bottom_legend_ncol(n_handles: int) -> int:
+    if n_handles <= 0:
+        return 1
+    return min(4, n_handles)
+
+
+def _bottom_legend_rows(n_handles: int) -> int:
+    ncol = _bottom_legend_ncol(n_handles)
+    return int(math.ceil(n_handles / max(1, ncol)))
+
+
+def _reserve_bottom_margin(n_legend_rows: int) -> float:
+    if n_legend_rows <= 0:
+        return 0.08
+    return 0.12 + (0.07 * n_legend_rows)
+
+
+def _add_bottom_legend(
+    fig: Any,
+    *,
+    legend_handles: list[Any],
+    legend_title: str,
+) -> int:
+    ncol = _bottom_legend_ncol(len(legend_handles))
+    fig.legend(
+        handles=legend_handles,
+        loc="lower center",
+        bbox_to_anchor=(0.5, -0.02),
+        ncol=ncol,
+        title=legend_title,
+    )
+    return _bottom_legend_rows(len(legend_handles))
+
+
+def _add_right_colorbar(
+    fig: Any,
+    *,
+    scatter_artist: Any,
+    color_label: str,
+    bottom_margin: float,
+) -> None:
+    top_margin = 0.9
+    cbar_bottom = max(0.12, bottom_margin)
+    cbar_height = max(0.2, top_margin - cbar_bottom)
+    cax = fig.add_axes([0.88, cbar_bottom, 0.02, cbar_height])
+    fig.colorbar(scatter_artist, cax=cax, label=color_label)
 
 
 def _make_subject_embedding_plot(
@@ -533,14 +761,15 @@ def _make_subject_embedding_plot(
     )
     figure_axes = _finalize_pairwise_grid(fig, axes, dim_pairs)
 
+    legend_handles: list[Any] = []
+    scatter_artist = None
     if color_kind == "categorical":
         categorical_values = _clean_categorical_series(plot_df[color_column])
-        categories = list(dict.fromkeys(categorical_values.tolist()))
-        cmap = plt.get_cmap("tab20")
-        color_map = {
-            category: cmap(index % max(1, cmap.N))
-            for index, category in enumerate(categories)
-        }
+        categories = _ordered_categories_for_column(
+            categorical_values,
+            color_column=color_column,
+        )
+        color_map = _categorical_color_map(categories, color_column=color_column)
         for ax, (x_column, y_column) in zip(figure_axes, dim_pairs):
             for category in categories:
                 category_rows = plot_df[categorical_values == category]
@@ -578,17 +807,13 @@ def _make_subject_embedding_plot(
             )
             for category in categories
         ]
-        fig.legend(
-            handles=legend_handles,
-            loc="upper center",
-            ncol=min(4, max(1, len(legend_handles))),
-            title=color_label,
-        )
     else:
         numeric_values = pd.to_numeric(plot_df[color_column], errors="coerce").to_numpy(dtype=float)
         finite_mask = np.isfinite(numeric_values)
-        vmin, vmax = _resolve_numeric_bounds(numeric_values)
-        scatter_artist = None
+        cmap_name, vmin, vmax = _resolve_numeric_style(
+            color_column=color_column,
+            values=numeric_values,
+        )
         for ax, (x_column, y_column) in zip(figure_axes, dim_pairs):
             ax.axhline(0, color="0.85", linewidth=1)
             ax.axvline(0, color="0.85", linewidth=1)
@@ -597,7 +822,7 @@ def _make_subject_embedding_plot(
                     plot_df.loc[finite_mask, x_column],
                     plot_df.loc[finite_mask, y_column],
                     c=numeric_values[finite_mask],
-                    cmap="viridis",
+                    cmap=cmap_name,
                     vmin=vmin,
                     vmax=vmax,
                     s=60,
@@ -627,11 +852,26 @@ def _make_subject_embedding_plot(
             ax.set_ylabel(y_column.replace("_", " ").title())
             ax.set_title(f"{x_column} vs {y_column}")
 
-        if scatter_artist is not None:
-            fig.colorbar(scatter_artist, ax=figure_axes, label=color_label)
-
     fig.suptitle(f"Subject Embedding State Space - {color_label}", fontsize=14)
-    fig.tight_layout(rect=(0, 0, 1, 0.95))
+    legend_rows = 0
+    if legend_handles:
+        legend_rows = _bottom_legend_rows(len(legend_handles))
+    bottom_margin = _reserve_bottom_margin(legend_rows)
+    right_margin = 0.86 if scatter_artist is not None else 0.98
+    fig.tight_layout(rect=(0.03, bottom_margin, right_margin, 0.93))
+    if legend_handles:
+        _add_bottom_legend(
+            fig,
+            legend_handles=legend_handles,
+            legend_title=color_label,
+        )
+    if scatter_artist is not None:
+        _add_right_colorbar(
+            fig,
+            scatter_artist=scatter_artist,
+            color_label=color_label,
+            bottom_margin=bottom_margin,
+        )
     return fig
 
 
@@ -688,14 +928,15 @@ def _make_session_context_plot(
     )
     figure_axes = _finalize_pairwise_grid(fig, axes, dim_pairs)
 
+    legend_handles: list[Any] = []
+    scatter_artist = None
     if color_kind == "categorical":
         categorical_values = _clean_categorical_series(subject_rows[color_column])
-        categories = list(dict.fromkeys(categorical_values.tolist()))
-        cmap = plt.get_cmap("tab20")
-        color_map = {
-            category: cmap(index % max(1, cmap.N))
-            for index, category in enumerate(categories)
-        }
+        categories = _ordered_categories_for_column(
+            categorical_values,
+            color_column=color_column,
+        )
+        color_map = _categorical_color_map(categories, color_column=color_column)
         for ax, (x_column, y_column) in zip(figure_axes, dim_pairs):
             ax.plot(
                 subject_rows[x_column],
@@ -762,18 +1003,13 @@ def _make_session_context_plot(
                 for category in categories
             ]
         )
-        fig.legend(
-            handles=legend_handles,
-            loc="upper center",
-            ncol=min(4, max(1, len(legend_handles))),
-            title=color_label,
-        )
     else:
         numeric_values = pd.to_numeric(subject_rows[color_column], errors="coerce").to_numpy(dtype=float)
         finite_mask = np.isfinite(numeric_values)
-        cmap_name = "plasma" if color_kind == "session_index" else "viridis"
-        vmin, vmax = _resolve_numeric_bounds(numeric_values)
-        scatter_artist = None
+        cmap_name, vmin, vmax = _resolve_numeric_style(
+            color_column=color_column,
+            values=numeric_values,
+        )
 
         for ax, (x_column, y_column) in zip(figure_axes, dim_pairs):
             ax.plot(
@@ -838,22 +1074,31 @@ def _make_session_context_plot(
                 label="Base subject embedding",
             ),
         ]
-        fig.legend(
-            handles=legend_handles,
-            loc="upper center",
-            ncol=len(legend_handles),
-            title=color_label,
-        )
-        if scatter_artist is not None:
-            fig.colorbar(scatter_artist, ax=figure_axes, label=color_label)
-
     first_row = subject_rows.iloc[0]
     fig.suptitle(
         "Session-Conditioned Subject Context State Space "
         f"- Subject {int(first_row['subject_index'])} ({first_row['subject_id']}) - {color_label}",
         fontsize=14,
     )
-    fig.tight_layout(rect=(0, 0, 1, 0.95))
+    legend_rows = 0
+    if legend_handles:
+        legend_rows = _bottom_legend_rows(len(legend_handles))
+    bottom_margin = _reserve_bottom_margin(legend_rows)
+    right_margin = 0.86 if scatter_artist is not None else 0.98
+    fig.tight_layout(rect=(0.03, bottom_margin, right_margin, 0.93))
+    if legend_handles:
+        _add_bottom_legend(
+            fig,
+            legend_handles=legend_handles,
+            legend_title=color_label,
+        )
+    if scatter_artist is not None:
+        _add_right_colorbar(
+            fig,
+            scatter_artist=scatter_artist,
+            color_label=color_label,
+            bottom_margin=bottom_margin,
+        )
     return fig
 
 
@@ -951,6 +1196,7 @@ def run_embedding_space_analysis(
     output_dir: str | Path | None = None,
     checkpoint_policy: str = _DEFAULT_CHECKPOINT_POLICY,
     task_column: str = _DEFAULT_TASK_COLUMN,
+    room_column: str = _DEFAULT_ROOM_COLUMN,
     weekday_column: str = _DEFAULT_WEEKDAY_COLUMN,
     foraging_eff_column: str = _DEFAULT_FORAGING_EFF_COLUMN,
     bias_naive_column: str = _DEFAULT_BIAS_NAIVE_COLUMN,
@@ -992,6 +1238,7 @@ def run_embedding_space_analysis(
     han_column_map = _resolve_han_column_map(
         df_han,
         task_column=task_column,
+        room_column=room_column,
         weekday_column=weekday_column,
         foraging_eff_column=foraging_eff_column,
         bias_naive_column=bias_naive_column,

@@ -63,6 +63,9 @@ def _install_fake_matplotlib() -> None:
         def colorbar(self, *args, **kwargs):
             return None
 
+        def add_axes(self, *args, **kwargs):
+            return _FakeAxes()
+
         def savefig(self, path, *args, **kwargs):
             Path(path).parent.mkdir(parents=True, exist_ok=True)
             Path(path).write_bytes(b"fake-plot")
@@ -300,49 +303,53 @@ class TestEmbeddingSpaceAnalysis(unittest.TestCase):
                     "subject_id": "m1",
                     "session_date": "2024-01-02",
                     "rig": "rig_a",
-                    "trainer": "trainer_x",
+                    "trainer": "Bowen Tan",
+                    "room": "room_alpha",
                     "curriculum_name": "task_a",
-                    "weekday": "Tuesday",
+                    "weekday": 2,
                     "current_stage_actual": "STAGE_FINAL",
                     "foraging_eff_random_seed": 1.0,
                     "bias_naive": 0.1,
-                    "reaction_time_median": 10.0,
+                    "reaction_time_median": 0.10,
                 },
                 {
                     "subject_id": "m1",
                     "session_date": "2024-01-01",
                     "rig": "rig_b",
-                    "trainer": "trainer_x",
+                    "trainer": "bowen.tan",
+                    "room": "room_alpha",
                     "curriculum_name": "task_b",
-                    "weekday": "Monday",
+                    "weekday": 1,
                     "current_stage_actual": "GRADUATED",
                     "foraging_eff_random_seed": 3.0,
                     "bias_naive": 0.3,
-                    "reaction_time_median": 30.0,
+                    "reaction_time_median": 0.30,
                 },
                 {
                     "subject_id": "m2",
                     "session_date": "2024-01-03",
                     "rig": "rig_c",
                     "trainer": "trainer_y",
+                    "room": "room_beta",
                     "curriculum_name": "task_c",
-                    "weekday": "Wednesday",
+                    "weekday": 3,
                     "current_stage_actual": "STAGE_3",
                     "foraging_eff_random_seed": 7.0,
                     "bias_naive": 0.7,
-                    "reaction_time_median": 70.0,
+                    "reaction_time_median": 0.40,
                 },
                 {
                     "subject_id": "m2",
                     "session_date": "2024-01-03",
                     "rig": "rig_d",
                     "trainer": "trainer_z",
+                    "room": "room_gamma",
                     "curriculum_name": "task_d",
-                    "weekday": "Wednesday",
+                    "weekday": 3,
                     "current_stage_actual": "STAGE_3",
                     "foraging_eff_random_seed": 9.0,
                     "bias_naive": 0.9,
-                    "reaction_time_median": 90.0,
+                    "reaction_time_median": 0.45,
                 },
             ]
         )
@@ -415,12 +422,13 @@ class TestEmbeddingSpaceAnalysis(unittest.TestCase):
 
         row_m1 = subject_df[subject_df["subject_id"] == "m1"].iloc[0]
         self.assertEqual(row_m1["rig_majority"], "Mixed")
-        self.assertEqual(row_m1["trainer_majority"], "trainer_x")
+        self.assertEqual(row_m1["trainer_majority"], "Bowen Tan")
+        self.assertEqual(row_m1["room_majority"], "room_alpha")
         self.assertEqual(row_m1["task_majority"], "Mixed")
         self.assertEqual(int(row_m1["n_sessions_matched_han"]), 2)
         self.assertAlmostEqual(float(row_m1["foraging_eff_random_seed_mean"]), 2.0)
         self.assertAlmostEqual(float(row_m1["bias_naive_mean"]), 0.2)
-        self.assertAlmostEqual(float(row_m1["reaction_time_median_mean"]), 20.0)
+        self.assertAlmostEqual(float(row_m1["reaction_time_median_mean"]), 0.2)
 
         row_m2 = subject_df[subject_df["subject_id"] == "m2"].iloc[0]
         self.assertEqual(row_m2["rig_majority"], "Unknown")
@@ -437,7 +445,7 @@ class TestEmbeddingSpaceAnalysis(unittest.TestCase):
             ):
                 summary = embedding_space_analysis.run_embedding_space_analysis(model_dir)
             subject_plots = summary["plot_paths"]["subject_embeddings"]
-            self.assertEqual(len(subject_plots), 6)
+            self.assertEqual(len(subject_plots), 7)
             for path in subject_plots.values():
                 self.assertTrue(Path(path).exists(), path)
 

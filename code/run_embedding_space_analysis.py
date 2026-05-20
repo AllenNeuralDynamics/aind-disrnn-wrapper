@@ -36,6 +36,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="df_han column to use as the task label.",
     )
     parser.add_argument(
+        "--room-column",
+        default="room",
+        help="df_han column to use for room labels.",
+    )
+    parser.add_argument(
         "--weekday-column",
         default="weekday",
         help="df_han column to use for weekday labels.",
@@ -75,6 +80,7 @@ def main() -> None:
         output_dir=output_dir,
         checkpoint_policy=args.checkpoint_policy,
         task_column=args.task_column,
+        room_column=args.room_column,
         weekday_column=args.weekday_column,
         foraging_eff_column=args.foraging_eff_column,
         bias_naive_column=args.bias_naive_column,
