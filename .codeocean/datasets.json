@@ -34,6 +34,10 @@
 			"mount": "mice_snapshot"
 		},
 		{
+			"id": "7383823b-f6de-42c6-ac6d-ab47e2f1eedd",
+			"mount": "mice_multisubject_train10_all_stages-gru-260505-lr_1e_05"
+		},
+		{
 			"id": "75e09b6f-2c83-46f5-b0b0-3db52b4b2291",
 			"mount": "DF-TaskTrainedRNNData"
 		},
