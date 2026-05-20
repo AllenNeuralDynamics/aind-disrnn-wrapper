@@ -18,7 +18,7 @@ from post_training_analysis import (
 )
 
 result = run_post_training_analysis(
-    model_dir="/data/mice_multisubject_train10-gru_session_conditioning_lr_1e_5-260505/11",
+    model_dir="/data/mice_multisubject_train10_all_stages-gru_session_conditioning_lr5e-05-260505-14",
     split="train",
     checkpoint_policy="best_eval",
     rollout_mode="curriculum_matched",
