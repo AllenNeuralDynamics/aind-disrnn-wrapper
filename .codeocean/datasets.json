@@ -10,6 +10,10 @@
 			"mount": "mice_multisubject_train10-baseline_rl_Bari-260414"
 		},
 		{
+			"id": "2dded585-edcc-4ddc-b088-a5cd16775575",
+			"mount": "mice_multisubject_train10_all_stages-baseline_rl_Combined-260520"
+		},
+		{
 			"id": "41983b7d-5708-42a1-9862-4bef8b11da1f",
 			"mount": "mice_multisubject_train10-gru-260323"
 		},
@@ -72,6 +76,10 @@
 		{
 			"id": "ecf50edc-9090-4ade-bd90-7486b38de2ca",
 			"mount": "df_baseline_rl_fitting_260408"
+		},
+		{
+			"id": "efcb23a2-0e5d-45eb-a8b4-3c87cd8e2d87",
+			"mount": "mice_multisubject_train10_all_stages-baseline_rl_Hattori-260520"
 		},
 		{
 			"id": "f25f2cb1-daeb-41fa-8bf4-a860dcf92de3",
