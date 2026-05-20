@@ -2,10 +2,6 @@ from __future__ import annotations
 
 from typing import Any, Mapping, Sequence
 
-import haiku as hk
-import jax
-import jax.numpy as jnp
-
 _VALID_SESSION_ENCODING_TYPES = {"none", "scalar", "fourier"}
 _VALID_SESSION_INTEGRATION_TYPES = {"direct", "pre_mlp"}
 _DEFAULT_SESSION_PRETRAIN_FRACTION = 0.3
@@ -218,6 +214,8 @@ def build_session_feat(
     fourier_k: int,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Return deterministic session features plus the valid-session mask."""
+    import jax.numpy as jnp
+
     safe_subject_idx = jnp.where(subject_idx >= 0, subject_idx, 0)
     subject_session_max = jnp.take(session_max_index_by_subject, safe_subject_idx, axis=0)
     valid_session_mask = jnp.logical_and(subject_idx >= 0, session_idx >= 1)
@@ -249,6 +247,10 @@ def compute_session_delta(
     curriculum_lambda: float | jnp.ndarray = 1.0,
 ) -> jnp.ndarray:
     """Return the learned session-conditioned perturbation for a subject embedding."""
+    import haiku as hk
+    import jax
+    import jax.numpy as jnp
+
     conditioned_session_feat = session_feat
     if integration_type == "pre_mlp":
         conditioned_session_feat = jax.nn.relu(
