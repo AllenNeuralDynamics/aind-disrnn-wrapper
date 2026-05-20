@@ -65,6 +65,7 @@ class ResolvedModelRun:
     curricula: list[str]
     features: dict[str, Any] | None
     selection: dict[str, Any]
+    baseline_output_path: str | None = None
     output_summary_path: str | None = None
     checkpoint_index_path: str | None = None
     subject_index_map_path: str | None = None
@@ -114,25 +115,13 @@ def resolve_model_run(
     model_cfg = _as_dict(run_config.get("model", {}))
     architecture_cfg = _as_dict(model_cfg.get("architecture", {}))
     model_type = str(model_cfg.get("type", "")).strip().lower()
-    if model_type not in {"disrnn", "gru"}:
+    if model_type not in {"baseline_rl", "disrnn", "gru"}:
         raise ValueError(
             f"Unsupported model.type='{model_type}' in {inputs_path}. "
-            "Only GRU and disRNN runs are supported."
+            "Only baseline_rl, GRU, and disRNN runs are supported."
         )
 
-    is_multisubject = bool(
-        architecture_cfg.get("multisubject", False)
-        or data_cfg.get("multisubject", False)
-    )
     selection = _resolve_split_selection(data_cfg, normalized_split)
-    config_name = "disrnn_config.json" if model_type == "disrnn" else "gru_config.json"
-    config_path = outputs_dir / config_name
-    if not config_path.exists():
-        raise FileNotFoundError(f"Could not find saved model config at {config_path}")
-    model_config = _load_structured_file(config_path)
-    if not isinstance(model_config, dict):
-        raise ValueError(f"Expected mapping-style model config in {config_path}")
-
     output_summary_path = outputs_dir / "output_summary.json"
     checkpoint_index_path = outputs_dir / "checkpoints" / "index.json"
     output_summary = (
@@ -150,13 +139,55 @@ def resolve_model_run(
     if not isinstance(checkpoint_index, dict):
         checkpoint_index = {}
 
-    params_path, checkpoint_step, checkpoint_label, reason, fallback_reason = (
-        _resolve_checkpoint_artifact(
-            model_dir=model_dir_path,
-            outputs_dir=outputs_dir,
-            checkpoint_policy=normalized_policy,
-            checkpoint_index=checkpoint_index,
-            output_summary=output_summary,
+    baseline_output_path = None
+    if model_type == "baseline_rl":
+        baseline_output_path = outputs_dir / "baseline_rl_output.json"
+        if not baseline_output_path.exists():
+            raise FileNotFoundError(
+                f"Could not find baseline RL output at {baseline_output_path}"
+            )
+        model_config = _load_structured_file(baseline_output_path)
+        if not isinstance(model_config, Mapping):
+            raise ValueError(
+                f"Expected mapping-style baseline RL output in {baseline_output_path}"
+            )
+        config_path = baseline_output_path
+        params_path = baseline_output_path
+        checkpoint_step = None
+        checkpoint_label = "final_fit"
+        reason = (
+            "Loaded final fitted parameters from outputs/baseline_rl_output.json."
+        )
+        if normalized_policy != _CHECKPOINT_POLICY_FINAL:
+            reason = (
+                "Baseline RL runs do not use checkpointed params; "
+                "using final fitted parameters from outputs/baseline_rl_output.json."
+            )
+        fallback_reason = None
+    else:
+        config_name = "disrnn_config.json" if model_type == "disrnn" else "gru_config.json"
+        config_path = outputs_dir / config_name
+        if not config_path.exists():
+            raise FileNotFoundError(f"Could not find saved model config at {config_path}")
+        model_config = _load_structured_file(config_path)
+        if not isinstance(model_config, dict):
+            raise ValueError(f"Expected mapping-style model config in {config_path}")
+        params_path, checkpoint_step, checkpoint_label, reason, fallback_reason = (
+            _resolve_checkpoint_artifact(
+                model_dir=model_dir_path,
+                outputs_dir=outputs_dir,
+                checkpoint_policy=normalized_policy,
+                checkpoint_index=checkpoint_index,
+                output_summary=output_summary,
+            )
+        )
+
+    is_multisubject = bool(
+        architecture_cfg.get("multisubject", False)
+        or data_cfg.get("multisubject", False)
+        or (
+            model_type == "baseline_rl"
+            and _baseline_output_is_multisubject_per_subject(_as_dict(model_config))
         )
     )
 
@@ -167,7 +198,7 @@ def resolve_model_run(
         if normalized_split != _TRAIN_SPLIT:
             raise NotImplementedError(
                 "Held-out post-training analysis is not supported for multisubject "
-                "GRU/disRNN runs. V1 supports seen-subject personalization only."
+                "runs. V1 supports seen-subject personalization only."
             )
         subject_index_map_path = outputs_dir / "subject_index_map.json"
         if not subject_index_map_path.exists():
@@ -197,6 +228,9 @@ def resolve_model_run(
         checkpoint_label=checkpoint_label,
         params_path=str(params_path),
         config_path=str(config_path),
+        baseline_output_path=(
+            str(baseline_output_path) if baseline_output_path is not None else None
+        ),
         seed=_coerce_optional_int(run_config.get("seed", model_cfg.get("seed"))),
         multisubject=is_multisubject,
         mature_only=bool(data_cfg.get("mature_only", True)),
@@ -233,6 +267,129 @@ def resolve_model_run(
         resolved.session_conditioning_encoding_type,
     )
     return resolved
+
+
+def _baseline_output_is_multisubject_per_subject(
+    baseline_output: Mapping[str, Any],
+) -> bool:
+    return bool(baseline_output.get("multisubject")) or str(
+        baseline_output.get("fit_strategy", "")
+    ).strip().lower() == "per_subject"
+
+
+def _load_baseline_output_from_resolved_run(
+    resolved_run: ResolvedModelRun,
+) -> dict[str, Any]:
+    baseline_output = _as_dict(resolved_run.model_config)
+    if baseline_output and (
+        "agent_class" in baseline_output
+        or "fitted_params" in baseline_output
+        or "fitted_params_per_subject" in baseline_output
+        or "fit_strategy" in baseline_output
+    ):
+        return baseline_output
+
+    if resolved_run.baseline_output_path is None:
+        raise ValueError(
+            "Resolved baseline RL run does not define baseline_output_path."
+        )
+
+    loaded_output = _load_structured_file(
+        Path(resolved_run.baseline_output_path).expanduser().resolve()
+    )
+    if not isinstance(loaded_output, Mapping):
+        raise ValueError(
+            "Expected mapping-style baseline RL output in "
+            f"{resolved_run.baseline_output_path}."
+        )
+    return dict(loaded_output)
+
+
+def _resolve_baseline_agent_spec(
+    resolved_run: ResolvedModelRun,
+    baseline_output: Mapping[str, Any],
+) -> tuple[str, dict[str, Any]]:
+    model_cfg = _as_dict(_as_dict(resolved_run.run_config).get("model", {}))
+    agent_class_name = str(
+        model_cfg.get("agent_class", baseline_output.get("agent_class", ""))
+    ).strip()
+    if not agent_class_name:
+        raise ValueError("Could not resolve baseline RL agent_class.")
+    agent_kwargs = baseline_output.get("agent_kwargs", model_cfg.get("agent_kwargs", {}))
+    if not isinstance(agent_kwargs, Mapping):
+        agent_kwargs = {}
+    return agent_class_name, dict(agent_kwargs)
+
+
+def _extract_baseline_subject_fitted_params(
+    subject_fit_summary: Any,
+) -> dict[str, float]:
+    if isinstance(subject_fit_summary, Mapping) and isinstance(
+        subject_fit_summary.get("fitted_params"), Mapping
+    ):
+        params = subject_fit_summary["fitted_params"]
+    elif isinstance(subject_fit_summary, Mapping):
+        params = subject_fit_summary
+    else:
+        raise ValueError("Subject fit summary must be a mapping.")
+
+    if not params:
+        raise ValueError("Subject fit summary is missing fitted_params.")
+
+    return {
+        str(param_name): float(param_value)
+        for param_name, param_value in dict(params).items()
+    }
+
+
+def _resolve_baseline_fitted_params_for_subject(
+    resolved_run: ResolvedModelRun,
+    baseline_output: Mapping[str, Any],
+    *,
+    subject_id: Any,
+) -> dict[str, float]:
+    if not _baseline_output_is_multisubject_per_subject(baseline_output):
+        fitted_params = baseline_output.get("fitted_params")
+        if not isinstance(fitted_params, Mapping) or not fitted_params:
+            raise ValueError("baseline_rl_output.json is missing fitted_params.")
+        return {
+            str(param_name): float(param_value)
+            for param_name, param_value in dict(fitted_params).items()
+        }
+
+    fitted_params_per_subject = baseline_output.get("fitted_params_per_subject")
+    if not isinstance(fitted_params_per_subject, Mapping) or not fitted_params_per_subject:
+        raise ValueError("baseline_rl_output.json is missing fitted_params_per_subject.")
+
+    subject_key = str(subject_id)
+    subject_fit_summary = fitted_params_per_subject.get(subject_key)
+    if subject_fit_summary is None:
+        raise ValueError(
+            "Missing fitted_params_per_subject entry for subject_id="
+            f"{subject_key!r} in {resolved_run.baseline_output_path or resolved_run.model_dir}."
+        )
+    return _extract_baseline_subject_fitted_params(subject_fit_summary)
+
+
+def _extract_baseline_history_from_agent(
+    agent: Any,
+    *,
+    getter_name: str,
+    expected_length: int,
+    label: str,
+) -> list[float]:
+    getter = getattr(agent, getter_name, None)
+    if getter is None:
+        raise AttributeError(
+            f"Simulated baseline RL agent is missing {getter_name}()."
+        )
+
+    values = list(getter())
+    if len(values) != int(expected_length):
+        raise ValueError(
+            f"Expected {label} length {expected_length}, got {len(values)}."
+        )
+    return [float(value) for value in values]
 
 
 def load_animal_session_history(
@@ -374,6 +531,14 @@ def simulate_model_sessions(
             f"Received {run.ignore_policy!r}."
         )
 
+    if run.model_type == "baseline_rl":
+        return _simulate_baseline_model_sessions(
+            resolved_run=run,
+            animal_sessions=animal_sessions,
+            rollout_mode=normalized_rollout_mode,
+            n_rollouts_per_session=int(n_rollouts_per_session),
+        )
+
     np = _import_dependency("numpy")
     pd = _import_dependency("pandas")
     runner = _restore_model_runner(run)
@@ -510,6 +675,162 @@ def simulate_model_sessions(
 
     logger.info(
         "Finished model simulation: generated %d simulated session%s from %d source session%s.",
+        len(records),
+        "" if len(records) == 1 else "s",
+        total_source_sessions,
+        "" if total_source_sessions == 1 else "s",
+    )
+    return pd.DataFrame.from_records(records)
+
+
+def _simulate_baseline_model_sessions(
+    *,
+    resolved_run: ResolvedModelRun,
+    animal_sessions,
+    rollout_mode: str,
+    n_rollouts_per_session: int,
+):
+    pd = _import_dependency("pandas")
+    generative_model_mod = _import_dependency(
+        "aind_dynamic_foraging_models.generative_model"
+    )
+    baseline_output = _load_baseline_output_from_resolved_run(resolved_run)
+    agent_class_name, agent_kwargs = _resolve_baseline_agent_spec(
+        resolved_run,
+        baseline_output,
+    )
+    agent_class_obj = getattr(generative_model_mod, agent_class_name, None)
+    if agent_class_obj is None:
+        raise ValueError(
+            f"Agent class {agent_class_name!r} was not found in generative_model."
+        )
+
+    animal_rows = list(_iter_session_records(animal_sessions))
+    total_source_sessions = len(animal_rows)
+    total_requested_rollouts = total_source_sessions * int(n_rollouts_per_session)
+    logger.info(
+        "Starting baseline RL simulation for %d source sessions (%d rollout%s) from %s "
+        "[checkpoint=%s, mode=%s]",
+        total_source_sessions,
+        total_requested_rollouts,
+        "" if total_requested_rollouts == 1 else "s",
+        resolved_run.model_dir,
+        resolved_run.checkpoint_label,
+        rollout_mode,
+    )
+
+    records = []
+    completed_rollouts = 0
+    for session_index, animal_row in enumerate(animal_rows, start=1):
+        model_ses_idx = str(animal_row.get("ses_idx"))
+        source_ses_idx = animal_row.get("source_ses_idx")
+        if source_ses_idx in (None, ""):
+            source_ses_idx = model_ses_idx
+        source_ses_idx = str(source_ses_idx)
+        subject_id = _normalize_identifier(animal_row.get("subject_id"))
+        session_date = str(animal_row.get("session_date"))
+        curriculum_name = animal_row.get("curriculum_name")
+        current_stage_actual = animal_row.get("current_stage_actual")
+        nwb_suffix = animal_row.get("nwb_suffix")
+        nwb_name = animal_row.get("nwb_name")
+        n_trials = int(animal_row.get("n_trials", 0))
+        if n_trials <= 0:
+            logger.info(
+                "Skipping baseline RL session %d/%d: subject=%s ses_idx=%s has n_trials=%s",
+                session_index,
+                total_source_sessions,
+                subject_id,
+                model_ses_idx,
+                animal_row.get("n_trials"),
+            )
+            continue
+
+        fitted_params = _resolve_baseline_fitted_params_for_subject(
+            resolved_run,
+            baseline_output,
+            subject_id=subject_id,
+        )
+        logger.info(
+            "Simulating baseline RL session %d/%d: subject=%s ses_idx=%s source_ses_idx=%s curriculum=%s n_trials=%d "
+            "(%d rollout%s)",
+            session_index,
+            total_source_sessions,
+            subject_id,
+            model_ses_idx,
+            source_ses_idx,
+            curriculum_name,
+            n_trials,
+            int(n_rollouts_per_session),
+            "" if int(n_rollouts_per_session) == 1 else "s",
+        )
+        for rollout_index in range(int(n_rollouts_per_session)):
+            random_seed = _derive_session_seed(
+                resolved_run.seed,
+                source_ses_idx,
+                rollout_index=rollout_index,
+            )
+            task = _build_curriculum_matched_task(
+                curriculum_name=curriculum_name,
+                n_trials=n_trials,
+                seed=random_seed,
+            )
+            if hasattr(task, "reset"):
+                task.reset()
+
+            agent = agent_class_obj(
+                **dict(agent_kwargs),
+                seed=int(random_seed),
+            )
+            agent.set_params(**fitted_params)
+            agent.perform(task)
+            choice_history = _extract_baseline_history_from_agent(
+                agent,
+                getter_name="get_choice_history",
+                expected_length=n_trials,
+                label="choice history",
+            )
+            reward_history = _extract_baseline_history_from_agent(
+                agent,
+                getter_name="get_reward_history",
+                expected_length=n_trials,
+                label="reward history",
+            )
+
+            if int(n_rollouts_per_session) == 1:
+                simulated_ses_idx = source_ses_idx
+            else:
+                simulated_ses_idx = f"{source_ses_idx}__rollout_{rollout_index}"
+
+            records.append(
+                {
+                    "subject_id": subject_id,
+                    "ses_idx": simulated_ses_idx,
+                    "source_ses_idx": source_ses_idx,
+                    "session_date": session_date,
+                    "curriculum_name": curriculum_name,
+                    "current_stage_actual": current_stage_actual,
+                    "n_trials": n_trials,
+                    "choice_history": choice_history,
+                    "reward_history": reward_history,
+                    "nwb_suffix": nwb_suffix,
+                    "nwb_name": nwb_name,
+                    "random_seed": int(random_seed),
+                    "model_dir": resolved_run.model_dir,
+                    "checkpoint_step": resolved_run.checkpoint_step,
+                    "rollout_mode": rollout_mode,
+                }
+            )
+            completed_rollouts += 1
+            logger.info(
+                "Completed baseline RL rollout %d/%d for ses_idx=%s seed=%d",
+                completed_rollouts,
+                total_requested_rollouts,
+                simulated_ses_idx,
+                int(random_seed),
+            )
+
+    logger.info(
+        "Finished baseline RL simulation: generated %d simulated session%s from %d source session%s.",
         len(records),
         "" if len(records) == 1 else "s",
         total_source_sessions,
@@ -1015,6 +1336,14 @@ def _ensure_session_split_manifest(
             "resolved_run.split='train'."
         )
 
+    if resolved_run.model_type == "baseline_rl":
+        split_manifest = _resolve_baseline_session_split_manifest(resolved_run)
+        if split_manifest is not None:
+            resolved_run.session_split_manifest = _normalize_session_split_manifest(
+                split_manifest
+            )
+            return resolved_run
+
     data_cfg = _as_dict(resolved_run.run_config.get("data", {}))
     data_type = str(data_cfg.get("type", "mice_snapshot")).strip().lower()
     data_target = str(data_cfg.get("_target_", "")).strip().lower()
@@ -1055,6 +1384,75 @@ def _ensure_session_split_manifest(
     )
     resolved_run.session_split_manifest = _normalize_session_split_manifest(split_manifest)
     return resolved_run
+
+
+def _resolve_baseline_session_split_manifest(
+    resolved_run: ResolvedModelRun,
+) -> dict[str, Any] | None:
+    baseline_output = _load_baseline_output_from_resolved_run(resolved_run)
+    if not _baseline_output_is_multisubject_per_subject(baseline_output):
+        return None
+
+    fitted_params_per_subject = baseline_output.get("fitted_params_per_subject")
+    if not isinstance(fitted_params_per_subject, Mapping) or not fitted_params_per_subject:
+        raise ValueError("baseline_rl_output.json is missing fitted_params_per_subject.")
+
+    data_cfg = _as_dict(resolved_run.run_config.get("data", {}))
+    eval_every_n = int(data_cfg.get("eval_every_n", 2))
+    selected_subject_ids: list[Any] = []
+    full_session_ids: list[str] = []
+    train_session_ids: list[str] = []
+    eval_session_ids: list[str] = []
+    per_subject_rows: list[dict[str, Any]] = []
+
+    for default_subject_id, raw_subject_summary in fitted_params_per_subject.items():
+        subject_summary = _as_dict(raw_subject_summary)
+        subject_id = _normalize_identifier(
+            subject_summary.get("subject_id", default_subject_id)
+        )
+        subject_train_session_ids = [
+            str(session_id)
+            for session_id in subject_summary.get("train_session_ids") or []
+        ]
+        subject_eval_session_ids = [
+            str(session_id)
+            for session_id in subject_summary.get("eval_session_ids") or []
+        ]
+        if not subject_train_session_ids and not subject_eval_session_ids:
+            continue
+
+        subject_full_session_ids = [
+            str(session_id)
+            for session_id in _unique_preserve_order(
+                [*subject_train_session_ids, *subject_eval_session_ids]
+            )
+        ]
+        selected_subject_ids.append(subject_id)
+        full_session_ids.extend(subject_full_session_ids)
+        train_session_ids.extend(subject_train_session_ids)
+        eval_session_ids.extend(subject_eval_session_ids)
+        per_subject_rows.append(
+            {
+                "subject_id": subject_id,
+                "full_session_ids": subject_full_session_ids,
+                "train_session_ids": subject_train_session_ids,
+                "eval_session_ids": subject_eval_session_ids,
+            }
+        )
+
+    if not per_subject_rows:
+        return None
+
+    return {
+        "source": "baseline_rl_output",
+        "multisubject": bool(resolved_run.multisubject),
+        "eval_every_n": eval_every_n,
+        "selected_subject_ids": _unique_preserve_order(selected_subject_ids),
+        "full_session_ids": _unique_preserve_order(full_session_ids),
+        "train_session_ids": _unique_preserve_order(train_session_ids),
+        "eval_session_ids": _unique_preserve_order(eval_session_ids),
+        "per_subject": per_subject_rows,
+    }
 
 
 def _filter_session_rows_by_session_ids(
@@ -7846,7 +8244,7 @@ def _validate_multisubject_analysis_split(resolved_run: ResolvedModelRun) -> Non
     if resolved_run.multisubject and resolved_run.split != _TRAIN_SPLIT:
         raise NotImplementedError(
             "Held-out post-training analysis is not supported for multisubject "
-            "GRU/disRNN runs. V1 supports seen-subject personalization only."
+            "runs. V1 supports seen-subject personalization only."
         )
 
 

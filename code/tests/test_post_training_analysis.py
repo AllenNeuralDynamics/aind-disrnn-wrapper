@@ -163,6 +163,103 @@ seed: 7
             )
         return model_dir
 
+    def _write_baseline_run_dir(
+        self,
+        root: Path,
+        *,
+        multisubject: bool = False,
+        include_baseline_output: bool = True,
+    ) -> Path:
+        model_dir = root / (
+            "baseline_rl_multisubject_run" if multisubject else "baseline_rl_single_run"
+        )
+        outputs_dir = model_dir / "outputs"
+        outputs_dir.mkdir(parents=True, exist_ok=True)
+
+        subject_ids_yaml = "  - m1\n  - m2" if multisubject else "  - m1"
+        (model_dir / "inputs.yaml").write_text(
+            """
+data:
+  subject_ids:
+"""
+            + subject_ids_yaml
+            + """
+  subject_start: null
+  subject_end: null
+  test_subject_ids:
+  - m3
+  test_subject_start: null
+  test_subject_end: null
+  mature_only: true
+  curricula:
+  - Uncoupled Baiting
+  ignore_policy: exclude
+  eval_every_n: 2
+"""
+            + ("  multisubject: true\n" if multisubject else "")
+            + """
+model:
+  type: baseline_rl
+  architecture:
+    multisubject: """
+            + ("true" if multisubject else "false")
+            + """
+  agent_class: ForagerQLearning
+  agent_kwargs:
+    number_of_learning_rate: 1
+    number_of_forget_rate: 1
+    choice_kernel: one_step
+    action_selection: softmax
+seed: 7
+"""
+        )
+
+        if include_baseline_output:
+            baseline_output = {
+                "multisubject": bool(multisubject),
+                "fit_strategy": "per_subject" if multisubject else "single_subject",
+                "agent_class": "ForagerQLearning",
+                "agent_kwargs": {
+                    "number_of_learning_rate": 1,
+                    "number_of_forget_rate": 1,
+                    "choice_kernel": "one_step",
+                    "action_selection": "softmax",
+                },
+            }
+            if multisubject:
+                baseline_output["fitted_params_per_subject"] = {
+                    "m1": {
+                        "subject_id": "m1",
+                        "subject_index": 0,
+                        "train_session_ids": ["m1_s1"],
+                        "eval_session_ids": ["m1_s2"],
+                        "fitted_params": {"biasL": 0.0},
+                    },
+                    "m2": {
+                        "subject_id": "m2",
+                        "subject_index": 1,
+                        "train_session_ids": ["m2_s1"],
+                        "eval_session_ids": ["m2_s2"],
+                        "fitted_params": {"biasL": 1.0},
+                    },
+                }
+                (outputs_dir / "subject_index_map.json").write_text(
+                    json.dumps(
+                        {
+                            "subject_id_to_index": {"m1": 0, "m2": 1},
+                            "index_to_subject_id": {"0": "m1", "1": "m2"},
+                        }
+                    )
+                )
+            else:
+                baseline_output["fitted_params"] = {"biasL": 0.25}
+
+            (outputs_dir / "baseline_rl_output.json").write_text(
+                json.dumps(baseline_output, indent=2)
+            )
+
+        return model_dir
+
     def _session(
         self,
         *,
@@ -525,6 +622,72 @@ model:
         self.assertEqual(resolved.checkpoint_step, 30000)
         self.assertTrue(resolved.params_path.endswith("outputs/params.json"))
         self.assertEqual(resolved.checkpoint_label, "final")
+
+    def test_resolve_model_run_baseline_best_eval_uses_final_fit_artifact(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            model_dir = self._write_baseline_run_dir(Path(tmpdir), multisubject=False)
+
+            resolved = resolve_model_run(
+                model_dir,
+                split="train",
+                checkpoint_policy="best_eval",
+            )
+
+        self.assertEqual(resolved.model_type, "baseline_rl")
+        self.assertEqual(resolved.checkpoint_policy, "best_eval")
+        self.assertIsNone(resolved.checkpoint_step)
+        self.assertEqual(resolved.checkpoint_label, "final_fit")
+        self.assertTrue(resolved.params_path.endswith("baseline_rl_output.json"))
+        self.assertTrue(resolved.config_path.endswith("baseline_rl_output.json"))
+        self.assertTrue(resolved.baseline_output_path.endswith("baseline_rl_output.json"))
+        self.assertEqual(resolved.model_config["fit_strategy"], "single_subject")
+        self.assertIn("final fitted parameters", resolved.checkpoint_selection_reason)
+
+    def test_resolve_model_run_baseline_multisubject_loads_subject_index_map(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            model_dir = self._write_baseline_run_dir(Path(tmpdir), multisubject=True)
+
+            resolved = resolve_model_run(
+                model_dir,
+                split="train",
+                checkpoint_policy="final",
+            )
+
+        self.assertEqual(resolved.model_type, "baseline_rl")
+        self.assertTrue(resolved.multisubject)
+        self.assertTrue(resolved.subject_index_map_path.endswith("subject_index_map.json"))
+        self.assertEqual(resolved.trained_subject_ids, ["m1", "m2"])
+        self.assertEqual(
+            sorted(resolved.model_config["fitted_params_per_subject"].keys()),
+            ["m1", "m2"],
+        )
+
+    def test_resolve_model_run_baseline_multisubject_requires_subject_index_map(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            model_dir = self._write_baseline_run_dir(Path(tmpdir), multisubject=True)
+            (model_dir / "outputs" / "subject_index_map.json").unlink()
+
+            with self.assertRaisesRegex(FileNotFoundError, "subject index map"):
+                resolve_model_run(
+                    model_dir,
+                    split="train",
+                    checkpoint_policy="final",
+                )
+
+    def test_resolve_model_run_baseline_requires_baseline_output(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            model_dir = self._write_baseline_run_dir(
+                Path(tmpdir),
+                multisubject=False,
+                include_baseline_output=False,
+            )
+
+            with self.assertRaisesRegex(FileNotFoundError, "baseline RL output"):
+                resolve_model_run(
+                    model_dir,
+                    split="train",
+                    checkpoint_policy="final",
+                )
 
     def test_resolve_model_run_multisubject_loads_subject_index_map(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -2051,6 +2214,124 @@ model:
     def test_simulate_model_sessions_session_conditioned_disrnn_uses_subject_and_session_indices(self):
         self._assert_multisubject_simulation_uses_session_conditioning_indices("disrnn")
 
+    def test_simulate_model_sessions_baseline_multisubject_uses_subject_specific_fitted_params(self):
+        resolved_run = generative_analysis.ResolvedModelRun(
+            model_dir="/tmp/model",
+            inputs_path="/tmp/model/inputs.yaml",
+            outputs_dir="/tmp/model/outputs",
+            model_type="baseline_rl",
+            split="train",
+            checkpoint_policy="best_eval",
+            checkpoint_step=None,
+            checkpoint_label="final_fit",
+            params_path="/tmp/model/outputs/baseline_rl_output.json",
+            config_path="/tmp/model/outputs/baseline_rl_output.json",
+            baseline_output_path="/tmp/model/outputs/baseline_rl_output.json",
+            seed=11,
+            multisubject=True,
+            mature_only=True,
+            ignore_policy="exclude",
+            curricula=["Uncoupled Baiting"],
+            features=None,
+            selection={"subject_ids": ["m1", "m2"]},
+            subject_index_map_path="/tmp/model/outputs/subject_index_map.json",
+            trained_subject_ids=["m1", "m2"],
+            model_config={
+                "multisubject": True,
+                "fit_strategy": "per_subject",
+                "agent_class": "ForagerQLearning",
+                "agent_kwargs": {"choice_kernel": "one_step"},
+                "fitted_params_per_subject": {
+                    "m1": {"fitted_params": {"biasL": 0.0}},
+                    "m2": {"fitted_params": {"biasL": 1.0}},
+                },
+            },
+            run_config={
+                "model": {
+                    "type": "baseline_rl",
+                    "agent_class": "ForagerQLearning",
+                    "agent_kwargs": {"choice_kernel": "one_step"},
+                }
+            },
+        )
+        animal_sessions = [
+            self._session(
+                subject_id="m1",
+                ses_idx="m1_s1",
+                choice_history=[0, 0],
+                reward_history=[1, 1],
+            ),
+            self._session(
+                subject_id="m2",
+                ses_idx="m2_s1",
+                choice_history=[0, 0],
+                reward_history=[1, 1],
+            ),
+        ]
+
+        class _FakeTask:
+            def __init__(self, n_trials):
+                self.n_trials = int(n_trials)
+
+            def reset(self):
+                return None
+
+        class _FakeBaselineAgent:
+            def __init__(self, **kwargs):
+                self.params = None
+
+            def set_params(self, **params):
+                self.params = dict(params)
+
+            def perform(self, task):
+                bias = float(self.params["biasL"])
+                choice_value = 1.0 if bias > 0.5 else 0.0
+                reward_value = 1.0 if bias > 0.5 else 0.0
+                self._choice_history = [choice_value] * int(task.n_trials)
+                self._reward_history = [reward_value] * int(task.n_trials)
+
+            def get_choice_history(self):
+                return list(self._choice_history)
+
+            def get_reward_history(self):
+                return list(self._reward_history)
+
+        class _FakeGenerativeModelModule:
+            ForagerQLearning = _FakeBaselineAgent
+
+        class _FakePandas:
+            class DataFrame:
+                @staticmethod
+                def from_records(records):
+                    return list(records)
+
+        with mock.patch.object(
+            generative_analysis,
+            "_build_curriculum_matched_task",
+            side_effect=lambda **kwargs: _FakeTask(kwargs["n_trials"]),
+        ), mock.patch.object(
+            generative_analysis,
+            "_import_dependency",
+            side_effect=lambda module_name: (
+                _FakePandas
+                if module_name == "pandas"
+                else _FakeGenerativeModelModule
+                if module_name == "aind_dynamic_foraging_models.generative_model"
+                else None
+            ),
+        ):
+            simulated = generative_analysis.simulate_model_sessions(
+                resolved_run=resolved_run,
+                animal_sessions=animal_sessions,
+                n_rollouts_per_session=1,
+            )
+
+        self.assertEqual(len(simulated), 2)
+        self.assertEqual(simulated[0]["source_ses_idx"], "m1_s1")
+        self.assertEqual(simulated[0]["choice_history"], [0.0, 0.0])
+        self.assertEqual(simulated[1]["source_ses_idx"], "m2_s1")
+        self.assertEqual(simulated[1]["choice_history"], [1.0, 1.0])
+
     def test_resolve_session_index_for_subject_prefers_source_session_id(self):
         resolved_index = generative_analysis._resolve_session_index_for_subject(
             subject_id="m1",
@@ -2231,6 +2512,198 @@ model:
                 "/tmp/model/outputs/subject_index_map.json",
             )
             self.assertEqual(resolved_payload["trained_subject_ids"], ["m1"])
+
+    def test_run_post_training_analysis_baseline_single_subject_resolves_and_saves_outputs(self):
+        animal_sessions = [
+            self._session(
+                subject_id="m1",
+                ses_idx="m1_s1",
+                choice_history=[0, 0, 1],
+                reward_history=[1, 0, 0],
+            )
+        ]
+        simulated_sessions = [
+            self._session(
+                subject_id="m1",
+                ses_idx="m1_s1__rollout_0",
+                source_ses_idx="m1_s1",
+                choice_history=[0, 0, 1],
+                reward_history=[1, 0, 0],
+            )
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            model_dir = self._write_baseline_run_dir(root, multisubject=False)
+            switch_figure = root / "switch.png"
+            history_figure = root / "history.png"
+            switch_figure.write_text("switch")
+            history_figure.write_text("history")
+
+            with mock.patch.object(
+                generative_analysis,
+                "load_animal_session_history",
+                return_value=animal_sessions,
+            ), mock.patch.object(
+                generative_analysis,
+                "simulate_model_sessions",
+                return_value=simulated_sessions,
+            ), mock.patch.object(
+                generative_analysis,
+                "_save_switch_figures",
+                return_value={"pooled_switch_probability": switch_figure},
+            ), mock.patch.object(
+                generative_analysis,
+                "_save_history_dependent_switch_figures",
+                return_value={"history_pattern_comparison_abstract": history_figure},
+            ):
+                result = generative_analysis.run_post_training_analysis(
+                    model_dir=model_dir,
+                    output_dir=root / "analysis",
+                )
+
+            resolved_payload = json.loads(Path(result["resolved_run"]).read_text())
+            self.assertEqual(resolved_payload["model_type"], "baseline_rl")
+            self.assertTrue(
+                resolved_payload["baseline_output_path"].endswith("baseline_rl_output.json")
+            )
+            self.assertTrue(Path(result["switch_stats"]).exists())
+            self.assertTrue(Path(result["history_dependent_switch_stats"]).exists())
+
+    def test_run_post_training_analysis_baseline_multisubject_partitions_use_saved_manifest(self):
+        animal_sessions = [
+            self._session(
+                subject_id="m1",
+                ses_idx="m1_s1",
+                choice_history=[0, 0, 1],
+                reward_history=[1, 0, 0],
+            ),
+            self._session(
+                subject_id="m1",
+                ses_idx="m1_s2",
+                choice_history=[1, 1, 0],
+                reward_history=[0, 1, 0],
+            ),
+            self._session(
+                subject_id="m2",
+                ses_idx="m2_s1",
+                choice_history=[0, 1, 0],
+                reward_history=[1, 1, 0],
+            ),
+            self._session(
+                subject_id="m2",
+                ses_idx="m2_s2",
+                choice_history=[1, 0, 1],
+                reward_history=[0, 1, 1],
+            ),
+        ]
+        simulated_sessions = [
+            self._session(
+                subject_id="m1",
+                ses_idx="m1_s1__rollout_0",
+                source_ses_idx="m1_s1",
+                choice_history=[0, 0, 1],
+                reward_history=[1, 0, 0],
+            ),
+            self._session(
+                subject_id="m1",
+                ses_idx="m1_s2__rollout_0",
+                source_ses_idx="m1_s2",
+                choice_history=[1, 1, 0],
+                reward_history=[0, 1, 0],
+            ),
+            self._session(
+                subject_id="m2",
+                ses_idx="m2_s1__rollout_0",
+                source_ses_idx="m2_s1",
+                choice_history=[0, 1, 0],
+                reward_history=[1, 1, 0],
+            ),
+            self._session(
+                subject_id="m2",
+                ses_idx="m2_s2__rollout_0",
+                source_ses_idx="m2_s2",
+                choice_history=[1, 0, 1],
+                reward_history=[0, 1, 1],
+            ),
+        ]
+        captured_calls: dict[str, dict[str, object]] = {}
+
+        def _fake_compute(
+            *,
+            animal_sessions,
+            simulated_sessions,
+            output_dir,
+            resolved_run,
+            window_size,
+            save_animal_session_history,
+        ):
+            partition = Path(output_dir).name
+            captured_calls[partition] = {
+                "animal_session_ids": [row["ses_idx"] for row in animal_sessions],
+                "simulated_source_session_ids": [
+                    row.get("source_ses_idx", row["ses_idx"]) for row in simulated_sessions
+                ],
+                "resolved_run_has_manifest": resolved_run.session_split_manifest is not None,
+            }
+            output_dir_path = Path(output_dir)
+            return {
+                "output_dir": str(output_dir_path),
+                "simulated_session_history": str(output_dir_path / "simulated.pkl"),
+                "switch_stats": str(output_dir_path / "switch.json"),
+                "history_dependent_switch_stats": str(output_dir_path / "history.json"),
+                "model_vs_animal_quantitative_summary": str(output_dir_path / "summary.json"),
+            }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            model_dir = self._write_baseline_run_dir(root, multisubject=True)
+
+            with mock.patch.object(
+                generative_analysis,
+                "load_animal_session_history",
+                return_value=animal_sessions,
+            ), mock.patch.object(
+                generative_analysis,
+                "simulate_model_sessions",
+                return_value=simulated_sessions,
+            ), mock.patch.object(
+                generative_analysis,
+                "_compute_and_save_post_training_outputs",
+                side_effect=_fake_compute,
+            ) as mocked_compute, mock.patch.object(
+                generative_analysis.importlib,
+                "import_module",
+                side_effect=AssertionError("manifest reconstruction should not run"),
+            ):
+                result = generative_analysis.run_post_training_analysis(
+                    model_dir=model_dir,
+                    output_dir=root / "analysis",
+                    session_partitions=("train", "eval", "combined"),
+                )
+
+            self.assertEqual(mocked_compute.call_count, 3)
+            self.assertEqual(
+                captured_calls["train"]["animal_session_ids"],
+                ["m1_s1", "m2_s1"],
+            )
+            self.assertEqual(
+                captured_calls["train"]["simulated_source_session_ids"],
+                ["m1_s1", "m2_s1"],
+            )
+            self.assertEqual(
+                captured_calls["eval"]["animal_session_ids"],
+                ["m1_s2", "m2_s2"],
+            )
+            self.assertEqual(
+                captured_calls["eval"]["simulated_source_session_ids"],
+                ["m1_s2", "m2_s2"],
+            )
+            resolved_payload = json.loads(Path(result["resolved_run"]).read_text())
+            self.assertEqual(
+                resolved_payload["session_split_manifest"]["train_session_ids"],
+                ["m1_s1", "m2_s1"],
+            )
 
     def test_run_post_training_analysis_from_histories_writes_quantitative_summary(self):
         animal_sessions = [
@@ -2734,6 +3207,176 @@ model:
             )
             self.assertTrue(captured_calls["combined"]["resolved_run_has_manifest"])
             self.assertTrue(Path(result["session_partition_summary"]).exists())
+
+    def test_run_post_training_analysis_from_saved_histories_uses_baseline_saved_manifest(self):
+        resolved_run = generative_analysis.ResolvedModelRun(
+            model_dir="/tmp/model",
+            inputs_path="/tmp/model/inputs.yaml",
+            outputs_dir="/tmp/model/outputs",
+            model_type="baseline_rl",
+            split="train",
+            checkpoint_policy="best_eval",
+            checkpoint_step=None,
+            checkpoint_label="final_fit",
+            params_path="/tmp/model/outputs/baseline_rl_output.json",
+            config_path="/tmp/model/outputs/baseline_rl_output.json",
+            baseline_output_path="/tmp/model/outputs/baseline_rl_output.json",
+            seed=1,
+            multisubject=True,
+            mature_only=True,
+            ignore_policy="exclude",
+            curricula=["Uncoupled Baiting"],
+            features=None,
+            selection={"subject_ids": ["m1", "m2"]},
+            subject_index_map_path="/tmp/model/outputs/subject_index_map.json",
+            trained_subject_ids=["m1", "m2"],
+            model_config={
+                "multisubject": True,
+                "fit_strategy": "per_subject",
+                "agent_class": "ForagerQLearning",
+                "fitted_params_per_subject": {
+                    "m1": {
+                        "subject_id": "m1",
+                        "train_session_ids": ["m1_s1"],
+                        "eval_session_ids": ["m1_s2"],
+                        "fitted_params": {"biasL": 0.0},
+                    },
+                    "m2": {
+                        "subject_id": "m2",
+                        "train_session_ids": ["m2_s1"],
+                        "eval_session_ids": ["m2_s2"],
+                        "fitted_params": {"biasL": 1.0},
+                    },
+                },
+            },
+            run_config={
+                "data": {"type": "mice_snapshot", "eval_every_n": 2},
+                "model": {"type": "baseline_rl", "architecture": {"multisubject": True}},
+            },
+        )
+        animal_sessions = [
+            self._session(
+                subject_id="m1",
+                ses_idx="m1_s1",
+                choice_history=[0, 0, 1],
+                reward_history=[1, 0, 1],
+            ),
+            self._session(
+                subject_id="m1",
+                ses_idx="m1_s2",
+                choice_history=[1, 1, 0],
+                reward_history=[0, 1, 0],
+            ),
+            self._session(
+                subject_id="m2",
+                ses_idx="m2_s1",
+                choice_history=[0, 1, 0],
+                reward_history=[1, 0, 1],
+            ),
+            self._session(
+                subject_id="m2",
+                ses_idx="m2_s2",
+                choice_history=[1, 0, 1],
+                reward_history=[0, 1, 1],
+            ),
+        ]
+        simulated_sessions = [
+            self._session(
+                subject_id="m1",
+                ses_idx="m1_s1__rollout_0",
+                source_ses_idx="m1_s1",
+                choice_history=[0, 0, 1],
+                reward_history=[1, 0, 1],
+            ),
+            self._session(
+                subject_id="m1",
+                ses_idx="m1_s2__rollout_0",
+                source_ses_idx="m1_s2",
+                choice_history=[1, 1, 0],
+                reward_history=[0, 1, 0],
+            ),
+            self._session(
+                subject_id="m2",
+                ses_idx="m2_s1__rollout_0",
+                source_ses_idx="m2_s1",
+                choice_history=[0, 1, 0],
+                reward_history=[1, 0, 1],
+            ),
+            self._session(
+                subject_id="m2",
+                ses_idx="m2_s2__rollout_0",
+                source_ses_idx="m2_s2",
+                choice_history=[1, 0, 1],
+                reward_history=[0, 1, 1],
+            ),
+        ]
+        captured_calls: dict[str, dict[str, object]] = {}
+
+        def _fake_compute(
+            *,
+            animal_sessions,
+            simulated_sessions,
+            output_dir,
+            resolved_run,
+            window_size,
+            save_animal_session_history,
+        ):
+            partition = Path(output_dir).name
+            captured_calls[partition] = {
+                "animal_session_ids": [row["ses_idx"] for row in animal_sessions],
+                "simulated_source_session_ids": [
+                    row.get("source_ses_idx", row["ses_idx"]) for row in simulated_sessions
+                ],
+                "resolved_run_has_manifest": resolved_run.session_split_manifest is not None,
+            }
+            output_dir_path = Path(output_dir)
+            return {
+                "output_dir": str(output_dir_path),
+                "simulated_session_history": str(output_dir_path / "simulated.pkl"),
+                "switch_stats": str(output_dir_path / "switch.json"),
+                "history_dependent_switch_stats": str(output_dir_path / "history.json"),
+                "model_vs_animal_quantitative_summary": str(output_dir_path / "summary.json"),
+            }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            animal_path = root / "animal.pkl"
+            simulated_path = root / "simulated.pkl"
+            resolved_run_path = root / "resolved_run.json"
+            with animal_path.open("wb") as f:
+                pickle.dump(animal_sessions, f)
+            with simulated_path.open("wb") as f:
+                pickle.dump(simulated_sessions, f)
+            resolved_run_path.write_text(json.dumps(resolved_run.to_dict(), indent=2))
+
+            with mock.patch.object(
+                generative_analysis,
+                "_compute_and_save_post_training_outputs",
+                side_effect=_fake_compute,
+            ) as mocked_compute, mock.patch.object(
+                generative_analysis.importlib,
+                "import_module",
+                side_effect=AssertionError("manifest reconstruction should not run"),
+            ):
+                result = generative_analysis.run_post_training_analysis_from_saved_histories(
+                    simulated_session_history_path=simulated_path,
+                    animal_session_history_path=animal_path,
+                    resolved_run_path=resolved_run_path,
+                    output_dir=root / "saved",
+                    session_partitions=("train", "eval", "combined"),
+                )
+
+            self.assertEqual(mocked_compute.call_count, 3)
+            saved_resolved_payload = json.loads(Path(result["resolved_run"]).read_text())
+            self.assertEqual(
+                saved_resolved_payload["session_split_manifest"]["train_session_ids"],
+                ["m1_s1", "m2_s1"],
+            )
+            self.assertEqual(
+                captured_calls["eval"]["simulated_source_session_ids"],
+                ["m1_s2", "m2_s2"],
+            )
+            self.assertTrue(captured_calls["combined"]["resolved_run_has_manifest"])
 
 
 if __name__ == "__main__":
