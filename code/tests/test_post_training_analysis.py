@@ -1887,6 +1887,50 @@ model:
             2,
         )
 
+    def test_compute_history_dependent_switch_stats_ignores_nan_source_session_ids(self):
+        stats = compute_history_dependent_switch_stats(
+            animal_sessions=[
+                self._session(
+                    subject_id="m1",
+                    ses_idx="m1_s1",
+                    source_ses_idx=float("nan"),
+                    choice_history=[0, 0, 1],
+                    reward_history=[1, 0, 0],
+                ),
+                self._session(
+                    subject_id="m1",
+                    ses_idx="m1_s2",
+                    source_ses_idx=float("nan"),
+                    choice_history=[0, 0, 0],
+                    reward_history=[1, 0, 0],
+                ),
+            ],
+            simulated_sessions=[
+                self._session(
+                    subject_id="m1",
+                    ses_idx="m1_s1__rollout_0",
+                    source_ses_idx="m1_s1",
+                    choice_history=[0, 0, 1],
+                    reward_history=[1, 0, 0],
+                ),
+                self._session(
+                    subject_id="m1",
+                    ses_idx="m1_s2__rollout_0",
+                    source_ses_idx="m1_s2",
+                    choice_history=[0, 0, 0],
+                    reward_history=[1, 0, 0],
+                ),
+            ],
+        )
+
+        session_points = {
+            point["session_id"]: point
+            for point in stats["session_level"]["abstract"][1]["a"]["points"]
+        }
+        self.assertEqual(set(session_points), {"m1_s1", "m1_s2"})
+        self.assertEqual(session_points["m1_s1"]["source_ses_idx"], "m1_s1")
+        self.assertEqual(session_points["m1_s2"]["source_ses_idx"], "m1_s2")
+
     def test_save_history_dependent_switch_figures_creates_expected_outputs(self):
         try:
             import matplotlib.pyplot  # noqa: F401

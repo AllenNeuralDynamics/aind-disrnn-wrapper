@@ -563,10 +563,10 @@ def simulate_model_sessions(
     completed_rollouts = 0
     for session_index, animal_row in enumerate(animal_rows, start=1):
         model_ses_idx = str(animal_row.get("ses_idx"))
-        source_ses_idx = animal_row.get("source_ses_idx")
-        if source_ses_idx in (None, ""):
-            source_ses_idx = model_ses_idx
-        source_ses_idx = str(source_ses_idx)
+        source_ses_idx = _coalesce_session_identifier(
+            animal_row.get("source_ses_idx"),
+            fallback=model_ses_idx,
+        )
         subject_id = _normalize_identifier(animal_row.get("subject_id"))
         session_date = str(animal_row.get("session_date"))
         curriculum_name = animal_row.get("curriculum_name")
@@ -723,10 +723,10 @@ def _simulate_baseline_model_sessions(
     completed_rollouts = 0
     for session_index, animal_row in enumerate(animal_rows, start=1):
         model_ses_idx = str(animal_row.get("ses_idx"))
-        source_ses_idx = animal_row.get("source_ses_idx")
-        if source_ses_idx in (None, ""):
-            source_ses_idx = model_ses_idx
-        source_ses_idx = str(source_ses_idx)
+        source_ses_idx = _coalesce_session_identifier(
+            animal_row.get("source_ses_idx"),
+            fallback=model_ses_idx,
+        )
         subject_id = _normalize_identifier(animal_row.get("subject_id"))
         session_date = str(animal_row.get("session_date"))
         curriculum_name = animal_row.get("curriculum_name")
@@ -1467,7 +1467,7 @@ def _filter_session_rows_by_session_ids(
         session_id = None
         if prefer_source_session_ids:
             session_id = row.get("source_ses_idx")
-        if session_id in (None, ""):
+        if _is_missing_session_identifier(session_id):
             session_id = row.get("ses_idx")
         if str(session_id) not in allowed_session_id_set:
             continue
@@ -2036,7 +2036,7 @@ def _aggregate_history_pattern_count_records(
 ) -> dict[str, dict[int, dict[str, dict[str, float]]]]:
     aggregated = _new_history_pattern_count_tree(max_trials_back)
     if average_rollouts_by_source and all(
-        record.get("source_ses_idx") not in (None, "")
+        not _is_missing_session_identifier(record.get("source_ses_idx"))
         for record in records
     ):
         averaged_records, _ = _average_history_pattern_records_by_source(
@@ -2068,7 +2068,13 @@ def _average_history_pattern_records_by_source(
     grouped: dict[tuple[Any, str], list[Mapping[str, Any]]] = {}
     for record in records:
         grouped.setdefault(
-            (record.get("subject_id"), str(record.get("source_ses_idx"))),
+            (
+                record.get("subject_id"),
+                _coalesce_session_identifier(
+                    record.get("source_ses_idx"),
+                    fallback=record.get("ses_idx"),
+                ),
+            ),
             [],
         ).append(record)
 
@@ -2355,7 +2361,7 @@ def _build_subject_history_pattern_summary(
 
     subject_order = _unique_preserve_order([record.get("subject_id") for record in records])
     if average_rollouts_by_source and all(
-        record.get("source_ses_idx") not in (None, "")
+        not _is_missing_session_identifier(record.get("source_ses_idx"))
         for record in records
     ):
         per_subject_records, subject_session_counts = _average_history_records_for_subjects(
@@ -2417,7 +2423,8 @@ def _build_session_history_pattern_summary(
         return {}
 
     if average_rollouts_by_source and all(
-        record.get("source_ses_idx") not in (None, "") for record in records
+        not _is_missing_session_identifier(record.get("source_ses_idx"))
+        for record in records
     ):
         grouped_records = _average_history_records_for_sessions(
             records,
@@ -2495,10 +2502,9 @@ def _collect_direct_history_records_for_subjects(
                 max_trials_back=max_trials_back,
             )
         )
-        session_key = (
-            record.get("source_ses_idx")
-            if record.get("source_ses_idx") not in (None, "")
-            else record.get("ses_idx")
+        session_key = _coalesce_session_identifier(
+            record.get("source_ses_idx"),
+            fallback=record.get("ses_idx"),
         )
         session_keys_by_subject.setdefault(subject_id, []).append(str(session_key))
     return (
@@ -2988,17 +2994,18 @@ def _prepare_subject_metric_records(
         return {}, {}
 
     if average_rollouts_by_source and all(
-        record["source_ses_idx"] not in (None, "") for record in session_counts
+        not _is_missing_session_identifier(record.get("source_ses_idx"))
+        for record in session_counts
     ):
         return _average_rollout_metric_counts(session_counts)
     return _collect_direct_metric_counts(session_counts)
 
 
 def _canonical_source_session_id_from_record(record: Mapping[str, Any]) -> str:
-    source_session_id = record.get("source_ses_idx")
-    if source_session_id in (None, ""):
-        source_session_id = record.get("ses_idx")
-    return str(source_session_id)
+    return _coalesce_session_identifier(
+        record.get("source_ses_idx"),
+        fallback=record.get("ses_idx"),
+    )
 
 
 def _canonical_session_key(record: Mapping[str, Any]) -> tuple[Any, str]:
@@ -3118,7 +3125,8 @@ def _prepare_session_metric_records(
         return []
 
     if average_rollouts_by_source and all(
-        record["source_ses_idx"] not in (None, "") for record in session_counts
+        not _is_missing_session_identifier(record.get("source_ses_idx"))
+        for record in session_counts
     ):
         return _average_rollout_metric_counts_by_session(session_counts)
     return _collect_direct_metric_counts_by_session(session_counts)
@@ -3206,7 +3214,7 @@ def _average_rollout_metric_counts(
 ) -> tuple[dict[Any, list[dict[str, Any]]], dict[Any, int]]:
     grouped: dict[tuple[Any, str], list[Mapping[str, Any]]] = {}
     for record in session_counts:
-        source_ses_idx = str(record["source_ses_idx"])
+        source_ses_idx = _canonical_source_session_id_from_record(record)
         grouped.setdefault((record["subject_id"], source_ses_idx), []).append(record)
 
     per_subject_records: dict[Any, list[dict[str, Any]]] = {}
@@ -3340,10 +3348,9 @@ def _collect_direct_metric_counts(
                 ),
             }
         )
-        session_key = (
-            record["source_ses_idx"]
-            if record["source_ses_idx"] not in (None, "")
-            else record["ses_idx"]
+        session_key = _coalesce_session_identifier(
+            record.get("source_ses_idx"),
+            fallback=record.get("ses_idx"),
         )
         session_keys_by_subject.setdefault(subject_id, []).append(str(session_key))
 
@@ -5034,10 +5041,10 @@ def _align_multisubject_session_history_to_training_ids(
     for record in _iter_session_records(session_history):
         subject_id = _normalize_identifier(record.get("subject_id"))
         session_id = str(record.get("ses_idx"))
-        source_session_id = record.get("source_ses_idx")
-        if source_session_id in (None, ""):
-            source_session_id = session_id
-        source_session_id = str(source_session_id)
+        source_session_id = _coalesce_session_identifier(
+            record.get("source_ses_idx"),
+            fallback=session_id,
+        )
 
         merged_session_id = source_to_merged.get((subject_id, source_session_id))
         if merged_session_id is None:
@@ -8412,7 +8419,7 @@ def _resolve_session_index_for_subject(
         return None
 
     normalized_subject_id = _normalize_identifier(subject_id)
-    if source_session_id not in (None, ""):
+    if not _is_missing_session_identifier(source_session_id):
         source_key = (normalized_subject_id, str(source_session_id))
         if source_key in source_lookup:
             return int(source_lookup[source_key])
@@ -8474,6 +8481,18 @@ def _normalize_identifier(value: Any) -> Any:
     except ModuleNotFoundError:
         pass
     return value
+
+
+def _is_missing_session_identifier(value: Any) -> bool:
+    if _is_nan(value):
+        return True
+    text = str(value).strip().lower()
+    return text in {"", "nan", "none", "null"}
+
+
+def _coalesce_session_identifier(value: Any, *, fallback: Any) -> str:
+    resolved = fallback if _is_missing_session_identifier(value) else value
+    return str(resolved)
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
