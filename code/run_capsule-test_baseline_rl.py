@@ -9,7 +9,8 @@ logging.basicConfig(
 from post_training_analysis import run_baseline_rl_post_training_analysis
 
 result = run_baseline_rl_post_training_analysis(
-    resolved_run_path="/code/resolved_run.json",
+    # resolved_run_path="/code/resolved_run.json",
+    resolved_run_path="/data/resolved_run-multisubject_train10_all_stages.json",
     fitting_df_path="/data/df_baseline_rl_fitting_260408/df_baseline_rl_fitting_260408.pkl",
     model_aliases=[
         "QLearning_L1F1_CK1_softmax",

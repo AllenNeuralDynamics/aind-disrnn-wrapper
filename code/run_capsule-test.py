@@ -18,7 +18,8 @@ from post_training_analysis import (
 )
 
 result = run_post_training_analysis(
-    model_dir="/data/mice_multisubject_train10_all_stages-baseline_rl_Hattori-260520/1",
+    model_dir="/data/mice_multisubject_train10_all_stages-baseline_rl_Combined-260520/1",
+    # model_dir="/data/mice_multisubject_train10_all_stages-baseline_rl_Hattori-260520/1",
     # model_dir="/data/mice_multisubject_train10_all_stages-baseline_rl_Bari-260520/1",
     # model_dir="/data/mice_multisubject_train10_all_stages-gru-260505-lr_1e_05/5",
     split="train",
