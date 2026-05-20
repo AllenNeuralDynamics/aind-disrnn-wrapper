@@ -71,24 +71,24 @@ _TASK_CATEGORY_COLORS = [
 ]
 _WEEKDAY_ORDER = [str(index) for index in range(1, 8)]
 _WEEKDAY_COLORS = {
-    "1": "#1f77b4",
-    "2": "#ff7f0e",
-    "3": "#2ca02c",
-    "4": "#d62728",
-    "5": "#9467bd",
-    "6": "#8c564b",
-    "7": "#e377c2",
+    "1": "#e41a1c",
+    "2": "#ff7f00",
+    "3": "#ffd92f",
+    "4": "#4daf4a",
+    "5": "#377eb8",
+    "6": "#4b0082",
+    "7": "#984ea3",
 }
 _NUMERIC_COLOR_CONFIG: dict[str, dict[str, Any]] = {
     "foraging_eff_random_seed_mean": {
         "cmap": "viridis",
-        "vmin": 0.5,
-        "vmax": 1.0,
+        "vmin": 0.6,
+        "vmax": 0.9,
     },
     "bias_naive_mean": {
         "cmap": "coolwarm",
-        "vmin": -1.0,
-        "vmax": 1.0,
+        "vmin": -0.3,
+        "vmax": 0.3,
     },
     "reaction_time_median_mean": {
         "cmap": "viridis",
@@ -98,13 +98,13 @@ _NUMERIC_COLOR_CONFIG: dict[str, dict[str, Any]] = {
     },
     "foraging_eff_random_seed": {
         "cmap": "viridis",
-        "vmin": 0.5,
-        "vmax": 1.0,
+        "vmin": 0.6,
+        "vmax": 0.9,
     },
     "bias_naive": {
         "cmap": "coolwarm",
-        "vmin": -1.0,
-        "vmax": 1.0,
+        "vmin": -0.5,
+        "vmax": 0.5,
     },
     "reaction_time_median": {
         "cmap": "viridis",
@@ -700,32 +700,20 @@ def _bottom_legend_ncol(n_handles: int) -> int:
     return min(4, n_handles)
 
 
-def _bottom_legend_rows(n_handles: int) -> int:
-    ncol = _bottom_legend_ncol(n_handles)
-    return int(math.ceil(n_handles / max(1, ncol)))
-
-
-def _reserve_bottom_margin(n_legend_rows: int) -> float:
-    if n_legend_rows <= 0:
-        return 0.08
-    return 0.12 + (0.07 * n_legend_rows)
-
-
 def _add_bottom_legend(
     fig: Any,
     *,
     legend_handles: list[Any],
     legend_title: str,
-) -> int:
+) -> Any:
     ncol = _bottom_legend_ncol(len(legend_handles))
-    fig.legend(
+    return fig.legend(
         handles=legend_handles,
-        loc="lower center",
-        bbox_to_anchor=(0.5, -0.02),
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.04),
         ncol=ncol,
         title=legend_title,
     )
-    return _bottom_legend_rows(len(legend_handles))
 
 
 def _add_right_colorbar(
@@ -733,12 +721,8 @@ def _add_right_colorbar(
     *,
     scatter_artist: Any,
     color_label: str,
-    bottom_margin: float,
 ) -> None:
-    top_margin = 0.9
-    cbar_bottom = max(0.12, bottom_margin)
-    cbar_height = max(0.2, top_margin - cbar_bottom)
-    cax = fig.add_axes([0.88, cbar_bottom, 0.02, cbar_height])
+    cax = fig.add_axes([1.01, 0.12, 0.025, 0.74])
     fig.colorbar(scatter_artist, cax=cax, label=color_label)
 
 
@@ -853,12 +837,7 @@ def _make_subject_embedding_plot(
             ax.set_title(f"{x_column} vs {y_column}")
 
     fig.suptitle(f"Subject Embedding State Space - {color_label}", fontsize=14)
-    legend_rows = 0
-    if legend_handles:
-        legend_rows = _bottom_legend_rows(len(legend_handles))
-    bottom_margin = _reserve_bottom_margin(legend_rows)
-    right_margin = 0.86 if scatter_artist is not None else 0.98
-    fig.tight_layout(rect=(0.03, bottom_margin, right_margin, 0.93))
+    fig.tight_layout(rect=(0.03, 0.05, 0.98, 0.93))
     if legend_handles:
         _add_bottom_legend(
             fig,
@@ -870,7 +849,6 @@ def _make_subject_embedding_plot(
             fig,
             scatter_artist=scatter_artist,
             color_label=color_label,
-            bottom_margin=bottom_margin,
         )
     return fig
 
@@ -1080,12 +1058,7 @@ def _make_session_context_plot(
         f"- Subject {int(first_row['subject_index'])} ({first_row['subject_id']}) - {color_label}",
         fontsize=14,
     )
-    legend_rows = 0
-    if legend_handles:
-        legend_rows = _bottom_legend_rows(len(legend_handles))
-    bottom_margin = _reserve_bottom_margin(legend_rows)
-    right_margin = 0.86 if scatter_artist is not None else 0.98
-    fig.tight_layout(rect=(0.03, bottom_margin, right_margin, 0.93))
+    fig.tight_layout(rect=(0.03, 0.05, 0.98, 0.93))
     if legend_handles:
         _add_bottom_legend(
             fig,
@@ -1097,7 +1070,6 @@ def _make_session_context_plot(
             fig,
             scatter_artist=scatter_artist,
             color_label=color_label,
-            bottom_margin=bottom_margin,
         )
     return fig
 
