@@ -80,6 +80,10 @@
 		{
 			"id": "f908dd4d-d7ed-4d52-97cf-ccd0e167c659",
 			"mount": "foraging_nwb_bonsai"
+		},
+		{
+			"id": "fc7eee4b-cd23-4f0b-a22a-3ff752a25580",
+			"mount": "mice_multisubject_train10_all_stages-baseline_rl_Bari-260520"
 		}
 	]
 }
