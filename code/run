@@ -2,8 +2,8 @@
 set -ex
 
 # This is the master script for the capsule. When you click "Reproducible Run", the code in this file will execute.
-# python -u run_capsule.py "$@"
-python -u run_capsule-test.py "$@"
+python -u run_capsule.py "$@"
+# python -u run_capsule-test.py "$@"
 # python -u run_capsule-test_baseline_rl.py "$@"
 # python -u run_capsule-test-detailed_ana_on_generative_runs.py "$@"
 # python -u run_capsule-test_likelihood_comparison.py "$@"
