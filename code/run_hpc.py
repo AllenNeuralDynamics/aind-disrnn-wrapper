@@ -13,6 +13,7 @@ from .utils.json_helpers import dictconfig_to_json
 from .utils.run_helpers import (
     configure_sys_logger,
     copy_inputs_for_run,
+    copy_run_to_wandb,
     save_resolved_config,
     start_wandb_run,
 )
@@ -38,6 +39,16 @@ def main(hydra_config: DictConfig) -> None:
 
     # --- Prepare wandb ---
     wandb_run = start_wandb_run(hydra_config)
+    wandb_run_dir: Path | None = None
+    if wandb_run is not None:
+        wandb_run_dir = Path(wandb_run.dir).resolve()
+        logger.info("wandb run directory: %s", wandb_run_dir)
+        if hasattr(hydra_config, "model") and "output_dir" in hydra_config.model:
+            hydra_config.model.output_dir = str(wandb_run_dir)
+            logger.info(f"Model output_dir overridden to wandb dir {wandb_run_dir}")
+        # Copy hydra run folder to wandb directory for full reproducibility
+        copy_run_to_wandb(run_dir, wandb_run_dir)
+
     resolved_yaml = OmegaConf.to_yaml(hydra_config, resolve=True)
     logger.info("Hydra config (resolved):\n%s", resolved_yaml)
 

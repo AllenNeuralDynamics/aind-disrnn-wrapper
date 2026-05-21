@@ -31,7 +31,7 @@ training:
 
 seed: ${seed}  # Seed for model trainer
 
-output_dir: ${oc.env:HOME}/outputs/disrnn
+output_dir: ${oc.env:HOME}/outputs/disrnn  # will be overridden with wandb run folder
 
 # Your template for the model part of the run name
 run_name_component: disrnn_beta${.penalties.beta}_lr${.training.lr}

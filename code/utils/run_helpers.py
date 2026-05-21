@@ -78,3 +78,24 @@ def start_wandb_run(
     # TODO: this only works for capsule run at this point
     run.config.update({"CO_COMPUTATION_ID": os.environ.get("CO_COMPUTATION_ID")})
     return run
+
+
+def copy_run_to_wandb(run_dir: Path, wandb_dir: Path) -> None:
+    """Copy Hydra run directory contents into the wandb run folder."""
+
+    resolved_run_dir = run_dir.resolve()
+    resolved_wandb_dir = wandb_dir.resolve()
+
+    if resolved_run_dir == resolved_wandb_dir:
+        logger.info("Hydra run dir and wandb dir are identical, skipping copy")
+        return
+
+    resolved_wandb_dir.mkdir(parents=True, exist_ok=True)
+    logger.info("Copying Hydra run dir %s to wandb dir %s", resolved_run_dir, resolved_wandb_dir)
+
+    for item in resolved_run_dir.iterdir():
+        destination = resolved_wandb_dir / item.name
+        if item.is_dir():
+            shutil.copytree(item, destination, dirs_exist_ok=True)
+        else:
+            shutil.copy2(item, destination)
