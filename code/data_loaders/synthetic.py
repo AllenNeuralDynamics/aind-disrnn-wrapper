@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import copy
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 import pandas as pd
@@ -22,13 +22,23 @@ try:
 except ImportError:  # support Code Ocean script imports
     from base.interfaces import DatasetLoader
     from base.types import DatasetBundle
+import logging
 
+logger = logging.getLogger(__name__)
 
 class SyntheticDatasetLoader(DatasetLoader):
     """Placeholder loader for synthetic experiments."""
 
-    def __init__(self, seed: int | None = None, **settings: object) -> None:
+    def __init__(
+        self,
+        seed: int | None = None,
+        batch_size: int | None = None,
+        batch_mode: Literal["single", "rolling", "random"] = "random",
+        **settings: object,
+    ) -> None:
         super().__init__(seed=seed)
+        self.batch_size = batch_size
+        self.batch_mode = batch_mode
         self.settings = settings
 
     def load(self) -> DatasetBundle:
@@ -48,6 +58,8 @@ class SyntheticCognitiveAgents(DatasetLoader):
         num_trials: int,
         num_sessions: int,
         eval_every_n: int = 2,
+        batch_size: int | None = None,
+        batch_mode: Literal["single", "rolling", "random"] = "random",
         **metadata: object,
     ) -> None:
         # Random seeds are fully configured via the task/agent dictionaries.
@@ -57,6 +69,8 @@ class SyntheticCognitiveAgents(DatasetLoader):
         self.num_trials = int(num_trials)
         self.num_sessions = int(num_sessions)
         self.eval_every_n = int(eval_every_n)
+        self.batch_size = batch_size
+        self.batch_mode = batch_mode
         self.metadata_extras = dict(metadata)
 
     def load(self) -> DatasetBundle:
@@ -76,7 +90,8 @@ class SyntheticCognitiveAgents(DatasetLoader):
         agent_class = getattr(generative_model, agent_class_name)
 
         agent_kwargs = copy.deepcopy(agent_cfg.get("agent_kwargs", {}))
-        agent_params = agent_cfg.get("agent_params", {})
+        agent_params = copy.deepcopy(agent_cfg.get("agent_params", {}))
+        agent_params_session_var_cfg = copy.deepcopy(agent_cfg.get("agent_params_session_var", {}))
 
         base_task_seed = task_cfg.pop("seed", None)
         base_agent_seed = agent_cfg.get("seed")
@@ -97,15 +112,28 @@ class SyntheticCognitiveAgents(DatasetLoader):
             task_kwargs.setdefault("num_trials", self.num_trials)
             task_instance = task_class(**task_kwargs)
 
-            forager_kwargs = copy.deepcopy(agent_kwargs)
+            # Sample session-specific agent parameters if non-stationary config provided
             session_agent_seed = None if base_agent_seed is None else base_agent_seed + session_idx
+            session_agent_params = self._sample_session_agent_params(
+                session_idx, session_agent_seed, agent_params, agent_params_session_var_cfg
+            )
+
+            forager_kwargs = copy.deepcopy(agent_kwargs)
             if session_agent_seed is not None:
                 forager_kwargs["seed"] = session_agent_seed
+
             forager = agent_class(**forager_kwargs)
-            if agent_params:
-                forager.set_params(**agent_params)
+            forager.set_params(**session_agent_params)
+            logger.info(
+                f"Session {session_idx}: Using agent params: {session_agent_params}"
+            )
 
             forager.perform(task_instance)
+            
+            # Prepare choices (T, 1, 1) and logits (T, 1, 2) for this session
+            choices = np.asarray(forager.choice_history)[:, np.newaxis, np.newaxis]
+            probs = np.asarray(forager.choice_prob).T
+            logits = np.log(probs + 1e-10)[:, np.newaxis, :]
 
             session_df = self._session_dataframe(session_idx, forager, task_instance)
             session_frames.append(session_df)
@@ -118,6 +146,8 @@ class SyntheticCognitiveAgents(DatasetLoader):
                     "agent_class": agent_class_name,
                     "agent_params": forager.get_params(),
                     "task_kwargs": task_kwargs,
+                    "choices": choices,
+                    "logits": logits,
                 }
             )
 
@@ -125,7 +155,12 @@ class SyntheticCognitiveAgents(DatasetLoader):
         raw_df = pd.concat(session_frames, ignore_index=True).sort_values(["ses_idx", "trial"])  # type: ignore[arg-type]
         raw_df.reset_index(drop=True, inplace=True)
 
-        dataset = dl.create_disrnn_dataset(raw_df, ignore_policy="exclude")
+        dataset = dl.create_disrnn_dataset(
+            raw_df,
+            ignore_policy="exclude",
+            batch_size=self.batch_size,
+            batch_mode=self.batch_mode,
+        )
 
         xs, _ = dataset.get_all()
         n_sessions = xs.shape[1]
@@ -143,11 +178,25 @@ class SyntheticCognitiveAgents(DatasetLoader):
 
         dataset_train, dataset_eval = rnn_utils.split_dataset(dataset, self.eval_every_n)
 
+        # --- Identify evaluation sessions and compute global groundtruth likelihood ---
+        eval_session_indices = np.arange(1, self.num_sessions, self.eval_every_n)
+        
+        # Concatenate all evaluation sessions along the episode dimension (axis 1)
+        all_eval_choices = np.concatenate([session_details[i]["choices"] for i in eval_session_indices], axis=1)
+        all_eval_logits = np.concatenate([session_details[i]["logits"] for i in eval_session_indices], axis=1)
+        
+        # Compute global normalized likelihood (geometric mean over all trials in all eval sessions)
+        avg_eval_groundtruth = float(rnn_utils.normalized_likelihood(all_eval_choices, all_eval_logits))
+
         # --- Package bundle metadata ---
         metadata: dict[str, Any] = {
             "num_trials": self.num_trials,
             "num_sessions": self.num_sessions,
             "eval_every_n": self.eval_every_n,
+            "eval_session_indices": eval_session_indices.tolist(),
+            "avg_eval_likelihood_groundtruth": avg_eval_groundtruth,
+            "batch_size": self.batch_size,
+            "batch_mode": self.batch_mode,
             "task": self.task_config,
             "agent": self.agent_config,
             "seeds": {
@@ -169,6 +218,43 @@ class SyntheticCognitiveAgents(DatasetLoader):
             metadata=metadata,
             extras=extras,
         )
+
+    def _sample_session_agent_params(
+        self,
+        session_idx: int,
+        session_seed: int | None,
+        base_params: dict[str, Any],
+        agent_params_session_var: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Return a dict of agent params for a session, sampling according to agent_params_session_var spec.
+
+        Supported kinds:
+        - type: "uniform" with 'min' and 'max'
+        - type: "gaussian" with 'mean' and 'std'
+
+        If a parameter is not present in agent_params_session_var, the base param is used.
+        The session_seed (if provided) is combined with session_idx to seed numpy RNG
+        deterministically per session.
+        """
+        rng = np.random.default_rng(None if session_seed is None else int(session_seed))
+
+        session_params: dict[str, Any] = copy.deepcopy(base_params or {})
+
+        for key, spec in (agent_params_session_var or {}).items():
+            typ = str(spec.get("type", "")).lower()
+            if typ == "uniform":
+                lo = float(spec.get("min", 0.0))
+                hi = float(spec.get("max", 1.0))
+                session_params[key] = float(rng.uniform(lo, hi))
+            elif typ in ("gaussian", "normal"):
+                mean = float(spec.get("mean", 0.0))
+                std = float(spec.get("std", 1.0))
+                session_params[key] = float(rng.normal(mean, std))
+            else:
+                # Unknown spec: skip and fall back to base param if present
+                continue
+
+        return session_params
 
     def _session_dataframe(self, session_idx: int, forager: Any, task: Any) -> pd.DataFrame:
         choice_history = np.asarray(forager.get_choice_history(), dtype=int)
