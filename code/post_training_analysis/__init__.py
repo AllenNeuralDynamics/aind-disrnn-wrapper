@@ -17,6 +17,10 @@ _EXPORTS = {
         "post_training_analysis.embedding_space_analysis",
         "run_embedding_space_analysis",
     ),
+    "run_likelihood_advantage_analysis": (
+        "post_training_analysis.likelihood_advantage_analysis",
+        "run_likelihood_advantage_analysis",
+    ),
     "compute_history_dependent_switch_stats": (
         "post_training_analysis.generative_analysis",
         "compute_history_dependent_switch_stats",
