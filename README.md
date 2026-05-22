@@ -6,23 +6,20 @@ The wrapper capsule in the AIND-disRNN MLOps stack:
 
 ## Installation in HPC
 To install the capsule in an HPC environment, follow these steps:
-1. Create a new conda environment:
+1. Create CPU and GPU conda environments:
    ```bash
-   conda create -n disrnn python=3.12 -y
-   conda activate disrnn
-   ```
-2. Install `aind-disrnn-wrapper` in editable mode:
-   ```bash
+   conda create -n disrnn-cpu python=3.12 -y
+   conda activate disrnn-cpu
    pip install -e .
+
+   conda create -n disrnn-gpu python=3.12 -y
+   conda activate disrnn-gpu
+   pip install -e ".[gpu]"
    ```
-    if want to use GPU version, use
-    ```bash
-    pip install -e ".[gpu]"
-    ```
-   with dev tools
-    ```bash
-    pip install -e ".[dev]"
-    ```
+2. Optional: install dev tools in either environment:
+   ```bash
+   pip install -e ".[dev]"
+   ```
 
 ## Running single experiments
 
@@ -49,14 +46,56 @@ python -m code.run_hpc -m data=mice,synthetic model=baseline_rl job_id=multirun
 
 Each child run lands under `~/outputs/multirun/<hydra_job_id>`. Combine this with SLURM arrays by wrapping the command in your submission script; `job/disrnn_hydra.slurm` shows a template that simply forwards overrides to `python -m code.run_hpc` while Hydra manages per-run working directories automatically.
 
-## WandB sweep workflow
+## Default workflow: W&B sweeps on SLURM arrays
 
-1. Create a sweep spec that launches `python -m code.run_hpc ...` with any fixed Hydra overrides.
-2. Start the sweep to receive a `SWEEP_ID` (e.g., `wandb sweep sweep.yaml`).
-3. Submit `job/disrnn_wandb_agent.slurm` to schedule agents on SLURM:
+W&B sweep + SLURM arrays is the default path for parallel hyperparameter scans in HPC.
+
+### One-command launcher (recommended)
+
+Use the wrapper to create the sweep, parse `SWEEP_ID`, compute an `AGENT_COUNT`, and submit `sbatch` automatically:
+
+```bash
+python -m code.launch_wandb_sweep --mode cpu
+python -m code.launch_wandb_sweep --mode gpu
+```
+
+Useful options:
+
+```bash
+# preview commands without executing
+python -m code.launch_wandb_sweep --mode cpu --dry-run
+
+# override array spec used for AGENT_COUNT estimation
+python -m code.launch_wandb_sweep --mode gpu --sbatch-extra='--array=0-1'
+
+# force a manual AGENT_COUNT
+python -m code.launch_wandb_sweep --mode cpu --agent-count 2
+```
+
+### Manual workflow
+
+1. Create a sweep from a YAML spec (example included at `sweeps/scaling_disrnn.yaml`):
 
    ```bash
-   sbatch job/disrnn_wandb_agent.slurm <SWEEP_ID>
+   wandb sweep sweeps/scaling_disrnn.yaml
    ```
 
-Hydra multiruns can coexist with wandb sweeps by letting Hydra enumerate structural choices (datasets, trainers) while wandb tunes hyperparameters. Document the division of labor in your sweep YAML so each tool controls a distinct dimension.
+2. Copy the returned `SWEEP_ID` and submit CPU or GPU agents:
+
+   CPU agents:
+   ```bash
+   sbatch job/wandb_agent_cpu.slurm <SWEEP_ID>
+   ```
+
+   GPU agents:
+   ```bash
+   sbatch job/wandb_agent_gpu.slurm <SWEEP_ID>
+   ```
+
+3. Tune sweep parallelism by changing array size and `AGENT_COUNT` in the job script.
+   - CPU default: `--array=0-19` and `AGENT_COUNT=3` (about 60 runs)
+   - GPU default: `--array=0-3` and `AGENT_COUNT=15` (about 60 runs)
+
+## Legacy note
+
+Hydra multirun still works well for deterministic config enumeration. W&B sweeps can coexist with Hydra by letting Hydra define structural settings (data/model families) while W&B optimizes numeric hyperparameters.
