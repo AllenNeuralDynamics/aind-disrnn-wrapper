@@ -2,7 +2,7 @@ type: synthetic
 
 defaults:
   - _self_
-  - task: uncoupled_block
+  - task: random_walk
   - agent: rl
   - base@_here_  # All shared data config
 

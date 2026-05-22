@@ -5,8 +5,8 @@ _target_: code.model_trainers.baseline_rl_trainer.BaselineRLTrainer
 
 agent_class: "ForagerQLearning"
 agent_kwargs:
-  number_of_learning_rate: 2
-  number_of_forget_rate: 1
+  number_of_learning_rate: 1
+  number_of_forget_rate: 0
   choice_kernel: "none"
   action_selection: "softmax"
 

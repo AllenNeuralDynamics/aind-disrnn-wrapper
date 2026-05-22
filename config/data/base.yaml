@@ -2,3 +2,5 @@
 
 eval_every_n: 2  # Fold number for cross-validation
 seed: ${seed}  # Seed for data loader
+batch_size: null
+batch_mode: random
