@@ -27,7 +27,7 @@ command:
   - wandb.project=hpc_test
   # Note: in sweep mode, W&B uses top-level entity/project above for routing.
   # This per-run override is kept for consistency with non-sweep run args.
-  - "wandb.tags=[num_sessions,disRNN,slurm]"
+  - "wandb.tags=[num_sessions,hpc]"
   - ${args_no_hyphens}
 
 parameters:
