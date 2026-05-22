@@ -1,4 +1,12 @@
 #!/bin/bash
+# SLURM array script that runs Hydra multirun (GPU) for deterministic config
+# enumeration without W&B sweep orchestration.
+#
+# See the "HPC run modes" section of README.md for usage and tradeoffs vs.
+# W&B sweeps. Typical use:
+#
+#     sbatch job/hydra_multirun_gpu.slurm
+#
 #SBATCH -J disrnn_hydra_gpu
 #SBATCH -p aind
 #SBATCH -t 05:00:00
