@@ -24,6 +24,27 @@ To install the capsule in an HPC environment, follow these steps:
    pip install -e ".[dev]"
    ```
 
+## GPU tier selection
+
+The Allen HPC cluster exposes several GPU tiers (inspect with `sinfo -o "%20N %10c %10m %25f %10G"`):
+
+- `titanxp` / `1080ti` — debugging and sanity checks; almost always free.
+- `v100` — the **default for this repo**. Plenty of capacity, low queue wait, more than enough for current disRNN sizes.
+- `l40s` / `a100` — wider models, more sweep agents per node, or when v100 is saturated.
+- `h200` — reserved for genuinely large training (wide nets, long sequences, multi-GPU). Contended; avoid for small models.
+
+The GPU slurm scripts (`job/wandb_sweep_gpu.slurm`, `job/hydra_multirun_gpu.slurm`) default to `--gres=gpu:v100:1`. Override per launch without editing the script:
+
+```bash
+# W&B sweep with a specific GPU tier
+python -m code.launch_wandb_sweep --mode gpu --gpu-type a100
+
+# Hydra multirun with a specific GPU tier
+sbatch --gres=gpu:a100:1 job/hydra_multirun_gpu.slurm
+```
+
+Rule of thumb: pick the smallest tier that keeps the GPU >50% utilized (`nvidia-smi dmon -s u 1` on the node while a run is going). For the current disRNN configs (`update_net=5`, `choice_net=4`, sequences of length 50), `v100` is the sweet spot; H200 wins essentially nothing because the model is too small to fill the SMs.
+
 ## HPC run modes
 
 There are three supported execution modes in HPC.
@@ -181,24 +202,3 @@ The HPC migration is additive; the Code Ocean capsule path still works:
 - The hardware tag (`cpu` or `gpu` + model) is detected via `nvidia-smi` with a safe fallback, so it works on both Code Ocean and HPC.
 
 HPC-only additions (sweep lineage injection via `code/launch_wandb_sweep.py`, sbatch scripts under `job/`) are opt-in and have no effect on Code Ocean runs.
-
-## GPU tier selection
-
-The Allen HPC cluster exposes several GPU tiers (inspect with `sinfo -o "%20N %10c %10m %25f %10G"`):
-
-- `titanxp` / `1080ti` — debugging and sanity checks; almost always free.
-- `v100` — the **default for this repo**. Plenty of capacity, low queue wait, more than enough for current disRNN sizes.
-- `l40s` / `a100` — wider models, more sweep agents per node, or when v100 is saturated.
-- `h200` — reserved for genuinely large training (wide nets, long sequences, multi-GPU). Contended; avoid for small models.
-
-The GPU slurm scripts (`job/wandb_sweep_gpu.slurm`, `job/hydra_multirun_gpu.slurm`) default to `--gres=gpu:v100:1`. Override per launch without editing the script:
-
-```bash
-# W&B sweep with a specific GPU tier
-python -m code.launch_wandb_sweep --mode gpu --gpu-type a100
-
-# Hydra multirun with a specific GPU tier
-sbatch --gres=gpu:a100:1 job/hydra_multirun_gpu.slurm
-```
-
-Rule of thumb: pick the smallest tier that keeps the GPU >50% utilized (`nvidia-smi dmon -s u 1` on the node while a run is going). For the current disRNN configs (`update_net=5`, `choice_net=4`, sequences of length 50), `v100` is the sweet spot; H200 wins essentially nothing because the model is too small to fill the SMs.
