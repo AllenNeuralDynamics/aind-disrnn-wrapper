@@ -34,6 +34,11 @@ Use this for hyperparameter scans.
 
 W&B sweeps provide better experiment visualization and comparison in the W&B UI (best-run ranking, sweep table, grouped sweep analytics).
 
+Project routing note:
+
+- Sweep runs are routed by top-level `entity` and `project` in `sweeps/scaling_disrnn.yaml`.
+- In sweep mode, W&B ignores per-run `wandb.project`/`wandb.entity` overrides passed to `code.run_hpc`.
+
 ```bash
 python -m code.launch_wandb_sweep --mode cpu
 python -m code.launch_wandb_sweep --mode gpu
@@ -76,3 +81,33 @@ python -m code.run_hpc job_id=42 data=mice model=disrnn
 ```
 
 Hydra writes outputs under `~/outputs/disrnn/...` (see `config/config.yaml`), including `inputs.yaml`/`inputs.json` and copied config inputs for reproducibility.
+
+## Reproducibility
+
+Every run produced by this repo can be traced back to the exact code and command that launched it. This is achieved with three complementary mechanisms:
+
+1. Local Hydra run artifacts.
+   - On every run, `code/run_hpc.py` copies the `config/` directory and writes `inputs.yaml` + `inputs.json` (the fully resolved Hydra config) into the run output directory and into the W&B run folder.
+   - This captures the full effective configuration after defaults, includes, and CLI overrides have been applied.
+
+2. W&B run config.
+   - `wandb.init(config=...)` records the `data`, `model`, and `meta` blocks from the resolved Hydra config, so they are filterable and groupable in the W&B UI.
+
+3. Lineage injection for sweeps (`code/launch_wandb_sweep.py`).
+   - At sweep-creation time, the launcher captures git state and launch context and appends them as Hydra `+meta.*` overrides to the sweep `command` list, via a patched temp YAML passed to `wandb sweep`.
+   - Each run in the sweep therefore records these fields under `meta.*` in its W&B config:
+
+     | field | meaning |
+     | --- | --- |
+     | `meta.git_commit` | full SHA of `HEAD` at sweep launch |
+     | `meta.git_branch` | current branch |
+     | `meta.git_dirty` | `yes` if working tree had uncommitted changes |
+     | `meta.sweep_yaml` | sweep YAML path relative to repo root |
+     | `meta.owner` | Unix user who launched the sweep |
+     | `meta.launcher_cmd` | exact argv used to invoke the launcher |
+     | `meta.mode` | `cpu` or `gpu` |
+
+   - These fields are visible to every teammate with W&B access; no shared filesystem or separate registry is required.
+   - W&B sweep mode ignores per-run `wandb.entity`/`wandb.project` overrides; sweep routing is set by the top-level `entity`/`project` keys in the sweep YAML.
+
+Recommended practice: commit (or at least record) your changes before launching a sweep so `meta.git_dirty` is `no` and `meta.git_commit` uniquely identifies the code state.
