@@ -65,11 +65,12 @@ def configure_sys_logger() -> None:
     )
 
 
-def _hardware_tag() -> str:
-    """Return a tag describing the compute hardware for this run.
+def _hardware_tags() -> list[str]:
+    """Return tags describing the compute hardware for this run.
 
-    If a GPU is visible via nvidia-smi, return a normalized short GPU name
-    (e.g. 'a100', 'h200', 'l40s', 'titanxp'). Otherwise return 'cpu'.
+    If a GPU is visible via nvidia-smi, return ['gpu', '<model>'] where
+    <model> is a normalized short GPU name (e.g. 'a100', 'h200', 'l40s',
+    'titanxp'). Otherwise return ['cpu'].
     """
     try:
         out = subprocess.run(
@@ -83,12 +84,13 @@ def _hardware_tag() -> str:
             # Normalize common Allen GPU types into short tags.
             for short in ("h200", "h100", "a100", "l40s", "v100", "titanxp", "titanx", "1080ti"):
                 if short in name.replace(" ", ""):
-                    return short
+                    return ["gpu", short]
             # Fallback: collapse to alphanumerics.
-            return "".join(c for c in name if c.isalnum()) or "gpu"
+            model = "".join(c for c in name if c.isalnum()) or "unknown"
+            return ["gpu", model]
     except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
         pass
-    return "cpu"
+    return ["cpu"]
 
 
 def start_wandb_run(
@@ -99,7 +101,7 @@ def start_wandb_run(
     # Extract & remove original tags
     wandb_cfg = dict_config.get("wandb", {})
     base_tags = wandb_cfg.pop("tags", []) or []
-    extra_tags = [hydra_config.data.type, hydra_config.model.type, _hardware_tag()]
+    extra_tags = [hydra_config.data.type, hydra_config.model.type, *_hardware_tags()]
 
     # Init wandb with merged tags
     run = wandb.init(
