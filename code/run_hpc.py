@@ -5,6 +5,7 @@ import logging
 from pathlib import Path
 
 import hydra
+from hydra.core.hydra_config import HydraConfig
 from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf
 
@@ -25,7 +26,9 @@ logger = logging.getLogger(__name__)
 def main(hydra_config: DictConfig) -> None:
     configure_sys_logger()
 
-    run_dir = Path.cwd()
+    hydra_runtime = HydraConfig.get().runtime
+    run_dir = Path(hydra_runtime.output_dir).resolve()
+    run_dir.mkdir(parents=True, exist_ok=True)
 
     # Backup inputs for reproducibility
     config_root = Path(__file__).parent.parent / "config"
