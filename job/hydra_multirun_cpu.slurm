@@ -20,6 +20,7 @@ export PYTHONPATH="$WRAPPER_ROOT:$PYTHONPATH"
 export HYDRA_FULL_ERROR=1
 
 python -m code.run_hpc -m \
+  wandb.project=hpc_test \
   data=synthetic \
   data.num_sessions=50,100 \
   model.penalties.beta=0.001,0.003,0.01 \
