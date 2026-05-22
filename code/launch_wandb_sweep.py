@@ -263,6 +263,22 @@ def main() -> None:
             f"{computed_agent_count} for mode={args.mode}"
         )
 
+    # Report planned coverage so the user can spot under-sampling early.
+    # Each W&B agent runs `AGENT_COUNT` runs, so planned runs is the
+    # product of array tasks and the agent count.
+    planned_runs = num_array_tasks * computed_agent_count
+    if total_grid_runs is not None:
+        print(
+            f"Planned coverage: {planned_runs} runs "
+            f"({num_array_tasks} array tasks x {computed_agent_count} agents) "
+            f"out of {total_grid_runs} grid points."
+        )
+        if planned_runs < total_grid_runs:
+            print(
+                f"WARNING: planned_runs ({planned_runs}) < total_grid_runs "
+                f"({total_grid_runs}); only a subset of the grid will be sampled."
+            )
+
     sweep_cmd = ["wandb", "sweep", str(sweep_yaml)]
     print("Running:", " ".join(shlex.quote(x) for x in sweep_cmd))
 
@@ -326,6 +342,16 @@ def main() -> None:
         print(sbatch_result.stderr, end="")
     if sbatch_result.returncode != 0:
         raise RuntimeError("sbatch command failed")
+
+    # If the user bounded the sweep below the full grid, the W&B sweep will
+    # stay in 'Running' state forever (no agent ever marks it finished). Tell
+    # the user how to stop it manually after their bounded runs complete.
+    if total_grid_runs is not None and planned_runs < total_grid_runs:
+        print(
+            "\nNote: this is a bounded sweep. After your jobs finish, the W&B "
+            "sweep will still show 'Running'. Stop it explicitly with:\n"
+            f"    wandb sweep --stop {sweep_id}"
+        )
 
 
 if __name__ == "__main__":
