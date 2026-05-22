@@ -227,6 +227,16 @@ def main() -> None:
         help="Extra sbatch arguments, e.g. '--array=0-9'.",
     )
     parser.add_argument(
+        "--gpu-type",
+        default=None,
+        help=(
+            "Constrain GPU runs to a specific GPU type (e.g. 'v100', 'a100', "
+            "'l40s', 'h200'). Only used when --mode gpu. Translates to "
+            "'--gres=gpu:<type>:1' for sbatch, overriding the default in the "
+            "GPU slurm script. See README 'GPU tier selection' for guidance."
+        ),
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Print commands without executing.",
@@ -330,6 +340,14 @@ def main() -> None:
 
     sbatch_cmd: list[str] = ["sbatch"]
     sbatch_cmd.extend(["--export", f"ALL,AGENT_COUNT={computed_agent_count}"])
+    if args.gpu_type:
+        if args.mode != "gpu":
+            print(
+                f"WARNING: --gpu-type={args.gpu_type} is ignored in mode={args.mode}."
+            )
+        else:
+            # Overrides the #SBATCH --gres line in the GPU slurm script.
+            sbatch_cmd.extend([f"--gres=gpu:{args.gpu_type}:1"])
     if args.sbatch_extra:
         sbatch_cmd.extend(shlex.split(args.sbatch_extra))
     sbatch_cmd.extend([str(slurm_script), sweep_id])
