@@ -77,7 +77,7 @@ def start_wandb_run(
     # Init wandb with merged tags
     run = wandb.init(
         **wandb_cfg,
-        config={k: dict_config[k] for k in ("data", "model") if k in dict_config},
+        config={k: dict_config[k] for k in ("data", "model", "meta") if k in dict_config},
         tags=base_tags + extra_tags,
     )
     

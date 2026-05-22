@@ -1,18 +1,51 @@
 """Create a W&B sweep and submit SLURM sweep agents.
 
+This launcher does three things:
+
+1. Reads a sweep YAML (e.g. ``sweeps/scaling_disrnn.yaml``).
+2. Injects per-run lineage fields into the sweep's ``command`` list so every
+   run started by every agent records where it came from. Injected fields:
+
+       +meta.git_commit    full SHA of HEAD at launch time
+       +meta.git_branch    current branch
+       +meta.git_dirty     "yes" if the working tree had uncommitted changes
+       +meta.sweep_yaml    path of the sweep YAML (relative to repo root)
+       +meta.owner         Unix user who launched the sweep
+       +meta.launcher_cmd  exact argv used to invoke this launcher
+       +meta.mode          "cpu" or "gpu"
+
+   These appear in each W&B run's config under ``meta.*`` and are filterable
+   in the Runs/Sweeps UI, so any run can be traced back to the exact code
+   and command that produced it without relying on a separate registry file.
+
+3. Creates the sweep via ``wandb sweep`` (using a temp YAML patched with the
+   lineage fields) and submits a SLURM array job of agents.
+
+Notes on W&B sweep behavior:
+    - When running under a sweep, W&B ignores per-run ``wandb.entity`` and
+      ``wandb.project`` overrides; sweep routing comes from the top-level
+      ``entity``/``project`` fields in the sweep YAML.
+    - Hydra ``+meta.*`` overrides ARE honored on each run, which is why this
+      launcher uses them to carry lineage.
+
 Example:
     python -m code.launch_wandb_sweep \
         --sweep-yaml sweeps/scaling_disrnn.yaml \
-        --mode cpu
+        --mode cpu \
+        --sbatch-extra=--array=0-1
 """
 
 from __future__ import annotations
 
 import argparse
+import getpass
 import math
+import os
 import re
 import shlex
 import subprocess
+import sys
+import tempfile
 from pathlib import Path
 
 import yaml
@@ -91,6 +124,57 @@ def _count_array_tasks(array_spec: str) -> int:
         total += (end - start) // step + 1
 
     return max(total, 1)
+
+
+def _git_info(repo_root: Path) -> dict[str, str]:
+    """Capture lineage info from the git repo at repo_root.
+
+    Returns commit sha, branch, and a 'dirty' flag (yes/no) so each run in
+    the sweep records the exact code state that launched it.
+    """
+    def _run(args: list[str]) -> str:
+        try:
+            out = subprocess.run(
+                args,
+                cwd=str(repo_root),
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            return out.stdout.strip()
+        except Exception:
+            return "unknown"
+
+    commit = _run(["git", "rev-parse", "HEAD"])
+    branch = _run(["git", "rev-parse", "--abbrev-ref", "HEAD"])
+    status = _run(["git", "status", "--porcelain"])
+    dirty = "yes" if status and status != "unknown" else "no"
+    return {"commit": commit, "branch": branch, "dirty": dirty}
+
+
+def _inject_lineage_into_command(
+    sweep_cfg: dict,
+    lineage: dict[str, str],
+) -> dict:
+    """Append Hydra +meta.* overrides to the sweep 'command' list.
+
+    Sweep mode ignores per-run wandb.entity/project overrides, but Hydra
+    overrides in the command list are still applied to each run's config,
+    so each W&B run carries this lineage in its config under `meta.*`.
+    """
+    cmd = list(sweep_cfg.get("command", []))
+    for key, value in lineage.items():
+        # `+meta.<key>=<value>` adds the field (won't error if missing in schema).
+        # Quote values containing chars that Hydra's override parser rejects
+        # (spaces, '=', commas, etc.) so they survive as plain strings.
+        sval = str(value)
+        if any(c in sval for c in " =,'\"[]{}"):
+            # Use single quotes; escape any embedded single quotes.
+            escaped = sval.replace("'", "\\'")
+            sval = f"'{escaped}'"
+        cmd.append(f"+meta.{key}={sval}")
+    sweep_cfg["command"] = cmd
+    return sweep_cfg
 
 
 def _estimate_total_grid_runs(sweep_yaml: Path) -> int | None:
@@ -186,6 +270,31 @@ def main() -> None:
         print("Dry-run mode enabled; skipping sweep creation and sbatch submit.")
         return
 
+    # --- Lineage injection ---
+    # Build a temp sweep YAML that appends Hydra +meta.* overrides to the
+    # command list, so every run in this sweep carries lineage in its W&B
+    # config (filterable in the Sweeps/Runs view).
+    git = _git_info(repo_root)
+    launcher_cmd = " ".join(shlex.quote(a) for a in sys.argv)
+    lineage = {
+        "git_commit": git["commit"],
+        "git_branch": git["branch"],
+        "git_dirty": git["dirty"],
+        "sweep_yaml": str(sweep_yaml.relative_to(repo_root)),
+        "owner": getpass.getuser(),
+        "launcher_cmd": launcher_cmd,
+        "mode": args.mode,
+    }
+    sweep_cfg = yaml.safe_load(sweep_yaml.read_text())
+    sweep_cfg = _inject_lineage_into_command(sweep_cfg, lineage)
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".yaml", prefix="sweep_", delete=False
+    ) as tmp:
+        yaml.safe_dump(sweep_cfg, tmp, sort_keys=False)
+        patched_yaml = Path(tmp.name)
+    print(f"Patched sweep YAML with lineage at: {patched_yaml}")
+
+    sweep_cmd = ["wandb", "sweep", str(patched_yaml)]
     sweep_result = _run_command(sweep_cmd, cwd=repo_root)
     if sweep_result.stdout:
         print(sweep_result.stdout, end="")
