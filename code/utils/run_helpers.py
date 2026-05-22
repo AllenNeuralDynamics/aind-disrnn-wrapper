@@ -71,6 +71,14 @@ def _hardware_tags() -> list[str]:
     If a GPU is visible via nvidia-smi, return ['gpu', '<model>'] where
     <model> is a normalized short GPU name (e.g. 'a100', 'h200', 'l40s',
     'titanxp'). Otherwise return ['cpu'].
+
+    The list of GPU short tags below covers the Allen cluster GPU types.
+    To inspect the current cluster GPU inventory, run:
+        sinfo -o "%20N %10c %10m %25f %10G"
+    Note that the SLURM GRES name (e.g. 'a100sx') may differ from what
+    nvidia-smi reports (e.g. 'NVIDIA A100-SXM...'); detection is based on
+    nvidia-smi, so SXM-variant A100s are normalized to 'a100' like other
+    A100 nodes.
     """
     try:
         out = subprocess.run(
