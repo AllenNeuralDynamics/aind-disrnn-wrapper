@@ -2,6 +2,8 @@
 
 Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
 
+The four-principle backbone (Think Before Coding, Simplicity First, Surgical Changes, Goal-Driven Execution) is adapted from [multica-ai/andrej-karpathy-skills](https://github.com/multica-ai/andrej-karpathy-skills), which distills [Andrej Karpathy's observations](https://x.com/karpathy/status/2015883857489522876) on LLM coding pitfalls. HPC-specific rules and the commit-message convention below are local additions.
+
 Tradeoff: These guidelines bias toward caution over speed. For trivial tasks, use judgment.
 
 ## 1. Think Before Coding
@@ -65,3 +67,36 @@ Never run computation-intensive work on the login node (where the agent runs).
 
 - Always use `srun` or `sbatch` for heavy workloads.
 - This includes training jobs, sweeps, and tests.
+
+## 6. Semantic Commit Messages
+
+Use [Conventional Commits](https://www.conventionalcommits.org/) format for every commit:
+
+```text
+<type>(<optional scope>): <short imperative summary>
+
+<optional body explaining what and why, wrapped at ~72 chars>
+
+<optional footer, e.g. "Refs #123" or "BREAKING CHANGE: ...">
+```
+
+Allowed `<type>` values:
+
+- `feat` — new user-visible feature
+- `fix` — bug fix
+- `docs` — documentation only
+- `refactor` — code change that neither fixes a bug nor adds a feature
+- `perf` — performance improvement
+- `test` — add or fix tests
+- `build` — build system, dependencies, or packaging
+- `ci` — CI configuration or scripts
+- `chore` — maintenance, tooling, or housekeeping with no src/test impact
+- `revert` — revert a prior commit
+
+Rules:
+
+- Summary line in the imperative mood, no trailing period, <= 72 chars.
+- One logical change per commit; split unrelated changes into separate commits.
+- Use `<scope>` for the affected area when helpful (e.g. `feat(launcher): ...`, `docs(readme): ...`).
+- Mark breaking changes with `!` after the type/scope (e.g. `feat(api)!: ...`) and a `BREAKING CHANGE:` footer.
+- Body explains the motivation and any non-obvious consequences; don't restate the diff.
