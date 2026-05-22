@@ -23,15 +23,12 @@ command:
   - model.training.max_grad_norm=1
   - wandb.project=hpc_test
   - "wandb.tags=[num_sessions,disRNN,slurm]"
-  - "wandb.name=${num_sessions}sess_beta${beta}_lr0.005_seed${seed}"
-  - data.num_sessions=${num_sessions}
-  - model.penalties.beta=${beta}
-  - seed=${seed}
+  - ${args_no_hyphens}
 
 parameters:
-  num_sessions:
+  data.num_sessions:
     values: [50, 100]
-  beta:
+  model.penalties.beta:
     values: [0.001, 0.003, 0.01]
   seed:
     values: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
