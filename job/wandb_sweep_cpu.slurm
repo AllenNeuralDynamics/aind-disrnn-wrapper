@@ -1,4 +1,16 @@
 #!/bin/bash
+# SLURM array script that runs a W&B sweep agent (CPU) for an existing sweep.
+#
+# Prefer launching via code/launch_wandb_sweep.py, which creates the sweep,
+# injects git/launch lineage into each run's config (as Hydra +meta.* overrides),
+# computes AGENT_COUNT from the grid size, and submits this script for you:
+#
+#     python -m code.launch_wandb_sweep --mode cpu
+#
+# Manual use (skips lineage injection and auto AGENT_COUNT):
+#     wandb sweep sweeps/scaling_disrnn.yaml
+#     sbatch job/wandb_sweep_cpu.slurm <SWEEP_ID>
+#
 #SBATCH -J disrnn_wb_cpu
 #SBATCH -p aind
 #SBATCH -t 05:00:00

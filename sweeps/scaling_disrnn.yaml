@@ -1,3 +1,16 @@
+# W&B sweep config for scaling-vs-num_sessions experiments.
+#
+# Prefer launching via code/launch_wandb_sweep.py, which creates the sweep
+# from this file, injects git/launch lineage into each run as Hydra +meta.*
+# overrides, and submits a SLURM array of sweep agents:
+#
+#     python -m code.launch_wandb_sweep --sweep-yaml sweeps/scaling_disrnn.yaml --mode cpu
+#     python -m code.launch_wandb_sweep --sweep-yaml sweeps/scaling_disrnn.yaml --mode gpu
+#
+# Manual use (skips lineage injection and AGENT_COUNT auto-computation):
+#     wandb sweep sweeps/scaling_disrnn.yaml
+#     sbatch job/wandb_sweep_{cpu,gpu}.slurm <SWEEP_ID>
+
 entity: AIND-disRNN  # Sweep routing: all sweep runs go to this W&B entity.
 project: hpc_test  # Sweep routing: all sweep runs go to this W&B project.
 
