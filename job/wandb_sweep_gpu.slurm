@@ -16,7 +16,7 @@
 #SBATCH -t 05:00:00
 #SBATCH -c 2
 #SBATCH --mem=32G
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:v100:1
 #SBATCH --array=0-11
 
 #SBATCH --mail-user=han.hou@alleninstitute.org
