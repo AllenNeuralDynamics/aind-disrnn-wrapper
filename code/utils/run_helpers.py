@@ -117,11 +117,7 @@ def start_wandb_run(
         config={k: dict_config[k] for k in ("data", "model", "meta") if k in dict_config},
         tags=base_tags + extra_tags,
     )
-
-    # Tag sweep-associated runs so they can be filtered in the W&B UI.
-    if getattr(run, "sweep_id", None):
-        run.tags = tuple(run.tags) + ("sweep",)
-
+    
     # System environment variable for CO 
     run.config.update({"CO_COMPUTATION_ID": os.environ.get("CO_COMPUTATION_ID")})
     return run
