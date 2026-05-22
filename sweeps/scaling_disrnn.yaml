@@ -1,3 +1,6 @@
+entity: AIND-disRNN  # Sweep routing: all sweep runs go to this W&B entity.
+project: hpc_test  # Sweep routing: all sweep runs go to this W&B project.
+
 method: grid
 metric:
   name: final/val_loss
@@ -22,6 +25,8 @@ command:
   - model.training.n_steps=5000
   - model.training.max_grad_norm=1
   - wandb.project=hpc_test
+  # Note: in sweep mode, W&B uses top-level entity/project above for routing.
+  # This per-run override is kept for consistency with non-sweep run args.
   - "wandb.tags=[num_sessions,disRNN,slurm]"
   - ${args_no_hyphens}
 
