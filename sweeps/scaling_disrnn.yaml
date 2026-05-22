@@ -34,12 +34,9 @@ command:
   - model.architecture.choice_net_n_layers=0
   - model.training.lr=0.005
   - data.batch_size=512
-  - model.training.n_warmup_steps=500
-  - model.training.n_steps=5000
+  - model.training.n_warmup_steps=100
+  - model.training.n_steps=200
   - model.training.max_grad_norm=1
-  - wandb.project=hpc_test
-  # Note: in sweep mode, W&B uses top-level entity/project above for routing.
-  # This per-run override is kept for consistency with non-sweep run args.
   - "wandb.tags=[num_sessions,hpc]"
   - ${args_no_hyphens}
 
