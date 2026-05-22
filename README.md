@@ -111,3 +111,16 @@ Every run produced by this repo can be traced back to the exact code and command
    - W&B sweep mode ignores per-run `wandb.entity`/`wandb.project` overrides; sweep routing is set by the top-level `entity`/`project` keys in the sweep YAML.
 
 Recommended practice: commit (or at least record) your changes before launching a sweep so `meta.git_dirty` is `no` and `meta.git_commit` uniquely identifies the code state.
+
+## Code Ocean compatibility
+
+The HPC migration is additive; the Code Ocean capsule path still works:
+
+- `code/run_capsule.py` is the Code Ocean entry point and is unchanged.
+- `code/run` (`python -u run_capsule.py "$@"`) is still wired as the capsule's "Reproducible Run" command.
+- `environment/Dockerfile` is unchanged and pins the same dependencies used on HPC.
+- Shared helpers in `code/utils/run_helpers.py` (`find_hydra_config`, `copy_input_folder`, `save_resolved_config`, `start_wandb_run`) are used by both the Code Ocean and HPC entry points.
+- `CO_COMPUTATION_ID` is still recorded into the W&B run config on Code Ocean; on HPC it is simply absent.
+- The hardware tag (`cpu` or `gpu` + model) is detected via `nvidia-smi` with a safe fallback, so it works on both Code Ocean and HPC.
+
+HPC-only additions (sweep lineage injection via `code/launch_wandb_sweep.py`, sbatch scripts under `job/`) are opt-in and have no effect on Code Ocean runs.
