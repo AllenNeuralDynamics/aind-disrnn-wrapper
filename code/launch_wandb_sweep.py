@@ -1,4 +1,4 @@
-"""Create a W&B sweep and submit SLURM agents.
+"""Create a W&B sweep and submit SLURM sweep agents.
 
 Example:
     python -m code.launch_wandb_sweep \
@@ -129,7 +129,7 @@ def main() -> None:
         "--mode",
         choices=("cpu", "gpu"),
         default="cpu",
-        help="Choose CPU or GPU agent script.",
+        help="Choose CPU or GPU sweep agent script.",
     )
     parser.add_argument(
         "--agent-count",
@@ -154,7 +154,7 @@ def main() -> None:
     if not sweep_yaml.exists():
         raise FileNotFoundError(f"Sweep YAML not found: {sweep_yaml}")
 
-    slurm_script = repo_root / "job" / f"wandb_agent_{args.mode}.slurm"
+    slurm_script = repo_root / "job" / f"wandb_sweep_{args.mode}.slurm"
     if not slurm_script.exists():
         raise FileNotFoundError(f"SLURM script not found: {slurm_script}")
 

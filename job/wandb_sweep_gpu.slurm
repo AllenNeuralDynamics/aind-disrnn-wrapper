@@ -1,11 +1,16 @@
 #!/bin/bash
 #SBATCH -J disrnn_wb_gpu
-#SBATCH -p aind-gpu
-#SBATCH -t 12:00:00
-#SBATCH -c 8
-#SBATCH --mem=64G
+#SBATCH -p aind
+#SBATCH -t 05:00:00
+#SBATCH -c 2
+#SBATCH --mem=32G
 #SBATCH --gres=gpu:1
-#SBATCH --array=0-3
+#SBATCH --array=0-11
+
+#SBATCH --mail-user=han.hou@alleninstitute.org
+#SBATCH --mail-type=FAIL,END,BEGIN
+#SBATCH -o /home/han.hou/logfile/job_%j.out
+#SBATCH -e /home/han.hou/logfile/job_%j.err
 
 source /allen/aind/scratch/han.hou/miniforge3/etc/profile.d/conda.sh
 conda activate disrnn-gpu
@@ -19,7 +24,7 @@ python -c "import jax; print('JAX devices:', jax.devices())"
 
 SWEEP_ID="$1"
 if [ -z "$SWEEP_ID" ]; then
-    echo "Usage: sbatch job/wandb_agent_gpu.slurm <SWEEP_ID>" 1>&2
+    echo "Usage: sbatch job/wandb_sweep_gpu.slurm <SWEEP_ID>" 1>&2
     exit 1
 fi
 
