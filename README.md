@@ -50,13 +50,13 @@ Use this for deterministic config enumeration without W&B sweep orchestration.
 
 Hydra multirun jobs are generated and launched correctly, but they are not automatically grouped as a single sweep in W&B.
 
-CPU multirun agents:
+CPU multirun jobs:
 
 ```bash
 sbatch job/hydra_multirun_cpu.slurm
 ```
 
-GPU multirun agents:
+GPU multirun jobs:
 
 ```bash
 sbatch job/hydra_multirun_gpu.slurm
