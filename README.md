@@ -9,12 +9,14 @@ To install the capsule in an HPC environment, follow these steps:
 
 0. If you need to install Conda on HPC first, follow this guide:
    https://gist.github.com/rhngla/a2bfac4d1f343836cd69090747b6f952#set-up-virtual-environments-on-hpc
-1. Create CPU and GPU conda environments:
+1. Create CPU and/or GPU conda environments (install only the one(s) you need):
    ```bash
+   # CPU environment
    conda create -n disrnn-cpu python=3.12 -y
    conda activate disrnn-cpu
    pip install -e .
 
+   # GPU environment
    conda create -n disrnn-gpu python=3.12 -y
    conda activate disrnn-gpu
    pip install -e ".[gpu]"
@@ -23,6 +25,16 @@ To install the capsule in an HPC environment, follow these steps:
    ```bash
    pip install -e ".[dev]"
    ```
+
+## Before running the launcher
+
+`python -m code.launch_wandb_sweep` runs on the login node and only needs `pyyaml` importable (it shells out to the `wandb` CLI rather than importing it). Activate either env on the login side before invoking it:
+
+```bash
+conda activate disrnn-cpu   # or disrnn-gpu — choice does not matter here
+```
+
+The local activation does **not** affect the compute env. The compute env is selected by `--mode cpu/gpu`, and `job/wandb_sweep_{cpu,gpu}.slurm` activates the correct env on the compute node itself. Activating `disrnn-gpu` locally and passing `--mode cpu` still produces a CPU sweep.
 
 ## GPU tier selection
 
@@ -37,7 +49,7 @@ The GPU slurm scripts (`job/wandb_sweep_gpu.slurm`, `job/hydra_multirun_gpu.slur
 
 ```bash
 # W&B sweep with a specific GPU tier
-python -m code.launch_wandb_sweep --mode gpu --gpu-type a100
+python -m code.launch_wandb_sweep --sweep-yaml sweeps/scaling_disrnn.yaml --mode gpu --gpu-type a100
 
 # Hydra multirun with a specific GPU tier
 sbatch --gres=gpu:a100:1 job/hydra_multirun_gpu.slurm
@@ -61,8 +73,8 @@ Project routing note:
 - In sweep mode, W&B ignores per-run `wandb.project`/`wandb.entity` overrides passed to `code.run_hpc`.
 
 ```bash
-python -m code.launch_wandb_sweep --mode cpu
-python -m code.launch_wandb_sweep --mode gpu
+python -m code.launch_wandb_sweep --sweep-yaml sweeps/scaling_disrnn.yaml --mode cpu
+python -m code.launch_wandb_sweep --sweep-yaml sweeps/scaling_disrnn.yaml --mode gpu
 ```
 
 Manual equivalent:
@@ -92,7 +104,7 @@ CLI flags:
 
 | Flag | Default | Purpose |
 | --- | --- | --- |
-| `--sweep-yaml` | `sweeps/scaling_disrnn.yaml` | Path to the W&B sweep YAML. |
+| `--sweep-yaml` | **required** | Path to the W&B sweep YAML (e.g. `sweeps/scaling_disrnn.yaml`). |
 | `--mode` | `cpu` | `cpu` or `gpu`; selects `job/wandb_sweep_{cpu,gpu}.slurm`. |
 | `--agent-count` | auto | Override `AGENT_COUNT` (runs per agent). Auto = `ceil(grid_size / array_size)`. |
 | `--sbatch-extra` | `""` | Extra sbatch arguments. Must use `=`-form for value-bearing flags (e.g. `--sbatch-extra=--array=0-1`). |
@@ -103,20 +115,20 @@ Examples:
 
 ```bash
 # Full sweep with cluster-side defaults (CPU, 12 array tasks, auto AGENT_COUNT).
-python -m code.launch_wandb_sweep --mode cpu
+python -m code.launch_wandb_sweep --sweep-yaml sweeps/scaling_disrnn.yaml --mode cpu
 
 # Same, but on V100s (default for --mode gpu).
-python -m code.launch_wandb_sweep --mode gpu
+python -m code.launch_wandb_sweep --sweep-yaml sweeps/scaling_disrnn.yaml --mode gpu
 
 # Constrain to A100 nodes instead.
-python -m code.launch_wandb_sweep --mode gpu --gpu-type a100
+python -m code.launch_wandb_sweep --sweep-yaml sweeps/scaling_disrnn.yaml --mode gpu --gpu-type a100
 
 # Bounded validation: 2 array tasks, 1 agent each => 2 runs sampled out of 60.
-python -m code.launch_wandb_sweep --mode cpu \
+python -m code.launch_wandb_sweep --sweep-yaml sweeps/scaling_disrnn.yaml --mode cpu \
   --sbatch-extra=--array=0-1 --agent-count 1
 
 # Inspect what would be run without launching anything.
-python -m code.launch_wandb_sweep --mode gpu --dry-run
+python -m code.launch_wandb_sweep --sweep-yaml sweeps/scaling_disrnn.yaml --mode gpu --dry-run
 
 # Use a different sweep YAML.
 python -m code.launch_wandb_sweep \

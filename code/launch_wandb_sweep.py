@@ -206,8 +206,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--sweep-yaml",
-        default="sweeps/scaling_disrnn.yaml",
-        help="Path to W&B sweep YAML file.",
+        required=True,
+        help="Path to W&B sweep YAML file (e.g. sweeps/scaling_disrnn.yaml).",
     )
     parser.add_argument(
         "--mode",
