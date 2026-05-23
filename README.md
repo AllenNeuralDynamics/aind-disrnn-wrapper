@@ -4,8 +4,18 @@ The wrapper capsule in the AIND-disRNN MLOps stack:
 
 <img width="1380" height="875" alt="image" src="https://github.com/user-attachments/assets/e029c0e3-ce47-4f65-b61f-42c8bd5b053a" />
 
-## Installation in HPC
-To install the capsule in an HPC environment, follow these steps:
+The diagram above shows the Code Ocean (CO) architecture, where this repo runs as the "wrapper capsule" orchestrated by the AIND dispatcher.
+
+This repo also supports running directly on HPC (SLURM), without Code Ocean or the dispatcher. The two paths share the same training code and Hydra configs; only the entry points and launch tooling differ.
+
+# Use it in Code Ocean
+
+See the CO pipeline: https://github.com/AllenNeuralDynamics/aind-disrnn-pipeline
+
+# Use it in HPC
+
+## Installation
+To run this repo directly on HPC, follow these steps. The HPC path is self-contained: you do **not** need the AIND dispatcher (or any other Code Ocean infrastructure) to use it.
 
 0. If you need to install Conda on HPC first, follow this guide:
    https://gist.github.com/rhngla/a2bfac4d1f343836cd69090747b6f952#set-up-virtual-environments-on-hpc
@@ -26,40 +36,31 @@ To install the capsule in an HPC environment, follow these steps:
    pip install -e ".[dev]"
    ```
 
-## Before running the launcher
+## Per-user setup
 
-`python -m code.launch_wandb_sweep` runs on the login node and only needs `pyyaml` importable (it shells out to the `wandb` CLI rather than importing it). Activate either env on the login side before invoking it:
-
-```bash
-conda activate disrnn-cpu   # or disrnn-gpu — choice does not matter here
-```
-
-The local activation does **not** affect the compute env. The compute env is selected by `--mode cpu/gpu`, and `job/wandb_sweep_{cpu,gpu}.slurm` activates the correct env on the compute node itself. Activating `disrnn-gpu` locally and passing `--mode cpu` still produces a CPU sweep.
-
-## GPU tier selection
-
-The Allen HPC cluster exposes several GPU tiers (inspect with `sinfo -o "%20N %10c %10m %25f %10G"`):
-
-- `titanxp` / `1080ti` — debugging and sanity checks; almost always free.
-- `v100` — the **default for this repo**. Plenty of capacity, low queue wait, more than enough for current disRNN sizes.
-- `l40s` / `a100` — wider models, more sweep agents per node, or when v100 is saturated.
-- `h200` — reserved for genuinely large training (wide nets, long sequences, multi-GPU). Contended; avoid for small models.
-
-The GPU slurm scripts (`job/wandb_sweep_gpu.slurm`, `job/hydra_multirun_gpu.slurm`) default to `--gres=gpu:v100:1`. Override per launch without editing the script:
+The slurm scripts under `job/` and the launcher need a couple of per-user values (your email, where to write SLURM logs, the path to your `conda.sh`). They live in a gitignored `job/user.env`:
 
 ```bash
-# W&B sweep with a specific GPU tier
-python -m code.launch_wandb_sweep --sweep-yaml sweeps/scaling_disrnn.yaml --mode gpu --gpu-type a100
-
-# Hydra multirun with a specific GPU tier
-sbatch --gres=gpu:a100:1 job/hydra_multirun_gpu.slurm
+cp job/user.env.example job/user.env
+# edit job/user.env (email, log dir, CONDA_SH)
 ```
 
-Rule of thumb: pick the smallest tier that keeps the GPU >50% utilized (`nvidia-smi dmon -s u 1` on the node while a run is going). For the current disRNN configs (`update_net=5`, `choice_net=4`, sequences of length 50), `v100` is the sweet spot; H200 wins essentially nothing because the model is too small to fill the SMs.
+Add one line to your `~/.bashrc` (or `~/.zshrc`) so the values are loaded for every shell:
+
+```bash
+echo 'source /path/to/aind-disrnn-wrapper/job/user.env' >> ~/.bashrc
+```
+
+The `SBATCH_*` variables are picked up by `sbatch` automatically; `CONDA_SH` is read by the slurm scripts themselves.
 
 ## HPC run modes
 
 There are three supported execution modes in HPC.
+
+Conventions for all three:
+
+- Run all commands (launcher, `sbatch`, single runs) from the **repo root** so Hydra's relative `config/` path and `python -m code.<module>` resolve correctly.
+- Activate either `disrnn-cpu` or `disrnn-gpu` locally before invoking the launcher — the choice does not matter, it only satisfies `import yaml`. The compute env is selected by `--mode cpu/gpu` and activated inside the slurm script.
 
 ### 1) Default: W&B sweep + SLURM array (parallel scan)
 
@@ -172,6 +173,27 @@ python -m code.run_hpc job_id=42 data=mice model=disrnn
 
 Hydra writes outputs under `~/outputs/disrnn/...` (see `config/config.yaml`), including `inputs.yaml`/`inputs.json` and copied config inputs for reproducibility.
 
+## GPU tier selection
+
+The Allen HPC cluster exposes several GPU tiers (inspect with `sinfo -o "%20N %10c %10m %25f %10G"`):
+
+- `titanxp` / `1080ti` — debugging and sanity checks; almost always free.
+- `v100` — the **default for this repo**. Plenty of capacity, low queue wait, more than enough for current disRNN sizes.
+- `l40s` / `a100` — wider models, more sweep agents per node, or when v100 is saturated.
+- `h200` — reserved for genuinely large training (wide nets, long sequences, multi-GPU). Contended; avoid for small models.
+
+The GPU slurm scripts (`job/wandb_sweep_gpu.slurm`, `job/hydra_multirun_gpu.slurm`) default to `--gres=gpu:v100:1`. Override per launch without editing the script:
+
+```bash
+# W&B sweep with a specific GPU tier
+python -m code.launch_wandb_sweep --sweep-yaml sweeps/scaling_disrnn.yaml --mode gpu --gpu-type a100
+
+# Hydra multirun with a specific GPU tier
+sbatch --gres=gpu:a100:1 job/hydra_multirun_gpu.slurm
+```
+
+Rule of thumb: pick the smallest tier that keeps the GPU >50% utilized (`nvidia-smi dmon -s u 1` on the node while a run is going). For the current disRNN configs (`update_net=5`, `choice_net=4`, sequences of length 50), `v100` is the sweet spot; H200 wins essentially nothing because the model is too small to fill the SMs.
+
 ## Reproducibility
 
 Every run produced by this repo can be traced back to the exact code and command that launched it. This is achieved with three complementary mechanisms:
@@ -201,16 +223,3 @@ Every run produced by this repo can be traced back to the exact code and command
    - W&B sweep mode ignores per-run `wandb.entity`/`wandb.project` overrides; sweep routing is set by the top-level `entity`/`project` keys in the sweep YAML.
 
 Recommended practice: commit (or at least record) your changes before launching a sweep so `meta.git_dirty` is `no` and `meta.git_commit` uniquely identifies the code state.
-
-## Code Ocean compatibility
-
-The HPC migration is additive; the Code Ocean capsule path still works:
-
-- `code/run_capsule.py` is the Code Ocean entry point and is unchanged.
-- `code/run` (`python -u run_capsule.py "$@"`) is still wired as the capsule's "Reproducible Run" command.
-- `environment/Dockerfile` is unchanged and pins the same dependencies used on HPC.
-- Shared helpers in `code/utils/run_helpers.py` (`find_hydra_config`, `copy_input_folder`, `save_resolved_config`, `start_wandb_run`) are used by both the Code Ocean and HPC entry points.
-- `CO_COMPUTATION_ID` is still recorded into the W&B run config on Code Ocean; on HPC it is simply absent.
-- The hardware tag (`cpu` or `gpu` + model) is detected via `nvidia-smi` with a safe fallback, so it works on both Code Ocean and HPC.
-
-HPC-only additions (sweep lineage injection via `code/launch_wandb_sweep.py`, sbatch scripts under `job/`) are opt-in and have no effect on Code Ocean runs.
