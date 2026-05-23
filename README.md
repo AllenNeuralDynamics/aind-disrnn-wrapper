@@ -150,7 +150,7 @@ Tips and caveats:
 
 - Commit your changes before launching, so `meta.git_dirty` is `no` and `meta.git_commit` uniquely identifies the code state.
 - Auto-stop is on by default: a small cleanup job marks the sweep `Finished` after every array task has reached a terminal state (success or failure). Pass `--no-autostop` if you want to keep the sweep open so you can submit more agents to it later (e.g. `sbatch job/wandb_sweep_cpu.slurm <SWEEP_ID>`); the launcher prints the manual `wandb sweep --stop <id>` command in that case. The manual `sbatch` path (without the launcher) also does not auto-stop.
-- The `aind` QOS caps per-user GPU usage at 6 concurrent GPUs. The GPU slurm scripts default to `--array=0-5` for this reason. If you raise it (e.g. `--sbatch-extra=--array=0-11`), SLURM will run 6 tasks at a time and queue the rest; total throughput is unchanged, just spread over more wall time. To verify the current cap: `sacctmgr show qos aind format=Name,MaxTRESPU`.
+- The `aind` QOS caps per-user GPU usage at 6 concurrent GPUs across all tiers — see [GPU tier selection](#gpu-tier-selection). The GPU slurm scripts default to `--array=0-5` for this reason. If you raise it (e.g. `--sbatch-extra=--array=0-11`), SLURM will run 6 tasks at a time and queue the rest; total throughput is unchanged, just spread over more wall time.
 - Hardcoded sbatch defaults (partition, walltime, memory, mail config) live in the slurm scripts under `job/`. You typically do **not** need to edit them: per-user values (email, log paths, `conda.sh`) come from `job/user.env`, and the common per-launch overrides (`--array=...`, `--gres=gpu:<type>:1`, `--agent-count`) are exposed as launcher flags. Edit the slurm scripts only for non-routine changes (different partition, much longer walltime, different memory ceiling).
 - The sweep YAML's `command` list controls the per-run `python -m run_hpc` invocation (run from inside `code/`, with `code/` on `PYTHONPATH`). Fixed Hydra overrides (e.g. `data.batch_size=512`) belong there; swept axes go under `parameters`.
 
@@ -189,12 +189,18 @@ Hydra writes outputs under `$DISRNN_OUTPUT_DIR/...` (see `aind-disrnn-dispatcher
 
 ## GPU tier selection
 
-The Allen HPC cluster exposes several GPU tiers (inspect with `sinfo -o "%20N %10c %10m %25f %10G"`):
+The `aind` partition exposes several GPU tiers (inspect with `sinfo -o "%20N %10c %10m %25f %15G" -p aind`):
 
-- `titanxp` / `1080ti` — debugging and sanity checks; almost always free.
-- `v100` — the **default for this repo**. Plenty of capacity, low queue wait, more than enough for current disRNN sizes.
-- `l40s` / `a100` — wider models, more sweep agents per node, or when v100 is saturated.
-- `h200` — reserved for genuinely large training (wide nets, long sequences, multi-GPU). Contended; avoid for small models.
+| Tier | Nodes (count × GPUs/node) | When to use |
+| --- | --- | --- |
+| `titanxp` / `1080ti` | 1 × 4 each | Debugging and sanity checks; almost always free. |
+| `titanx` | 1 × 2 | Same niche as `titanxp`; older silicon. |
+| `v100` | 4 × 4 = 16 GPUs | **Default for this repo.** Plenty of capacity, low queue wait, more than enough for current disRNN sizes. |
+| `l40s` | 1 × 2 | Wider models, when v100 is saturated. |
+| `a100` | 8 × 1 + 4 × 4 = 24 GPUs | Wider models, more sweep agents per node, or when v100 is saturated. |
+| `h200` | 3 × 4 = 12 GPUs | Reserved for genuinely large training (wide nets, long sequences, multi-GPU). Contended; avoid for small models. |
+
+Per-user concurrency cap: the `aind` QOS limits each user to **6 concurrent GPUs total** (`gres/gpu=6` in `MaxTRESPU`; verify with `sacctmgr show qos aind format=Name,MaxTRESPU`). The cap counts all GPU types together, so mixing tiers (e.g. half on `v100`, half on `a100`) does **not** raise the ceiling. The GPU slurm scripts default to `--array=0-5` for this reason.
 
 The GPU slurm scripts (`job/wandb_sweep_gpu.slurm`, `job/hydra_multirun_gpu.slurm`) default to `--gres=gpu:v100:1`. Override per launch without editing the script:
 
