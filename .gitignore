@@ -160,3 +160,6 @@ environment/postInstall
 
 # Other editable repos
 src
+
+# Per-user slurm settings (see job/user.env.example)
+job/user.env

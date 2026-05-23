@@ -17,16 +17,14 @@
 #SBATCH -c 2
 #SBATCH --mem=32G
 #SBATCH --array=0-11
-
-#SBATCH --mail-user=han.hou@alleninstitute.org
 #SBATCH --mail-type=FAIL,END,BEGIN
-#SBATCH -o /home/han.hou/logfile/job_%j.out
-#SBATCH -e /home/han.hou/logfile/job_%j.err
 
-source /allen/aind/scratch/han.hou/miniforge3/etc/profile.d/conda.sh
+# Per-user settings (mail-user, output/error paths, CONDA_SH) come from
+# job/user.env; source it before sbatch. See README "Per-user setup".
+source "${CONDA_SH:?CONDA_SH not set; source job/user.env before sbatch}"
 conda activate disrnn-cpu
 
-WRAPPER_ROOT=/home/han.hou/code/aind-disrnn-wrapper
+WRAPPER_ROOT="$SLURM_SUBMIT_DIR"
 cd "$WRAPPER_ROOT"
 export PYTHONPATH="$WRAPPER_ROOT:$PYTHONPATH"
 export HYDRA_FULL_ERROR=1
