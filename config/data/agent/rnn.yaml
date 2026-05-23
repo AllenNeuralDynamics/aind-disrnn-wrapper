@@ -1,4 +1,0 @@
-# Placeholer for task-trained rnn agent
-type: rnn
-
-loader_target: code.data_loaders.synthetic.SyntheticDatasetLoader

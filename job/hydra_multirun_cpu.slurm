@@ -21,11 +21,12 @@ source "${CONDA_SH:?CONDA_SH not set; source job/user.env before sbatch}"
 conda activate disrnn-cpu
 
 WRAPPER_ROOT="$SLURM_SUBMIT_DIR"
-cd "$WRAPPER_ROOT"
-export PYTHONPATH="$WRAPPER_ROOT:$PYTHONPATH"
+cd "$WRAPPER_ROOT/code"
+export PYTHONPATH="$WRAPPER_ROOT/code:$PYTHONPATH"
 export HYDRA_FULL_ERROR=1
+export DISRNN_OUTPUT_DIR="$HOME/outputs/disrnn"
 
-python -m code.run_hpc -m \
+python -m run_hpc -m \
   wandb.project=hpc_test \
   data=synthetic \
   data.num_trials=500 \

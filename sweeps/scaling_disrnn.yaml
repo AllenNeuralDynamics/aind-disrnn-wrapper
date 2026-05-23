@@ -22,7 +22,7 @@ metric:
 command:
   - python
   - -m
-  - code.run_hpc
+  - run_hpc
   - data=synthetic
   - data.num_trials=500
   - data/task=random_walk

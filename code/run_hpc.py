@@ -9,9 +9,9 @@ from hydra.core.hydra_config import HydraConfig
 from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf
 
-from .base.interfaces import DatasetLoader, ModelTrainer
-from .utils.json_helpers import dictconfig_to_json
-from .utils.run_helpers import (
+from base.interfaces import DatasetLoader, ModelTrainer
+from utils.json_helpers import dictconfig_to_json
+from utils.run_helpers import (
     configure_sys_logger,
     copy_inputs_for_run,
     copy_run_to_wandb,
@@ -22,7 +22,11 @@ from .utils.run_helpers import (
 logger = logging.getLogger(__name__)
 
 
-@hydra.main(version_base=None, config_path="../config", config_name="config")
+@hydra.main(
+    version_base=None,
+    config_path="../../aind-disrnn-dispatcher/code/config",
+    config_name="config",
+)
 def main(hydra_config: DictConfig) -> None:
     configure_sys_logger()
 
@@ -31,7 +35,7 @@ def main(hydra_config: DictConfig) -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
 
     # Backup inputs for reproducibility
-    config_root = Path(__file__).parent.parent / "config"
+    config_root = Path(__file__).parent.parent.parent / "aind-disrnn-dispatcher" / "code" / "config"
     copy_inputs_for_run(config_root, run_dir / "inputs")
     save_resolved_config(hydra_config, run_dir / "inputs.yaml")
     json_destination = run_dir / "inputs.json"
