@@ -15,11 +15,17 @@ See the CO pipeline: https://github.com/AllenNeuralDynamics/aind-disrnn-pipeline
 # Use it in HPC
 
 ## Installation
-To run this repo directly on HPC, follow these steps. The HPC path is self-contained: you do **not** need the AIND dispatcher (or any other Code Ocean infrastructure) to use it.
+To run this repo directly on HPC, follow these steps. The HPC path does **not** need the AIND dispatcher capsule on Code Ocean to run, but it does read its Hydra configs from the [`aind-disrnn-dispatcher`](https://github.com/AllenNeuralDynamics/aind-disrnn-dispatcher) repo (single source of truth for configs across CO and HPC).
 
 0. If you need to install Conda on HPC first, follow this guide:
    https://gist.github.com/rhngla/a2bfac4d1f343836cd69090747b6f952#set-up-virtual-environments-on-hpc
-1. Create CPU and/or GPU conda environments (install only the one(s) you need):
+1. Clone this repo **and** `aind-disrnn-dispatcher` as siblings (the wrapper's Hydra entry point reads `../../aind-disrnn-dispatcher/code/config` relative to itself):
+   ```bash
+   cd /path/to/parent
+   git clone https://github.com/AllenNeuralDynamics/aind-disrnn-wrapper.git
+   git clone https://github.com/AllenNeuralDynamics/aind-disrnn-dispatcher.git
+   ```
+2. Create CPU and/or GPU conda environments (install only the one(s) you need):
    ```bash
    # CPU environment
    conda create -n disrnn-cpu python=3.12 -y
@@ -31,7 +37,7 @@ To run this repo directly on HPC, follow these steps. The HPC path is self-conta
    conda activate disrnn-gpu
    pip install -e ".[gpu]"
    ```
-2. Optional: install dev tools in either environment:
+3. Optional: install dev tools in either environment:
    ```bash
    pip install -e ".[dev]"
    ```
@@ -59,7 +65,8 @@ There are three supported execution modes in HPC.
 
 Conventions for all three:
 
-- Run all commands (launcher, `sbatch`, single runs) from the **repo root** so Hydra's relative `config/` path and `python -m code.<module>` resolve correctly.
+- The launcher is invoked from the **repo root**; the slurm scripts then `cd` into `code/` before running `python -m run_hpc`. Don't move the launcher invocation into `code/` — `code/launch_wandb_sweep.py` is meant to be called as a module from the repo root.
+- The Hydra entry point reads its config from `../../aind-disrnn-dispatcher/code/config` (a sibling clone). Make sure the dispatcher repo is checked out before launching.
 - Activate either `disrnn-cpu` or `disrnn-gpu` locally before invoking the launcher — the choice does not matter, it only satisfies `import yaml`. The compute env is selected by `--mode cpu/gpu` and activated inside the slurm script.
 
 ### 1) Default: W&B sweep + SLURM array (parallel scan)
@@ -71,7 +78,7 @@ W&B sweeps provide better experiment visualization and comparison in the W&B UI 
 Project routing note:
 
 - Sweep runs are routed by top-level `entity` and `project` in `sweeps/scaling_disrnn.yaml`.
-- In sweep mode, W&B ignores per-run `wandb.project`/`wandb.entity` overrides passed to `code.run_hpc`.
+- In sweep mode, W&B ignores per-run `wandb.project`/`wandb.entity` overrides passed to `run_hpc`.
 
 ```bash
 python -m code.launch_wandb_sweep --sweep-yaml sweeps/scaling_disrnn.yaml --mode cpu
@@ -141,7 +148,7 @@ Tips and caveats:
 - Commit your changes before launching, so `meta.git_dirty` is `no` and `meta.git_commit` uniquely identifies the code state.
 - After a bounded sweep finishes, the W&B UI will keep showing the sweep as `Running`. The launcher prints the exact `wandb sweep --stop <id>` command to run; do this so the state matches reality.
 - Hardcoded sbatch defaults (partition, walltime, memory, mail config) live in the slurm scripts under `job/`. Edit them there; the launcher passes them through.
-- The sweep YAML's `command` list controls the per-run `python -m code.run_hpc` invocation. Fixed Hydra overrides (e.g. `data.batch_size=512`) belong there; swept axes go under `parameters`.
+- The sweep YAML's `command` list controls the per-run `python -m run_hpc` invocation (run from inside `code/`, with `code/` on `PYTHONPATH`). Fixed Hydra overrides (e.g. `data.batch_size=512`) belong there; swept axes go under `parameters`.
 
 ### 2) Hydra multirun + SLURM array
 
@@ -165,13 +172,16 @@ Hydra `-m` generates combinations; SLURM array gives scheduler-level fan-out.
 
 ### 3) Single run
 
-Use this for one experiment only.
+Use this for one experiment only. Run from inside `code/` with `code/` on `PYTHONPATH`, and set `DISRNN_OUTPUT_DIR` so Hydra resolves outputs to your HPC home:
 
 ```bash
-python -m code.run_hpc job_id=42 data=mice model=disrnn
+cd /path/to/aind-disrnn-wrapper/code
+export PYTHONPATH=/path/to/aind-disrnn-wrapper/code:$PYTHONPATH
+export DISRNN_OUTPUT_DIR=$HOME/outputs/disrnn
+python -m run_hpc job_id=42 data=mice model=disrnn
 ```
 
-Hydra writes outputs under `~/outputs/disrnn/...` (see `config/config.yaml`), including `inputs.yaml`/`inputs.json` and copied config inputs for reproducibility.
+Hydra writes outputs under `$DISRNN_OUTPUT_DIR/...` (see `aind-disrnn-dispatcher/code/config/config.yaml`), including `inputs.yaml`/`inputs.json` and copied config inputs for reproducibility.
 
 ## GPU tier selection
 
