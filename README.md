@@ -108,7 +108,7 @@ Execution model:
 - Each agent claims `AGENT_COUNT` runs from the sweep, runs them sequentially, then exits.
 - Total runs scheduled = `num_array_tasks * AGENT_COUNT`. The remaining grid points stay unclaimed.
 - After every array task has reached a terminal state, the auto-stop cleanup job runs and marks the sweep `Finished` (unless `--no-autostop` was passed).
-- The default `--array=0-11` in the slurm scripts gives 12 parallel tasks; the launcher will pick `AGENT_COUNT = ceil(total_grid_runs / 12)`.
+- The default `--array=0-11` in the CPU slurm script gives 12 parallel tasks; the GPU slurm script defaults to `--array=0-5` to match the `aind` QOS cap of 6 concurrent GPUs per user (see Tips below). The launcher picks `AGENT_COUNT = ceil(total_grid_runs / num_array_tasks)` accordingly.
 
 CLI flags:
 
@@ -150,6 +150,7 @@ Tips and caveats:
 
 - Commit your changes before launching, so `meta.git_dirty` is `no` and `meta.git_commit` uniquely identifies the code state.
 - Auto-stop is on by default: a small cleanup job marks the sweep `Finished` after every array task has reached a terminal state (success or failure). Pass `--no-autostop` if you want to keep the sweep open so you can submit more agents to it later (e.g. `sbatch job/wandb_sweep_cpu.slurm <SWEEP_ID>`); the launcher prints the manual `wandb sweep --stop <id>` command in that case. The manual `sbatch` path (without the launcher) also does not auto-stop.
+- The `aind` QOS caps per-user GPU usage at 6 concurrent GPUs. The GPU slurm scripts default to `--array=0-5` for this reason. If you raise it (e.g. `--sbatch-extra=--array=0-11`), SLURM will run 6 tasks at a time and queue the rest; total throughput is unchanged, just spread over more wall time. To verify the current cap: `sacctmgr show qos aind format=Name,MaxTRESPU`.
 - Hardcoded sbatch defaults (partition, walltime, memory, mail config) live in the slurm scripts under `job/`. You typically do **not** need to edit them: per-user values (email, log paths, `conda.sh`) come from `job/user.env`, and the common per-launch overrides (`--array=...`, `--gres=gpu:<type>:1`, `--agent-count`) are exposed as launcher flags. Edit the slurm scripts only for non-routine changes (different partition, much longer walltime, different memory ceiling).
 - The sweep YAML's `command` list controls the per-run `python -m run_hpc` invocation (run from inside `code/`, with `code/` on `PYTHONPATH`). Fixed Hydra overrides (e.g. `data.batch_size=512`) belong there; swept axes go under `parameters`.
 

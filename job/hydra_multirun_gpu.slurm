@@ -13,7 +13,7 @@
 #SBATCH -c 2
 #SBATCH --mem=32G
 #SBATCH --gres=gpu:v100:1
-#SBATCH --array=0-11
+#SBATCH --array=0-5
 #SBATCH --mail-type=FAIL,END,BEGIN
 
 # Per-user settings (mail-user, output/error paths, CONDA_SH) come from
