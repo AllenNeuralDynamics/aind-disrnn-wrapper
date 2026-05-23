@@ -150,7 +150,7 @@ Tips and caveats:
 
 - Commit your changes before launching, so `meta.git_dirty` is `no` and `meta.git_commit` uniquely identifies the code state.
 - Auto-stop is on by default: a small cleanup job marks the sweep `Finished` after every array task has reached a terminal state (success or failure). Pass `--no-autostop` if you want to keep the sweep open so you can submit more agents to it later (e.g. `sbatch job/wandb_sweep_cpu.slurm <SWEEP_ID>`); the launcher prints the manual `wandb sweep --stop <id>` command in that case. The manual `sbatch` path (without the launcher) also does not auto-stop.
-- Hardcoded sbatch defaults (partition, walltime, memory, mail config) live in the slurm scripts under `job/`. Edit them there; the launcher passes them through.
+- Hardcoded sbatch defaults (partition, walltime, memory, mail config) live in the slurm scripts under `job/`. You typically do **not** need to edit them: per-user values (email, log paths, `conda.sh`) come from `job/user.env`, and the common per-launch overrides (`--array=...`, `--gres=gpu:<type>:1`, `--agent-count`) are exposed as launcher flags. Edit the slurm scripts only for non-routine changes (different partition, much longer walltime, different memory ceiling).
 - The sweep YAML's `command` list controls the per-run `python -m run_hpc` invocation (run from inside `code/`, with `code/` on `PYTHONPATH`). Fixed Hydra overrides (e.g. `data.batch_size=512`) belong there; swept axes go under `parameters`.
 
 ### 2) Hydra multirun + SLURM array
