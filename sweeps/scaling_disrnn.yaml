@@ -14,6 +14,12 @@
 entity: AIND-disRNN  # Sweep routing: all sweep runs go to this W&B entity.
 project: hpc_test  # Sweep routing: all sweep runs go to this W&B project.
 
+# Sweep display name shown in the W&B UI. Without this, W&B picks a random
+# codename (e.g. "vl1zhdp7") that says nothing about what the sweep is for.
+# Best practice: name the sweep after the question it is trying to answer,
+# so collaborators can recognize it in the sweep list without opening it.
+name: scaling-vs-num_sessions
+
 method: grid
 metric:
   name: final/val_loss
