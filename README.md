@@ -117,7 +117,7 @@ CLI flags:
 | `--sweep-yaml` | **required** | Path to the W&B sweep YAML (e.g. `sweeps/scaling_disrnn.yaml`). |
 | `--mode` | `cpu` | `cpu` or `gpu`; selects `job/wandb_sweep_{cpu,gpu}.slurm`. |
 | `--agent-count` | auto | Override `AGENT_COUNT` (runs per agent). Auto = `ceil(grid_size / array_size)`. |
-| `--sbatch-extra` | `""` | Extra sbatch arguments. Must use `=`-form for value-bearing flags (e.g. `--sbatch-extra=--array=0-1`). |
+| `--sbatch-extra` | `""` | Extra sbatch arguments. Must use `=`-form for value-bearing flags (e.g. `--sbatch-extra=--array=0-1`). Pass multiple flags as a single quoted string (e.g. `--sbatch-extra="--array=0-5 --time=01:00:00"`). |
 | `--gpu-type` | none | When `--mode gpu`, inject `--gres=gpu:<type>:1` (e.g. `v100`, `a100`, `h200`). See [GPU tier selection](#gpu-tier-selection). |
 | `--no-autostop` | off | Skip the cleanup job that calls `wandb sweep --stop` after the array drains. Use when you plan to add more agents to the same sweep later. |
 | `--dry-run` | off | Print the `wandb sweep` and `sbatch` commands without executing. |
@@ -137,6 +137,12 @@ python -m code.launch_wandb_sweep --sweep-yaml sweeps/scaling_disrnn.yaml --mode
 # Bounded validation: 2 array tasks, 1 agent each => 2 runs sampled out of 60.
 python -m code.launch_wandb_sweep --sweep-yaml sweeps/scaling_disrnn.yaml --mode cpu \
   --sbatch-extra=--array=0-1 --agent-count 1
+
+# Multiple sbatch overrides at once: shrink array and shorten walltime.
+# Bundle them in ONE quoted --sbatch-extra string; argparse only keeps the
+# last value if you repeat --sbatch-extra.
+python -m code.launch_wandb_sweep --sweep-yaml sweeps/scaling_disrnn.yaml --mode cpu \
+  --sbatch-extra="--array=0-5 --time=01:00:00"
 
 # Inspect what would be run without launching anything.
 python -m code.launch_wandb_sweep --sweep-yaml sweeps/scaling_disrnn.yaml --mode gpu --dry-run
