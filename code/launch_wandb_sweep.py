@@ -38,6 +38,7 @@ Example:
 from __future__ import annotations
 
 import argparse
+import datetime as _dt
 import getpass
 import math
 import os
@@ -47,6 +48,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import yaml
 
@@ -321,6 +323,17 @@ def main() -> None:
         "mode": args.mode,
     }
     sweep_cfg = yaml.safe_load(sweep_yaml.read_text())
+    # Suffix the sweep display name with a Seattle-local timestamp so
+    # re-launches of the same YAML don't produce indistinguishable entries
+    # in the W&B UI. The sweep ID stays unique either way; this only
+    # affects the human-readable label. If the YAML has no `name`, leave
+    # it alone (let W&B assign its random codename).
+    if isinstance(sweep_cfg, dict) and sweep_cfg.get("name"):
+        stamp = _dt.datetime.now(ZoneInfo("America/Los_Angeles")).strftime(
+            "%Y%m%d-%H%M%S"
+        )
+        sweep_cfg["name"] = f"{sweep_cfg['name']}-{stamp}"
+        print(f"Sweep display name: {sweep_cfg['name']}")
     sweep_cfg = _inject_lineage_into_command(sweep_cfg, lineage)
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".yaml", prefix="sweep_", delete=False

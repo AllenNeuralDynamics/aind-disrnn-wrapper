@@ -18,6 +18,10 @@ project: hpc_test  # Sweep routing: all sweep runs go to this W&B project.
 # codename (e.g. "vl1zhdp7") that says nothing about what the sweep is for.
 # Best practice: name the sweep after the question it is trying to answer,
 # so collaborators can recognize it in the sweep list without opening it.
+# Note: code/launch_wandb_sweep.py appends a Seattle-local timestamp to this
+# name at launch time, so re-launching the same YAML produces distinct
+# entries in the W&B UI (the sweep ID is always unique; this just keeps the
+# label so).
 name: scaling-vs-num_sessions
 
 method: grid
