@@ -237,6 +237,15 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--no-autostop",
+        action="store_true",
+        help=(
+            "Skip submitting the cleanup job that calls `wandb sweep --stop` "
+            "after the agent array drains. Use this when you want the sweep "
+            "to stay open so you can submit more agents to it later."
+        ),
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Print commands without executing.",
@@ -361,12 +370,46 @@ def main() -> None:
     if sbatch_result.returncode != 0:
         raise RuntimeError("sbatch command failed")
 
-    # If the user bounded the sweep below the full grid, the W&B sweep will
-    # stay in 'Running' state forever (no agent ever marks it finished). Tell
-    # the user how to stop it manually after their bounded runs complete.
-    if total_grid_runs is not None and planned_runs < total_grid_runs:
+    # Submit the auto-stop cleanup job: a tiny task that calls
+    # `wandb sweep --stop <id>` once every agent-array task has reached a
+    # terminal state. Uses --dependency=afterany so a partially-failed sweep
+    # still gets marked Finished (no further agents will claim work either way).
+    if not args.no_autostop:
+        array_jobid_match = re.search(
+            r"Submitted batch job\s+(\d+)", sbatch_result.stdout
+        )
+        if not array_jobid_match:
+            print(
+                "WARNING: could not parse array job ID from sbatch output; "
+                "skipping auto-stop. Run `wandb sweep --stop "
+                f"{sweep_id}` manually after the sweep drains."
+            )
+        else:
+            array_jobid = array_jobid_match.group(1)
+            stop_script = repo_root / "job" / "wandb_sweep_stop.slurm"
+            stop_cmd = [
+                "sbatch",
+                f"--dependency=afterany:{array_jobid}",
+                str(stop_script),
+                sweep_id,
+            ]
+            print("Running:", " ".join(shlex.quote(x) for x in stop_cmd))
+            stop_result = _run_command(stop_cmd, cwd=repo_root)
+            if stop_result.stdout:
+                print(stop_result.stdout, end="")
+            if stop_result.stderr:
+                print(stop_result.stderr, end="")
+            if stop_result.returncode != 0:
+                print(
+                    "WARNING: cleanup sbatch failed; run "
+                    f"`wandb sweep --stop {sweep_id}` manually after the sweep drains."
+                )
+
+    # If the user opted out of auto-stop, remind them how to mark the sweep
+    # finished manually after their bounded runs complete.
+    if args.no_autostop:
         print(
-            "\nNote: this is a bounded sweep. After your jobs finish, the W&B "
+            "\nNote: auto-stop disabled. After all agents finish, the W&B "
             "sweep will still show 'Running'. Stop it explicitly with:\n"
             f"    wandb sweep --stop {sweep_id}"
         )

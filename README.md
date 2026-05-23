@@ -100,12 +100,14 @@ The launcher is the recommended way to start a sweep because it does three thing
 1. Reads the sweep YAML and patches a temp copy with **lineage overrides** (`+meta.git_commit`, `+meta.git_branch`, `+meta.git_dirty`, `+meta.sweep_yaml`, `+meta.owner`, `+meta.launcher_cmd`, `+meta.mode`) appended to the sweep's `command` list, so every run records where it came from. See the [Reproducibility](#reproducibility) section.
 2. Creates the sweep on W&B via `wandb sweep <patched_yaml>`, parses the returned sweep ID, and submits `job/wandb_sweep_{cpu,gpu}.slurm` as a SLURM array of agents.
 3. Auto-computes `AGENT_COUNT` from the grid size and array size, and warns if the planned coverage (`array_tasks * agent_count`) is smaller than the full grid.
+4. Submits a tiny cleanup job (`job/wandb_sweep_stop.slurm`) with `--dependency=afterany:<array_jobid>` that calls `wandb sweep --stop <id>` once every agent task has reached a terminal state. This marks the sweep as `Finished` in the W&B UI instead of leaving it stuck in `Running`. Disable with `--no-autostop` if you plan to submit more agents to the same sweep later.
 
 Execution model:
 
 - Each SLURM array task runs one `wandb agent --count $AGENT_COUNT` invocation.
 - Each agent claims `AGENT_COUNT` runs from the sweep, runs them sequentially, then exits.
-- Total runs scheduled = `num_array_tasks * AGENT_COUNT`. The remaining grid points stay unclaimed; the W&B sweep state will stay `Running` until someone calls `wandb sweep --stop <id>`.
+- Total runs scheduled = `num_array_tasks * AGENT_COUNT`. The remaining grid points stay unclaimed.
+- After every array task has reached a terminal state, the auto-stop cleanup job runs and marks the sweep `Finished` (unless `--no-autostop` was passed).
 - The default `--array=0-11` in the slurm scripts gives 12 parallel tasks; the launcher will pick `AGENT_COUNT = ceil(total_grid_runs / 12)`.
 
 CLI flags:
@@ -117,6 +119,7 @@ CLI flags:
 | `--agent-count` | auto | Override `AGENT_COUNT` (runs per agent). Auto = `ceil(grid_size / array_size)`. |
 | `--sbatch-extra` | `""` | Extra sbatch arguments. Must use `=`-form for value-bearing flags (e.g. `--sbatch-extra=--array=0-1`). |
 | `--gpu-type` | none | When `--mode gpu`, inject `--gres=gpu:<type>:1` (e.g. `v100`, `a100`, `h200`). See [GPU tier selection](#gpu-tier-selection). |
+| `--no-autostop` | off | Skip the cleanup job that calls `wandb sweep --stop` after the array drains. Use when you plan to add more agents to the same sweep later. |
 | `--dry-run` | off | Print the `wandb sweep` and `sbatch` commands without executing. |
 
 Examples:
@@ -146,7 +149,7 @@ python -m code.launch_wandb_sweep \
 Tips and caveats:
 
 - Commit your changes before launching, so `meta.git_dirty` is `no` and `meta.git_commit` uniquely identifies the code state.
-- After a bounded sweep finishes, the W&B UI will keep showing the sweep as `Running`. The launcher prints the exact `wandb sweep --stop <id>` command to run; do this so the state matches reality.
+- Auto-stop is on by default: a small cleanup job marks the sweep `Finished` after every array task has reached a terminal state (success or failure). Pass `--no-autostop` if you want to keep the sweep open so you can submit more agents to it later (e.g. `sbatch job/wandb_sweep_cpu.slurm <SWEEP_ID>`); the launcher prints the manual `wandb sweep --stop <id>` command in that case. The manual `sbatch` path (without the launcher) also does not auto-stop.
 - Hardcoded sbatch defaults (partition, walltime, memory, mail config) live in the slurm scripts under `job/`. Edit them there; the launcher passes them through.
 - The sweep YAML's `command` list controls the per-run `python -m run_hpc` invocation (run from inside `code/`, with `code/` on `PYTHONPATH`). Fixed Hydra overrides (e.g. `data.batch_size=512`) belong there; swept axes go under `parameters`.
 
