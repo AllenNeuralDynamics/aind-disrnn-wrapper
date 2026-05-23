@@ -130,6 +130,52 @@ python -m code.launch_wandb_sweep --sweep-yaml sweeps/scaling_disrnn.yaml --mode
 python -m code.launch_wandb_sweep --sweep-yaml sweeps/scaling_disrnn.yaml --mode gpu --dry-run
 ```
 
+Example output from a successful launch:
+
+```text
+Computed AGENT_COUNT=5 from total_grid_runs=60 and num_array_tasks=12
+Planned coverage: 60 runs (12 array tasks x 5 agents) out of 60 grid points.
+Running: wandb sweep /home/han.hou/code/aind-disrnn-wrapper/sweeps/scaling_disrnn.yaml
+Patched sweep YAML with lineage at: /tmp/sweep_62wj64pp.yaml
+wandb: Creating sweep from: /tmp/sweep_62wj64pp.yaml
+wandb: Creating sweep with ID: 999g0yyr
+wandb: View sweep at: https://wandb.ai/AIND-disRNN/hpc_test/sweeps/999g0yyr
+wandb: Run sweep agent with: wandb agent AIND-disRNN/hpc_test/999g0yyr
+Parsed SWEEP_ID: AIND-disRNN/hpc_test/999g0yyr
+Running: sbatch --export ALL,AGENT_COUNT=5 /home/han.hou/code/aind-disrnn-wrapper/job/wandb_sweep_gpu.slurm AIND-disRNN/hpc_test/999g0yyr
+Submitted batch job 19640526
+```
+
+Note the `Submitted batch job <jobid>` line at the end — that's the SLURM array job ID you'll use to monitor or cancel the run.
+
+Monitoring and cancelling jobs:
+
+```bash
+# See all of your jobs (pending + running). Useful right after a launch.
+squeue -u $USER
+
+# Watch the queue update every 5s.
+watch -n 5 squeue -u $USER
+
+# Inspect one job in detail (state, reason, node, time, etc.).
+scontrol show job <jobid>
+
+# Tail the SLURM log for a job (paths come from job/user.env: SBATCH_OUTPUT/SBATCH_ERROR).
+tail -f $HOME/logfile/job_<jobid>.out
+tail -f $HOME/logfile/job_<jobid>.err
+
+# History (including completed/failed tasks) for an array job.
+sacct -j <array_jobid> --format=JobID,State,ExitCode,Start,End
+
+# Cancel one job or a whole array.
+scancel <jobid>
+
+# Cancel ALL your pending+running jobs at once (use with care).
+scancel -u $USER
+```
+
+Cancelling a sweep cleanly: `scancel <array_jobid>` kills compute; the auto-stop cleanup job then fires (because `afterany` treats cancelled tasks as terminal) and marks the W&B sweep `Finished`. If you launched with `--no-autostop`, also run `wandb sweep --stop <SWEEP_ID>` afterwards.
+
 Tips and caveats:
 
 - **Where to change what.** Experiment parameters (the `parameters:` grid and the fixed Hydra overrides in `command:`) belong in the sweep YAML — they define the sweep. Per-launch knobs (array size, walltime, GPU tier, agent count) go on the launcher CLI. The launcher does **not** let you override the sweep `parameters:` from the command line by design; if you need a different grid, copy the YAML and launch the copy.
