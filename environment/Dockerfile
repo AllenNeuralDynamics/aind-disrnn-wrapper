@@ -12,7 +12,7 @@ ARG JAX_PKG="jax==0.6.1"
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG GIT_ASKPASS
-COPY git-askpass /
+COPY git-ask-pass /
 
 # --- Other dependencies ---
 RUN pip install -U --no-cache-dir \
