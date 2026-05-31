@@ -13,7 +13,7 @@ from post_training_analysis import run_embedding_space_analysis
 result = run_embedding_space_analysis(
     model_dir="/data/mice_multisubject_train10_all_stages-gru_session_conditioning-260505-14-H64_lr5e_06-b97c06b79f07",
     # model_dir="/data/mice_multisubject_train10-gru_session_conditioning_lr_1e_5-260505/11",
-    checkpoint_policy="best_eval",
+    checkpoint_policy="final",
     output_dir="/results",
     task_column="task",
     weekday_column="weekday",
