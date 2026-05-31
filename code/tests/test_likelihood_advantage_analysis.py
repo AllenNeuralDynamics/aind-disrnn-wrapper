@@ -114,6 +114,8 @@ class TestLikelihoodAdvantageAnalysis(unittest.TestCase):
         output_df["choice_prob_0"] = [0.8, 0.2, 0.3, 0.1, 0.7]
         output_df["choice_prob_1"] = [0.2, 0.3, 0.7, 0.9, 0.3]
         output_df["choice_prob_2"] = [0.0, 0.5, 0.0, 0.0, 0.0]
+        output_df["latent_0"] = [1.0, 2.0, 3.0, 4.0, 5.0]
+        output_df["latent_1"] = [10.0, 20.0, 30.0, 40.0, 50.0]
         return output_df
 
     def _single_session_trial_df(self) -> pd.DataFrame:
@@ -179,6 +181,10 @@ class TestLikelihoodAdvantageAnalysis(unittest.TestCase):
                 p_other.append(chosen)
         output_df["choice_prob_0"] = p_chosen
         output_df["choice_prob_1"] = p_other
+        output_df["latent_0"] = np.linspace(0.0, 1.0, len(output_df))
+        output_df["latent_1"] = np.linspace(1.0, 2.0, len(output_df))
+        output_df["latent_2"] = np.linspace(2.0, 3.0, len(output_df))
+        output_df["latent_3"] = np.linspace(3.0, 4.0, len(output_df))
         return output_df
 
     def test_build_canonical_trial_dataframe_uses_one_based_indices(self):
@@ -202,6 +208,39 @@ class TestLikelihoodAdvantageAnalysis(unittest.TestCase):
 
         self.assertEqual(prob_df["trial_idx"].tolist(), [1, 2, 1, 1])
         self.assertEqual(prob_df["p_model1"].tolist(), [0.8, 0.7, 0.9, 0.7])
+
+    def test_extract_model1_rnn_state_frame_sorts_and_renames_latents(self):
+        output_df = self._model_output_rows().copy()
+        output_df["latent_10"] = [100.0, 200.0, 300.0, 400.0, 500.0]
+
+        state_df = likelihood_advantage_analysis._extract_model1_rnn_state_frame(
+            output_df,
+        )
+
+        self.assertEqual(
+            [column for column in state_df.columns if column.startswith("rnn_state_")],
+            ["rnn_state_0", "rnn_state_1", "rnn_state_2"],
+        )
+        self.assertEqual(state_df["trial_idx"].tolist(), [1, 2, 1, 1])
+        self.assertEqual(state_df["rnn_state_0"].tolist(), [1.0, 3.0, 4.0, 5.0])
+        self.assertEqual(state_df["rnn_state_2"].tolist(), [100.0, 300.0, 400.0, 500.0])
+
+    def test_merge_rnn_state_frame_rejects_action_mismatch(self):
+        canonical_df = likelihood_advantage_analysis._build_canonical_trial_dataframe(
+            self._raw_trial_rows(),
+            metadata={},
+        )
+        state_df = likelihood_advantage_analysis._extract_model1_rnn_state_frame(
+            self._model_output_rows(),
+        )
+        state_df.loc[0, "action"] = 1
+
+        with self.assertRaisesRegex(ValueError, "Action mismatch"):
+            likelihood_advantage_analysis._merge_rnn_state_frame(
+                canonical_df,
+                state_df,
+                source_label="gru",
+            )
 
     def test_merge_and_advantage_computation_matches_expected_logs(self):
         canonical_df = likelihood_advantage_analysis._build_canonical_trial_dataframe(
@@ -411,6 +450,100 @@ class TestLikelihoodAdvantageAnalysis(unittest.TestCase):
         )
         self.assertTrue(str(color_map["Mixed"]).startswith("#"))
 
+    def test_fit_and_project_rnn_state_pca_is_seed_stable(self):
+        trial_df = pd.DataFrame(
+            {
+                "advantage": np.linspace(-1.0, 1.0, 8),
+                "rnn_state_0": np.arange(8, dtype=float),
+                "rnn_state_1": np.arange(8, dtype=float) * 2.0,
+                "rnn_state_2": np.arange(8, dtype=float) % 3,
+            }
+        )
+
+        first = likelihood_advantage_analysis._fit_and_project_rnn_state_pca(
+            trial_df,
+            state_columns=["rnn_state_0", "rnn_state_1", "rnn_state_2"],
+            pca_seed=0,
+            pca_fit_fraction=0.5,
+        )
+        second = likelihood_advantage_analysis._fit_and_project_rnn_state_pca(
+            trial_df,
+            state_columns=["rnn_state_0", "rnn_state_1", "rnn_state_2"],
+            pca_seed=0,
+            pca_fit_fraction=0.5,
+        )
+
+        self.assertEqual(first["fit_n_trials"], 4)
+        self.assertEqual(first["scores"].shape[0], len(trial_df))
+        self.assertTrue(np.allclose(first["scores"], second["scores"]))
+        self.assertLessEqual(
+            float(first["cumulative_explained_variance_ratio"][-1]),
+            1.0 + 1e-9,
+        )
+
+    def test_build_state_condition_specs_quantile_bins_continuous_columns(self):
+        trial_df = pd.DataFrame(
+            {
+                "trial_position": np.linspace(0.0, 0.9, 10),
+                "switch": [0, 1] * 5,
+            }
+        )
+
+        condition_specs = likelihood_advantage_analysis._build_state_condition_specs(
+            trial_df,
+            condition_columns=["trial_position", "switch"],
+            condition_values_by_column={},
+        )
+
+        self.assertEqual(len(condition_specs["trial_position"]), 5)
+        self.assertEqual(
+            {entry["label"] for entry in condition_specs["switch"]},
+            {"0", "1"},
+        )
+
+    def test_run_rnn_state_space_condition_analysis_from_pickle(self):
+        trial_df = pd.DataFrame(
+            {
+                "advantage": np.linspace(-0.5, 0.5, 12),
+                "trial_position": np.linspace(0.0, 1.0, 12),
+                "switch": [0, 1] * 6,
+                "rnn_state_0": np.linspace(0.0, 1.0, 12),
+                "rnn_state_1": np.linspace(1.0, 0.0, 12),
+                "rnn_state_2": np.sin(np.linspace(0.0, 1.0, 12)),
+                "rnn_state_3": np.cos(np.linspace(0.0, 1.0, 12)),
+            }
+        )
+
+        def _write_placeholder_plot(*args, output_path: Path, **kwargs):
+            del args
+            del kwargs
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text("plot")
+
+        with tempfile.TemporaryDirectory(prefix="rnn_state_space_") as tmpdir, mock.patch.object(
+            likelihood_advantage_analysis,
+            "_plot_rnn_state_pca_variance",
+            side_effect=_write_placeholder_plot,
+        ), mock.patch.object(
+            likelihood_advantage_analysis,
+            "_plot_rnn_state_condition_figure",
+            side_effect=_write_placeholder_plot,
+        ):
+            pickle_path = Path(tmpdir) / "trial_advantage.pkl"
+            trial_df.to_pickle(pickle_path)
+            result = likelihood_advantage_analysis.run_rnn_state_space_condition_analysis(
+                pickle_path,
+                condition_columns=["switch", "trial_position"],
+                output_dir=Path(tmpdir) / "state_plots",
+                pca_seed=0,
+            )
+
+            self.assertTrue(Path(result["rnn_state_pca_variance"]).exists())
+            self.assertTrue(Path(result["rnn_state_pca_variance_csv"]).exists())
+            self.assertEqual(result["condition_columns"], ["switch", "trial_position"])
+            self.assertIn("switch", result["rnn_state_condition_plots"])
+            self.assertIn("trial_position", result["rnn_state_condition_plots"])
+
     def test_validate_model_pair_rejects_invalid_model_types(self):
         with self.assertRaisesRegex(ValueError, "model1_dir must resolve"):
             likelihood_advantage_analysis._validate_model_pair(
@@ -467,6 +600,7 @@ class TestLikelihoodAdvantageAnalysis(unittest.TestCase):
         def _write_placeholder_plot(*args, output_path: Path, **kwargs):
             del args
             del kwargs
+            output_path.parent.mkdir(parents=True, exist_ok=True)
             output_path.write_text("plot")
 
         subject_summary_df = pd.DataFrame.from_records(
@@ -536,6 +670,14 @@ class TestLikelihoodAdvantageAnalysis(unittest.TestCase):
             likelihood_advantage_analysis,
             "_plot_session_stage_summary",
             side_effect=_write_placeholder_plot,
+        ), mock.patch.object(
+            likelihood_advantage_analysis,
+            "_plot_rnn_state_pca_variance",
+            side_effect=_write_placeholder_plot,
+        ), mock.patch.object(
+            likelihood_advantage_analysis,
+            "_plot_rnn_state_condition_figure",
+            side_effect=_write_placeholder_plot,
         ):
             result = likelihood_advantage_analysis.run_likelihood_advantage_analysis(
                 model1_dir="/tmp/gru_model",
@@ -545,6 +687,7 @@ class TestLikelihoodAdvantageAnalysis(unittest.TestCase):
                 history_warmup=10,
                 top_k_variables=3,
                 jitter_seed=0,
+                pca_seed=0,
             )
 
             expected_keys = {
@@ -559,11 +702,19 @@ class TestLikelihoodAdvantageAnalysis(unittest.TestCase):
                 "variable_ranking_csv",
                 "session_stage_top3_figure",
                 "subject_bin_summary_csv",
+                "rnn_state_pca_variance",
+                "rnn_state_pca_variance_csv",
+                "rnn_state_condition_plots",
             }
             self.assertEqual(set(result.keys()), expected_keys)
             for key, path in result.items():
                 if key == "output_dir":
                     self.assertTrue(Path(path).exists())
+                elif key == "rnn_state_condition_plots":
+                    self.assertEqual(
+                        set(path.keys()),
+                        {spec.name for spec in likelihood_advantage_analysis._VARIABLE_SPECS},
+                    )
                 else:
                     self.assertTrue(Path(path).exists(), msg=key)
 
@@ -571,6 +722,8 @@ class TestLikelihoodAdvantageAnalysis(unittest.TestCase):
             trial_df = pd.read_pickle(result["trial_advantage_pickle"])
             self.assertIn("advantage", trial_df.columns)
             self.assertIn("session_stage", trial_df.columns)
+            self.assertIn("rnn_state_0", trial_df.columns)
+            self.assertIn("rnn_state_3", trial_df.columns)
 
             long_summary_df = pd.read_csv(result["bin_summary_long_csv"])
             self.assertIn("variable", long_summary_df.columns)

@@ -7,6 +7,7 @@ import logging
 import math
 import re
 from dataclasses import dataclass
+from itertools import combinations
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -74,6 +75,11 @@ def run_likelihood_advantage_analysis(
     history_warmup: int = 10,
     top_k_variables: int = 3,
     jitter_seed: int = 0,
+    include_rnn_state_space: bool = True,
+    state_condition_columns: Sequence[str] | None = None,
+    state_condition_values_by_column: Mapping[str, Sequence[Any]] | None = None,
+    pca_seed: int = 0,
+    pca_fit_fraction: float = 0.5,
 ) -> dict[str, Any]:
     """Run a standalone trial-level likelihood advantage analysis."""
 
@@ -130,6 +136,14 @@ def run_likelihood_advantage_analysis(
         prob_column="p_model1",
         source_label=run_model1.model_label,
     )
+    model1_state_df = _extract_model1_rnn_state_frame(
+        model1_evaluation["output_df"],
+    )
+    trial_df = _merge_rnn_state_frame(
+        trial_df,
+        model1_state_df,
+        source_label=run_model1.model_label,
+    )
 
     baseline_prob_df = _build_baseline_probability_frame(
         run_model2,
@@ -165,6 +179,22 @@ def run_likelihood_advantage_analysis(
 
     trial_advantage_pickle_path = resolved_output_dir / "trial_advantage.pkl"
     trial_df.to_pickle(trial_advantage_pickle_path)
+
+    rnn_state_space_result: dict[str, Any] | None = None
+    if include_rnn_state_space:
+        default_condition_columns = [spec.name for spec in _VARIABLE_SPECS]
+        rnn_state_space_result = run_rnn_state_space_condition_analysis(
+            trial_advantage_pickle_path,
+            condition_columns=(
+                list(state_condition_columns)
+                if state_condition_columns is not None
+                else default_condition_columns
+            ),
+            condition_values_by_column=state_condition_values_by_column,
+            output_dir=figures_dir / "rnn_state_space",
+            pca_seed=pca_seed,
+            pca_fit_fraction=pca_fit_fraction,
+        )
 
     advantage_histogram_path = figures_dir / "advantage_histogram.png"
     _plot_advantage_histogram(
@@ -316,6 +346,14 @@ def run_likelihood_advantage_analysis(
             "history_warmup": int(history_warmup),
             "top_k_variables": int(top_k_variables),
             "jitter_seed": int(jitter_seed),
+            "include_rnn_state_space": bool(include_rnn_state_space),
+            "state_condition_columns": (
+                list(state_condition_columns)
+                if state_condition_columns is not None
+                else [spec.name for spec in _VARIABLE_SPECS]
+            ),
+            "pca_seed": int(pca_seed),
+            "pca_fit_fraction": float(pca_fit_fraction),
         },
         "model1": {
             "resolved_run": run_model1.to_dict(),
@@ -339,6 +377,7 @@ def run_likelihood_advantage_analysis(
             "session_stage_top3_figure": str(session_stage_top3_figure_path),
             "subject_bin_summary_csv": str(subject_bin_summary_csv_path),
             "per_variable_plots": per_variable_plot_paths,
+            "rnn_state_space": rnn_state_space_result,
         },
     }
     summary_path = resolved_output_dir / "summary.json"
@@ -356,6 +395,113 @@ def run_likelihood_advantage_analysis(
         "variable_ranking_csv": str(variable_ranking_csv_path),
         "session_stage_top3_figure": str(session_stage_top3_figure_path),
         "subject_bin_summary_csv": str(subject_bin_summary_csv_path),
+        "rnn_state_pca_variance": (
+            None
+            if rnn_state_space_result is None
+            else rnn_state_space_result["rnn_state_pca_variance"]
+        ),
+        "rnn_state_pca_variance_csv": (
+            None
+            if rnn_state_space_result is None
+            else rnn_state_space_result["rnn_state_pca_variance_csv"]
+        ),
+        "rnn_state_condition_plots": (
+            None
+            if rnn_state_space_result is None
+            else rnn_state_space_result["rnn_state_condition_plots"]
+        ),
+    }
+
+
+def run_rnn_state_space_condition_analysis(
+    trial_advantage_pickle: str | Path,
+    *,
+    condition_columns: Sequence[str] | None = None,
+    condition_values_by_column: Mapping[str, Sequence[Any]] | None = None,
+    output_dir: str | Path | None = None,
+    pca_seed: int = 0,
+    pca_fit_fraction: float = 0.5,
+    n_variance_pcs: int = 10,
+    n_plot_pcs: int = 4,
+) -> dict[str, Any]:
+    """Plot RNN state-space projections for condition-matched trials."""
+
+    pd = _import_pandas()
+
+    pickle_path = Path(trial_advantage_pickle).expanduser().resolve()
+    trial_df = pd.read_pickle(pickle_path)
+    resolved_output_dir = (
+        pickle_path.parent / "figures" / "rnn_state_space"
+        if output_dir is None
+        else Path(output_dir).expanduser().resolve()
+    )
+    resolved_output_dir.mkdir(parents=True, exist_ok=True)
+
+    state_columns = _rnn_state_columns(trial_df)
+    if not state_columns:
+        raise ValueError(
+            "trial_advantage_pickle must contain rnn_state_* columns before "
+            "state-space plotting can run."
+        )
+    if "advantage" not in pd.DataFrame(trial_df).columns:
+        raise ValueError("trial_advantage_pickle must contain an advantage column.")
+
+    pca_result = _fit_and_project_rnn_state_pca(
+        trial_df,
+        state_columns=state_columns,
+        pca_seed=pca_seed,
+        pca_fit_fraction=pca_fit_fraction,
+    )
+    variance_df = _build_pca_variance_dataframe(
+        pca_result,
+        n_variance_pcs=n_variance_pcs,
+    )
+    variance_csv_path = resolved_output_dir / "rnn_state_pca_variance.csv"
+    variance_df.to_csv(variance_csv_path, index=False)
+
+    variance_plot_path = resolved_output_dir / "rnn_state_pca_variance.png"
+    _plot_rnn_state_pca_variance(
+        variance_df,
+        output_path=variance_plot_path,
+    )
+
+    selected_condition_columns = _resolve_state_condition_columns(
+        trial_df,
+        condition_columns=condition_columns,
+    )
+    condition_specs = _build_state_condition_specs(
+        trial_df,
+        condition_columns=selected_condition_columns,
+        condition_values_by_column=condition_values_by_column or {},
+    )
+    condition_plot_paths: dict[str, dict[str, str]] = {}
+    condition_root = resolved_output_dir / "conditions"
+    for condition_column, condition_entries in condition_specs.items():
+        column_dir = condition_root / _safe_filename_component(condition_column)
+        condition_plot_paths[condition_column] = {}
+        for condition_entry in condition_entries:
+            plot_path = column_dir / f"{condition_entry['slug']}.png"
+            _plot_rnn_state_condition_figure(
+                pca_result,
+                condition_column=condition_column,
+                condition_label=str(condition_entry["label"]),
+                condition_mask=condition_entry["mask"],
+                output_path=plot_path,
+                n_plot_pcs=n_plot_pcs,
+            )
+            condition_plot_paths[condition_column][str(condition_entry["label"])] = str(
+                plot_path
+            )
+
+    return {
+        "output_dir": str(resolved_output_dir),
+        "trial_advantage_pickle": str(pickle_path),
+        "rnn_state_pca_variance": str(variance_plot_path),
+        "rnn_state_pca_variance_csv": str(variance_csv_path),
+        "rnn_state_condition_plots": condition_plot_paths,
+        "condition_columns": selected_condition_columns,
+        "pca_fit_n_trials": int(pca_result["fit_n_trials"]),
+        "n_trials_projected": int(pca_result["n_trials_projected"]),
     }
 
 
@@ -901,6 +1047,79 @@ def _extract_model1_probability_frame(
     )
 
 
+def _extract_model1_rnn_state_frame(output_df: Any) -> Any:
+    pd = _import_pandas()
+    np = _import_numpy()
+
+    normalized_output_df = lc._normalize_raw_dataframe(pd.DataFrame(output_df).copy())
+    if "ses_idx" not in normalized_output_df.columns or "animal_response" not in normalized_output_df.columns:
+        raise ValueError("output_df must include ses_idx and animal_response.")
+    normalized_output_df = _sort_raw_dataframe(normalized_output_df)
+
+    latent_columns = _latent_state_columns(normalized_output_df)
+    if not latent_columns:
+        raise ValueError(
+            "Model output dataframe does not contain latent_* columns for RNN states."
+        )
+
+    records: list[dict[str, Any]] = []
+    for session_id in list(dict.fromkeys(normalized_output_df["ses_idx"].tolist())):
+        session_df = normalized_output_df[normalized_output_df["ses_idx"] == session_id].copy()
+        session_df = session_df.sort_values("trial") if "trial" in session_df.columns else session_df
+        choices = session_df["animal_response"].to_numpy(dtype=int)
+        binary_mask = (choices == 0) | (choices == 1)
+        if not np.any(binary_mask):
+            continue
+
+        subject_values = (
+            session_df.loc[binary_mask, "subject_id"].tolist()
+            if "subject_id" in session_df.columns
+            else ["unknown"] * int(np.sum(binary_mask))
+        )
+        state_values = session_df.loc[binary_mask, latent_columns].to_numpy(dtype=float)
+        for trial_idx, (subject_id, action, state_row) in enumerate(
+            zip(
+                subject_values,
+                choices[binary_mask].tolist(),
+                state_values.tolist(),
+            ),
+            start=1,
+        ):
+            record = {
+                "subject_id": lc._normalize_identifier(subject_id),
+                "ses_idx": str(session_id),
+                "trial_idx": int(trial_idx),
+                "action": int(action),
+            }
+            for state_idx, state_value in enumerate(state_row):
+                record[f"rnn_state_{state_idx}"] = float(state_value)
+            records.append(record)
+
+    state_columns = [f"rnn_state_{idx}" for idx in range(len(latent_columns))]
+    return pd.DataFrame.from_records(
+        records,
+        columns=["subject_id", "ses_idx", "trial_idx", "action", *state_columns],
+    )
+
+
+def _latent_state_columns(df: Any) -> list[str]:
+    columns = []
+    for column in _import_pandas().DataFrame(df).columns:
+        match = re.fullmatch(r"latent_(\d+)", str(column))
+        if match is not None:
+            columns.append((int(match.group(1)), str(column)))
+    return [column for _, column in sorted(columns, key=lambda item: item[0])]
+
+
+def _rnn_state_columns(df: Any) -> list[str]:
+    columns = []
+    for column in _import_pandas().DataFrame(df).columns:
+        match = re.fullmatch(r"rnn_state_(\d+)", str(column))
+        if match is not None:
+            columns.append((int(match.group(1)), str(column)))
+    return [column for _, column in sorted(columns, key=lambda item: item[0])]
+
+
 def _build_baseline_probability_frame(
     run: lc.ResolvedLikelihoodRun,
     *,
@@ -1193,6 +1412,70 @@ def _merge_probability_frame(
     return _sort_trial_dataframe(merged)
 
 
+def _merge_rnn_state_frame(
+    trial_df: Any,
+    state_df: Any,
+    *,
+    source_label: str,
+) -> Any:
+    pd = _import_pandas()
+
+    left_df = _sort_trial_dataframe(pd.DataFrame(trial_df).copy())
+    right_df = pd.DataFrame(state_df).copy()
+    state_columns = _rnn_state_columns(right_df)
+    expected_columns = {"ses_idx", "trial_idx", "action", *state_columns}
+    missing_columns = [column for column in expected_columns if column not in right_df.columns]
+    if not state_columns:
+        raise ValueError(f"RNN state frame for {source_label!r} has no rnn_state_* columns.")
+    if missing_columns:
+        raise ValueError(
+            f"RNN state frame for {source_label!r} is missing columns: {missing_columns}"
+        )
+
+    duplicated = right_df.duplicated(subset=["ses_idx", "trial_idx"])
+    if duplicated.any():
+        raise ValueError(
+            f"RNN state frame for {source_label!r} contains duplicate ses_idx/trial_idx keys."
+        )
+
+    merged = left_df.merge(
+        right_df.loc[:, ["ses_idx", "trial_idx", "action", *state_columns]],
+        on=["ses_idx", "trial_idx"],
+        how="left",
+        validate="one_to_one",
+        suffixes=("", "_state"),
+        indicator=True,
+    )
+    if not (merged["_merge"] == "both").all():
+        missing_rows = merged.loc[merged["_merge"] != "both", ["ses_idx", "trial_idx"]]
+        raise ValueError(
+            f"RNN state frame for {source_label!r} does not match the canonical "
+            f"trial set. Missing keys: {missing_rows.head(10).to_dict(orient='records')}"
+        )
+    if "action_state" in merged.columns:
+        mismatch_mask = merged["action"].astype(int) != merged["action_state"].astype(int)
+        if mismatch_mask.any():
+            mismatch_rows = merged.loc[
+                mismatch_mask,
+                ["ses_idx", "trial_idx", "action", "action_state"],
+            ]
+            raise ValueError(
+                f"Action mismatch while merging RNN states for {source_label!r}: "
+                f"{mismatch_rows.head(10).to_dict(orient='records')}"
+            )
+        merged = merged.drop(columns=["action_state"])
+
+    merged = merged.drop(columns=["_merge"])
+    missing_state_mask = merged[state_columns].isna().any(axis=1)
+    if missing_state_mask.any():
+        missing_rows = merged.loc[missing_state_mask, ["ses_idx", "trial_idx"]]
+        raise ValueError(
+            f"Merged RNN states contain NaNs for {source_label!r}: "
+            f"{missing_rows.head(10).to_dict(orient='records')}"
+        )
+    return _sort_trial_dataframe(merged)
+
+
 def _add_session_stage(trial_df: Any) -> Any:
     pd = _import_pandas()
 
@@ -1273,6 +1556,198 @@ def _resolve_subject_curriculum(values: Any) -> str:
     return lc._resolve_comparison_curriculum_name(*unique_values)
 
 
+def _fit_and_project_rnn_state_pca(
+    trial_df: Any,
+    *,
+    state_columns: Sequence[str],
+    pca_seed: int,
+    pca_fit_fraction: float,
+) -> dict[str, Any]:
+    np = _import_numpy()
+    pd = _import_pandas()
+
+    if not 0.0 < float(pca_fit_fraction) <= 1.0:
+        raise ValueError("pca_fit_fraction must be in the interval (0, 1].")
+
+    df = pd.DataFrame(trial_df).copy().reset_index(drop=True)
+    state_matrix = df.loc[:, list(state_columns)].to_numpy(dtype=float)
+    advantages = df["advantage"].to_numpy(dtype=float)
+    finite_mask = np.isfinite(state_matrix).all(axis=1) & np.isfinite(advantages)
+    n_valid = int(np.sum(finite_mask))
+    if n_valid < 2:
+        raise ValueError(
+            "At least two finite RNN-state trials with finite advantage are required "
+            "to fit PCA."
+        )
+
+    valid_states = state_matrix[finite_mask]
+    fit_n = int(math.floor(float(pca_fit_fraction) * n_valid))
+    fit_n = min(n_valid, max(2, fit_n))
+    rng = np.random.default_rng(int(pca_seed))
+    fit_indices = np.sort(rng.choice(np.arange(n_valid), size=fit_n, replace=False))
+    fit_states = valid_states[fit_indices]
+    state_mean = np.mean(fit_states, axis=0)
+    centered_fit = fit_states - state_mean
+    _, singular_values, vt = np.linalg.svd(centered_fit, full_matrices=False)
+    components = vt
+    explained_variance = (singular_values ** 2) / float(max(fit_n - 1, 1))
+    total_variance = float(np.sum(np.var(fit_states, axis=0, ddof=1)))
+    if total_variance > 0:
+        explained_variance_ratio = explained_variance / total_variance
+    else:
+        explained_variance_ratio = np.zeros_like(explained_variance)
+
+    scores = np.full((len(df), components.shape[0]), np.nan, dtype=float)
+    scores[finite_mask, :] = (valid_states - state_mean) @ components.T
+    return {
+        "trial_df": df,
+        "state_columns": list(state_columns),
+        "finite_mask": finite_mask,
+        "scores": scores,
+        "advantages": advantages,
+        "components": components,
+        "state_mean": state_mean,
+        "explained_variance": explained_variance,
+        "explained_variance_ratio": explained_variance_ratio,
+        "cumulative_explained_variance_ratio": np.cumsum(explained_variance_ratio),
+        "fit_n_trials": fit_n,
+        "n_trials_projected": n_valid,
+        "fit_indices": fit_indices,
+    }
+
+
+def _build_pca_variance_dataframe(
+    pca_result: Mapping[str, Any],
+    *,
+    n_variance_pcs: int,
+) -> Any:
+    pd = _import_pandas()
+
+    if int(n_variance_pcs) <= 0:
+        raise ValueError("n_variance_pcs must be > 0.")
+    explained_variance = pca_result["explained_variance"]
+    explained_variance_ratio = pca_result["explained_variance_ratio"]
+    cumulative = pca_result["cumulative_explained_variance_ratio"]
+    n_rows = min(int(n_variance_pcs), int(len(explained_variance_ratio)))
+    return pd.DataFrame.from_records(
+        [
+            {
+                "pc": int(pc_idx + 1),
+                "explained_variance": float(explained_variance[pc_idx]),
+                "explained_variance_ratio": float(explained_variance_ratio[pc_idx]),
+                "cumulative_explained_variance_ratio": float(cumulative[pc_idx]),
+            }
+            for pc_idx in range(n_rows)
+        ]
+    )
+
+
+def _resolve_state_condition_columns(
+    trial_df: Any,
+    *,
+    condition_columns: Sequence[str] | None,
+) -> list[str]:
+    pd = _import_pandas()
+
+    df = pd.DataFrame(trial_df)
+    selected_columns = (
+        [spec.name for spec in _VARIABLE_SPECS if spec.name in df.columns]
+        if condition_columns is None
+        else [str(column) for column in condition_columns]
+    )
+    missing_columns = [column for column in selected_columns if column not in df.columns]
+    if missing_columns:
+        raise ValueError(
+            f"trial_advantage dataframe is missing condition columns: {missing_columns}"
+        )
+    return selected_columns
+
+
+def _build_state_condition_specs(
+    trial_df: Any,
+    *,
+    condition_columns: Sequence[str],
+    condition_values_by_column: Mapping[str, Sequence[Any]],
+) -> dict[str, list[dict[str, Any]]]:
+    pd = _import_pandas()
+
+    df = pd.DataFrame(trial_df).copy().reset_index(drop=True)
+    condition_specs: dict[str, list[dict[str, Any]]] = {}
+    for condition_column in condition_columns:
+        series = df[condition_column]
+        explicit_values = condition_values_by_column.get(condition_column)
+        entries: list[dict[str, Any]] = []
+        if explicit_values is not None:
+            for value in explicit_values:
+                mask = (series == value).fillna(False).to_numpy(dtype=bool)
+                label = _format_condition_label(value)
+                entries.append(
+                    {
+                        "label": label,
+                        "slug": _safe_filename_component(label),
+                        "mask": mask,
+                    }
+                )
+        elif _condition_column_is_continuous(series, condition_column=condition_column):
+            binned = _quantile_bin_series(
+                series,
+                q=int(_VARIABLE_SPEC_BY_NAME.get(
+                    condition_column,
+                    VariableSpec(condition_column, condition_column, "continuous"),
+                ).n_bins),
+            )
+            for category in list(binned.cat.categories):
+                label = str(category)
+                mask = (binned == category).fillna(False).to_numpy(dtype=bool)
+                entries.append(
+                    {
+                        "label": label,
+                        "slug": _safe_filename_component(label),
+                        "mask": mask,
+                    }
+                )
+        else:
+            spec = _VARIABLE_SPEC_BY_NAME.get(
+                condition_column,
+                VariableSpec(condition_column, condition_column, "categorical"),
+            )
+            categories = _resolve_categorical_categories(series, spec=spec)
+            for category in categories:
+                label = _format_condition_label(category)
+                mask = (series == category).fillna(False).to_numpy(dtype=bool)
+                entries.append(
+                    {
+                        "label": label,
+                        "slug": _safe_filename_component(label),
+                        "mask": mask,
+                    }
+                )
+        condition_specs[condition_column] = entries
+    return condition_specs
+
+
+def _condition_column_is_continuous(series: Any, *, condition_column: str) -> bool:
+    pd = _import_pandas()
+
+    spec = _VARIABLE_SPEC_BY_NAME.get(condition_column)
+    if spec is not None:
+        return spec.kind == "continuous"
+    values = pd.Series(series).dropna()
+    if values.empty:
+        return False
+    return bool(pd.api.types.is_numeric_dtype(values) and values.nunique() > 10)
+
+
+def _format_condition_label(value: Any) -> str:
+    try:
+        numeric_value = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if math.isfinite(numeric_value) and numeric_value.is_integer():
+        return str(int(numeric_value))
+    return str(value)
+
+
 def _plot_advantage_histogram(
     trial_df: Any,
     *,
@@ -1336,6 +1811,171 @@ def _plot_subject_mean_advantage_scatter(
     if handles:
         ax.legend(handles, labels, title="Curriculum", loc="best", frameon=False)
     fig.tight_layout()
+    fig.savefig(output_path)
+    plt.close(fig)
+
+
+def _plot_rnn_state_pca_variance(
+    variance_df: Any,
+    *,
+    output_path: Path,
+) -> None:
+    plt = _import_pyplot()
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig, ax = plt.subplots(figsize=(9, 5.5), dpi=120)
+    if variance_df.empty:
+        ax.text(0.5, 0.5, "No PCA variance data", ha="center", va="center", transform=ax.transAxes)
+        ax.set_axis_off()
+    else:
+        pc_labels = [f"PC{int(pc)}" for pc in variance_df["pc"].tolist()]
+        x_positions = list(range(len(pc_labels)))
+        ax.bar(
+            x_positions,
+            variance_df["explained_variance_ratio"].to_numpy(dtype=float),
+            color="#4e79a7",
+            alpha=0.9,
+            label="Explained",
+        )
+        ax.set_xticks(x_positions)
+        ax.set_xticklabels(pc_labels)
+        ax.set_ylabel("Explained variance ratio")
+        ax.set_ylim(
+            0.0,
+            max(
+                1.0,
+                float(variance_df["cumulative_explained_variance_ratio"].max()) * 1.05,
+            ),
+        )
+
+        ax_cumulative = ax.twinx()
+        ax_cumulative.plot(
+            x_positions,
+            variance_df["cumulative_explained_variance_ratio"].to_numpy(dtype=float),
+            color="#e15759",
+            marker="o",
+            linewidth=2.0,
+            label="Cumulative",
+        )
+        ax_cumulative.set_ylabel("Cumulative explained variance ratio")
+        ax_cumulative.set_ylim(ax.get_ylim())
+
+        handles, labels = ax.get_legend_handles_labels()
+        cumulative_handles, cumulative_labels = ax_cumulative.get_legend_handles_labels()
+        ax.legend(
+            handles + cumulative_handles,
+            labels + cumulative_labels,
+            loc="best",
+            frameon=False,
+        )
+        ax.set_title("RNN State PCA Variance")
+    fig.tight_layout()
+    fig.savefig(output_path)
+    plt.close(fig)
+
+
+def _plot_rnn_state_condition_figure(
+    pca_result: Mapping[str, Any],
+    *,
+    condition_column: str,
+    condition_label: str,
+    condition_mask: Any,
+    output_path: Path,
+    n_plot_pcs: int,
+) -> None:
+    plt = _import_pyplot()
+    np = _import_numpy()
+
+    if int(n_plot_pcs) < 2:
+        raise ValueError("n_plot_pcs must be >= 2.")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    scores = np.asarray(pca_result["scores"], dtype=float)
+    finite_mask = np.asarray(pca_result["finite_mask"], dtype=bool)
+    advantages = np.asarray(pca_result["advantages"], dtype=float)
+    condition_mask = np.asarray(condition_mask, dtype=bool)
+    highlight_mask = finite_mask & condition_mask & np.isfinite(advantages)
+    highlight_count = int(np.sum(highlight_mask))
+    background_scores = scores[finite_mask]
+    highlight_scores = scores[highlight_mask]
+    highlight_advantages = advantages[highlight_mask]
+    finite_advantages = advantages[finite_mask]
+    max_abs_advantage = (
+        float(np.nanmax(np.abs(finite_advantages)))
+        if finite_advantages.size
+        else 1.0
+    )
+    if not np.isfinite(max_abs_advantage) or max_abs_advantage <= 0.0:
+        max_abs_advantage = 1.0
+
+    pc_pairs = list(combinations(range(int(n_plot_pcs)), 2))
+    n_panels = max(1, len(pc_pairs))
+    n_cols = min(3, n_panels)
+    n_rows = int(math.ceil(n_panels / n_cols))
+    fig, axes = plt.subplots(
+        n_rows,
+        n_cols,
+        figsize=(5.2 * n_cols, 4.6 * n_rows),
+        dpi=120,
+    )
+    axes_flat = axes.flatten() if hasattr(axes, "flatten") else [axes]
+    last_scatter = None
+    for axis, (pc_x, pc_y) in zip(axes_flat, pc_pairs, strict=False):
+        if scores.shape[1] <= max(pc_x, pc_y):
+            axis.text(
+                0.5,
+                0.5,
+                "Not enough PCs",
+                ha="center",
+                va="center",
+                transform=axis.transAxes,
+            )
+            axis.set_axis_off()
+            continue
+
+        axis.scatter(
+            background_scores[:, pc_x],
+            background_scores[:, pc_y],
+            color="#8c8c8c",
+            alpha=0.14,
+            s=8,
+            linewidths=0,
+        )
+        if highlight_count > 0:
+            last_scatter = axis.scatter(
+                highlight_scores[:, pc_x],
+                highlight_scores[:, pc_y],
+                c=highlight_advantages,
+                cmap="coolwarm",
+                vmin=-max_abs_advantage,
+                vmax=max_abs_advantage,
+                s=18,
+                alpha=0.9,
+                linewidths=0,
+            )
+        else:
+            axis.text(
+                0.5,
+                0.5,
+                "No matching trials",
+                ha="center",
+                va="center",
+                transform=axis.transAxes,
+            )
+        axis.axhline(0.0, color="#d0d0d0", linewidth=0.7, zorder=0)
+        axis.axvline(0.0, color="#d0d0d0", linewidth=0.7, zorder=0)
+        axis.set_xlabel(f"PC{pc_x + 1}")
+        axis.set_ylabel(f"PC{pc_y + 1}")
+        axis.set_title(f"PC{pc_x + 1} vs PC{pc_y + 1}")
+
+    for axis in axes_flat[len(pc_pairs) :]:
+        axis.axis("off")
+
+    fig.suptitle(f"{condition_column} = {condition_label} (n={highlight_count})")
+    if last_scatter is not None:
+        colorbar = fig.colorbar(last_scatter, ax=list(axes_flat), shrink=0.86)
+        colorbar.set_label("Log-likelihood advantage")
+    fig.tight_layout(rect=(0, 0, 1, 0.94))
     fig.savefig(output_path)
     plt.close(fig)
 
