@@ -27,7 +27,7 @@ from post_training_analysis import (
 #     pca_fit_fraction=0.5,
 # )
 
-print(result)
+# print(result)
 
 standalone_state_space_result = run_rnn_state_space_condition_analysis(
     "/data/trial_advantage.pkl",
