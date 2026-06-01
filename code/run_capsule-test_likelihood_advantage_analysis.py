@@ -9,6 +9,7 @@ logging.basicConfig(
 )
 
 from post_training_analysis import (
+    run_baseline_q_space_subject_analysis,
     run_likelihood_advantage_analysis,
     run_rnn_state_space_condition_analysis,
     run_rnn_state_space_subject_analysis,
@@ -26,6 +27,7 @@ result = run_likelihood_advantage_analysis(
     include_rnn_state_space=True,
     pca_seed=0,
     pca_fit_fraction=0.5,
+    include_baseline_q_space=True,
 )
 
 print(result)
@@ -47,6 +49,20 @@ right_subject_state_result = run_rnn_state_space_subject_analysis(
     pca_fit_fraction=0.5,
 )
 print(right_subject_state_result)
+
+left_baseline_q_subject_result = run_baseline_q_space_subject_analysis(
+    result["trial_advantage_pickle"],
+    probability_column="p_rl_left",
+    output_dir="/results/figures/baseline_q_space_subjects_left",
+)
+print(left_baseline_q_subject_result)
+
+right_baseline_q_subject_result = run_baseline_q_space_subject_analysis(
+    result["trial_advantage_pickle"],
+    probability_column="p_rl_right",
+    output_dir="/results/figures/baseline_q_space_subjects_right",
+)
+print(right_baseline_q_subject_result)
 
 # standalone_state_space_result = run_rnn_state_space_condition_analysis(
 #     "/data/trial_advantage.pkl",

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import math
+import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -287,6 +289,126 @@ class TestLikelihoodAdvantageAnalysis(unittest.TestCase):
             math.log(0.7) - math.log(0.3),
         ]
         self.assertTrue(np.allclose(merged_df["advantage"].to_numpy(dtype=float), expected))
+
+    def test_probability_frame_from_rollout_sessions_includes_baseline_probabilities_and_q_values(self):
+        session_payloads = [
+            {
+                "subject_id": "m1",
+                "ses_idx": "m1__s1",
+                "choices": np.array([0, 1, 0]),
+                "rewards": np.array([1.0, 0.0, 1.0]),
+                "trial_indices": np.array([1, 2, 3]),
+            }
+        ]
+        choice_prob_sessions = [
+            np.array(
+                [
+                    [0.7, 0.2, 0.4],
+                    [0.3, 0.8, 0.6],
+                ]
+            )
+        ]
+        q_value_sessions = [
+            np.array(
+                [
+                    [1.0, 2.0, 3.0, 99.0],
+                    [4.0, 5.0, 6.0, 99.0],
+                ]
+            )
+        ]
+
+        baseline_df = likelihood_advantage_analysis._probability_frame_from_rollout_sessions(
+            session_payloads,
+            choice_prob_sessions=choice_prob_sessions,
+            q_value_sessions=q_value_sessions,
+        )
+
+        self.assertEqual(
+            baseline_df.columns.tolist(),
+            likelihood_advantage_analysis._BASELINE_PROBABILITY_FRAME_COLUMNS,
+        )
+        self.assertEqual(baseline_df["p_rl"].tolist(), [0.7, 0.8, 0.4])
+        self.assertEqual(baseline_df["p_rl_left"].tolist(), [0.7, 0.2, 0.4])
+        self.assertEqual(baseline_df["p_rl_right"].tolist(), [0.3, 0.8, 0.6])
+        self.assertEqual(baseline_df["q_rl_left"].tolist(), [1.0, 2.0, 3.0])
+        self.assertEqual(baseline_df["q_rl_right"].tolist(), [4.0, 5.0, 6.0])
+
+    def test_align_policy_time_q_session_supports_trial_and_prepost_histories(self):
+        trial_aligned, trial_mode = likelihood_advantage_analysis._align_policy_time_q_session(
+            np.array([[1.0, 2.0], [3.0, 4.0]]),
+            n_trials=2,
+        )
+        prepost_aligned, prepost_mode = likelihood_advantage_analysis._align_policy_time_q_session(
+            np.array([[1.0, 2.0], [3.0, 4.0], [99.0, 99.0]]),
+            n_trials=2,
+        )
+
+        self.assertEqual(trial_mode, "trial_aligned")
+        self.assertEqual(prepost_mode, "prepost_first_n")
+        self.assertTrue(np.allclose(trial_aligned, [[1.0, 2.0], [3.0, 4.0]]))
+        self.assertTrue(np.allclose(prepost_aligned, [[1.0, 3.0], [2.0, 4.0]]))
+
+    def test_perform_baseline_agent_rollout_with_q_histories_uses_mock_agent(self):
+        class FakeBaselineAgent:
+            def __init__(self, **kwargs):
+                del kwargs
+                self.q_value_history = None
+                self.params = {}
+
+            def set_params(self, **kwargs):
+                self.params = kwargs
+
+            def perform_closed_loop_multi_session(self, choice_sessions, reward_sessions):
+                del reward_sessions
+                self.q_value_history = [
+                    np.array(
+                        [
+                            [1.0, 2.0, 99.0],
+                            [3.0, 4.0, 99.0],
+                        ]
+                    )
+                    for _ in choice_sessions
+                ]
+                return [
+                    np.array(
+                        [
+                            [0.8, 0.25],
+                            [0.2, 0.75],
+                        ]
+                    )
+                    for _ in choice_sessions
+                ]
+
+        package = types.ModuleType("aind_dynamic_foraging_models")
+        package.generative_model = types.SimpleNamespace(FakeBaselineAgent=FakeBaselineAgent)
+        with mock.patch.dict(sys.modules, {"aind_dynamic_foraging_models": package}):
+            choice_prob_sessions, q_value_sessions, q_alignment = (
+                likelihood_advantage_analysis._perform_baseline_agent_rollout_with_q_histories(
+                    agent_class_name="FakeBaselineAgent",
+                    agent_kwargs={},
+                    fitted_params={"alpha": 0.2},
+                    choice_sessions=[np.array([0, 1])],
+                    reward_sessions=[np.array([1.0, 0.0])],
+                    seed=0,
+                    require_q_values=True,
+                )
+            )
+
+        self.assertEqual(len(choice_prob_sessions), 1)
+        self.assertEqual(len(q_value_sessions), 1)
+        self.assertEqual(q_alignment["alignment"], "prepost_first_n")
+        self.assertTrue(np.allclose(q_value_sessions[0], [[1.0, 2.0], [3.0, 4.0]]))
+
+    def test_extract_policy_time_q_histories_rejects_missing_q_history(self):
+        class NoQAgent:
+            pass
+
+        with self.assertRaisesRegex(ValueError, "Could not recover policy-time"):
+            likelihood_advantage_analysis._extract_policy_time_q_histories(
+                NoQAgent(),
+                choice_prob_sessions=[np.ones((2, 3)) * 0.5],
+                expected_trials_per_session=[3],
+            )
 
     def test_add_candidate_variables_applies_warmup_and_history_features(self):
         enriched_df = likelihood_advantage_analysis.add_candidate_variables(
@@ -633,6 +755,108 @@ class TestLikelihoodAdvantageAnalysis(unittest.TestCase):
                     output_dir=Path(tmpdir) / "missing_state",
                 )
 
+    def test_run_baseline_q_space_condition_analysis_from_pickle(self):
+        trial_df = pd.DataFrame(
+            {
+                "advantage": np.linspace(-0.5, 0.5, 12),
+                "trial_position": np.linspace(0.0, 1.0, 12),
+                "switch": [0, 1] * 6,
+                "q_rl_left": np.linspace(0.0, 1.0, 12),
+                "q_rl_right": np.linspace(1.0, 0.0, 12),
+            }
+        )
+
+        def _write_placeholder_plot(*args, output_path: Path, **kwargs):
+            del args
+            del kwargs
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text("plot")
+
+        with tempfile.TemporaryDirectory(prefix="baseline_q_space_") as tmpdir, mock.patch.object(
+            likelihood_advantage_analysis,
+            "_plot_baseline_q_space_condition_figure",
+            side_effect=_write_placeholder_plot,
+        ):
+            pickle_path = Path(tmpdir) / "trial_advantage.pkl"
+            trial_df.to_pickle(pickle_path)
+            result = likelihood_advantage_analysis.run_baseline_q_space_condition_analysis(
+                pickle_path,
+                condition_columns=["switch", "trial_position"],
+                output_dir=Path(tmpdir) / "q_plots",
+            )
+
+            self.assertTrue(Path(result["summary"]).exists())
+            self.assertEqual(result["condition_columns"], ["switch", "trial_position"])
+            self.assertIn("switch", result["baseline_q_condition_plots"])
+            self.assertIn("trial_position", result["baseline_q_condition_plots"])
+            self.assertGreaterEqual(result["n_trials_projected"], 1)
+
+    def test_run_baseline_q_space_subject_analysis_from_pickle(self):
+        trial_df = pd.DataFrame(
+            {
+                "subject_id": ["m1"] * 6 + ["m2"] * 6,
+                "p_rl_left": np.linspace(0.1, 0.9, 12),
+                "p_rl_right": np.linspace(0.9, 0.1, 12),
+                "q_rl_left": np.linspace(0.0, 1.0, 12),
+                "q_rl_right": np.linspace(1.0, 0.0, 12),
+            }
+        )
+
+        def _write_placeholder_plot(*args, output_path: Path, **kwargs):
+            del args
+            del kwargs
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text("plot")
+
+        with tempfile.TemporaryDirectory(prefix="baseline_q_subjects_") as tmpdir, mock.patch.object(
+            likelihood_advantage_analysis,
+            "_plot_baseline_q_space_subject_probability_figure",
+            side_effect=_write_placeholder_plot,
+        ):
+            pickle_path = Path(tmpdir) / "trial_advantage.pkl"
+            trial_df.to_pickle(pickle_path)
+            result = likelihood_advantage_analysis.run_baseline_q_space_subject_analysis(
+                pickle_path,
+                probability_column="p_rl_right",
+                subject_ids=["m2"],
+                output_dir=Path(tmpdir) / "subject_q_plots",
+            )
+
+            self.assertEqual(result["probability_column"], "p_rl_right")
+            self.assertEqual(result["subject_ids"], ["m2"])
+            self.assertEqual(set(result["subject_probability_plots"].keys()), {"m2"})
+            self.assertTrue(Path(result["summary"]).exists())
+            self.assertTrue(Path(result["subject_probability_plots"]["m2"]).exists())
+
+    def test_run_baseline_q_space_subject_analysis_validates_required_columns(self):
+        base_df = pd.DataFrame(
+            {
+                "subject_id": ["m1", "m1"],
+                "p_rl_left": [0.2, 0.8],
+                "q_rl_left": [0.0, 1.0],
+                "q_rl_right": [1.0, 0.0],
+            }
+        )
+
+        with tempfile.TemporaryDirectory(prefix="baseline_q_subjects_missing_") as tmpdir:
+            missing_probability_path = Path(tmpdir) / "missing_probability.pkl"
+            base_df.drop(columns=["p_rl_left"]).to_pickle(missing_probability_path)
+            with self.assertRaisesRegex(ValueError, "p_rl_left"):
+                likelihood_advantage_analysis.run_baseline_q_space_subject_analysis(
+                    missing_probability_path,
+                    probability_column="p_rl_left",
+                    output_dir=Path(tmpdir) / "missing_probability",
+                )
+
+            missing_state_path = Path(tmpdir) / "missing_q.pkl"
+            base_df.drop(columns=["q_rl_left"]).to_pickle(missing_state_path)
+            with self.assertRaisesRegex(ValueError, "q_rl_left"):
+                likelihood_advantage_analysis.run_baseline_q_space_subject_analysis(
+                    missing_state_path,
+                    probability_column="p_rl_left",
+                    output_dir=Path(tmpdir) / "missing_q",
+                )
+
     def test_validate_model_pair_rejects_invalid_model_types(self):
         with self.assertRaisesRegex(ValueError, "model1_dir must resolve"):
             likelihood_advantage_analysis._validate_model_pair(
@@ -685,6 +909,10 @@ class TestLikelihoodAdvantageAnalysis(unittest.TestCase):
             0.62,
             0.58,
         )
+        baseline_prob_df["p_rl_left"] = 0.62
+        baseline_prob_df["p_rl_right"] = 0.58
+        baseline_prob_df["q_rl_left"] = np.linspace(0.0, 1.0, len(baseline_prob_df))
+        baseline_prob_df["q_rl_right"] = np.linspace(1.0, 0.0, len(baseline_prob_df))
 
         def _write_placeholder_plot(*args, output_path: Path, **kwargs):
             del args
@@ -767,6 +995,10 @@ class TestLikelihoodAdvantageAnalysis(unittest.TestCase):
             likelihood_advantage_analysis,
             "_plot_rnn_state_condition_figure",
             side_effect=_write_placeholder_plot,
+        ), mock.patch.object(
+            likelihood_advantage_analysis,
+            "_plot_baseline_q_space_condition_figure",
+            side_effect=_write_placeholder_plot,
         ):
             result = likelihood_advantage_analysis.run_likelihood_advantage_analysis(
                 model1_dir="/tmp/gru_model",
@@ -794,12 +1026,19 @@ class TestLikelihoodAdvantageAnalysis(unittest.TestCase):
                 "rnn_state_pca_variance",
                 "rnn_state_pca_variance_csv",
                 "rnn_state_condition_plots",
+                "baseline_q_space_summary",
+                "baseline_q_condition_plots",
             }
             self.assertEqual(set(result.keys()), expected_keys)
             for key, path in result.items():
                 if key == "output_dir":
                     self.assertTrue(Path(path).exists())
                 elif key == "rnn_state_condition_plots":
+                    self.assertEqual(
+                        set(path.keys()),
+                        {spec.name for spec in likelihood_advantage_analysis._VARIABLE_SPECS},
+                    )
+                elif key == "baseline_q_condition_plots":
                     self.assertEqual(
                         set(path.keys()),
                         {spec.name for spec in likelihood_advantage_analysis._VARIABLE_SPECS},
@@ -813,6 +1052,10 @@ class TestLikelihoodAdvantageAnalysis(unittest.TestCase):
             self.assertIn("session_stage", trial_df.columns)
             self.assertIn("p_model1_left", trial_df.columns)
             self.assertIn("p_model1_right", trial_df.columns)
+            self.assertIn("p_rl_left", trial_df.columns)
+            self.assertIn("p_rl_right", trial_df.columns)
+            self.assertIn("q_rl_left", trial_df.columns)
+            self.assertIn("q_rl_right", trial_df.columns)
             self.assertIn("rnn_state_0", trial_df.columns)
             self.assertIn("rnn_state_3", trial_df.columns)
 

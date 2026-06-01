@@ -29,6 +29,17 @@ _SESSION_STAGE_COLORS = {
     "late": "#e15759",
 }
 _EPSILON = 1e-6
+_BASELINE_PROBABILITY_FRAME_COLUMNS = [
+    "subject_id",
+    "ses_idx",
+    "trial_idx",
+    "action",
+    "p_rl",
+    "p_rl_left",
+    "p_rl_right",
+    "q_rl_left",
+    "q_rl_right",
+]
 
 
 @dataclass(frozen=True)
@@ -80,6 +91,9 @@ def run_likelihood_advantage_analysis(
     state_condition_values_by_column: Mapping[str, Sequence[Any]] | None = None,
     pca_seed: int = 0,
     pca_fit_fraction: float = 0.5,
+    include_baseline_q_space: bool = True,
+    baseline_q_condition_columns: Sequence[str] | None = None,
+    baseline_q_condition_values_by_column: Mapping[str, Sequence[Any]] | None = None,
 ) -> dict[str, Any]:
     """Run a standalone trial-level likelihood advantage analysis."""
 
@@ -149,7 +163,9 @@ def run_likelihood_advantage_analysis(
         run_model2,
         trial_df=base_trial_df,
         split_name=split_name,
+        require_q_values=include_baseline_q_space,
     )
+    baseline_q_alignment = dict(baseline_prob_df.attrs.get("q_alignment", {}) or {})
     trial_df = _merge_probability_frame(
         trial_df,
         baseline_prob_df,
@@ -163,6 +179,8 @@ def run_likelihood_advantage_analysis(
         "p_model1_left",
         "p_model1_right",
         "p_rl",
+        "p_rl_left",
+        "p_rl_right",
     ):
         if probability_column in trial_df.columns:
             trial_df[probability_column] = np.clip(
@@ -196,6 +214,20 @@ def run_likelihood_advantage_analysis(
             output_dir=figures_dir / "rnn_state_space",
             pca_seed=pca_seed,
             pca_fit_fraction=pca_fit_fraction,
+        )
+
+    baseline_q_space_result: dict[str, Any] | None = None
+    if include_baseline_q_space:
+        default_q_condition_columns = [spec.name for spec in _VARIABLE_SPECS]
+        baseline_q_space_result = run_baseline_q_space_condition_analysis(
+            trial_advantage_pickle_path,
+            condition_columns=(
+                list(baseline_q_condition_columns)
+                if baseline_q_condition_columns is not None
+                else default_q_condition_columns
+            ),
+            condition_values_by_column=baseline_q_condition_values_by_column,
+            output_dir=figures_dir / "baseline_q_space",
         )
 
     advantage_histogram_path = figures_dir / "advantage_histogram.png"
@@ -356,6 +388,13 @@ def run_likelihood_advantage_analysis(
             ),
             "pca_seed": int(pca_seed),
             "pca_fit_fraction": float(pca_fit_fraction),
+            "include_baseline_q_space": bool(include_baseline_q_space),
+            "baseline_q_condition_columns": (
+                list(baseline_q_condition_columns)
+                if baseline_q_condition_columns is not None
+                else [spec.name for spec in _VARIABLE_SPECS]
+            ),
+            "baseline_q_alignment": baseline_q_alignment,
         },
         "model1": {
             "resolved_run": run_model1.to_dict(),
@@ -380,6 +419,7 @@ def run_likelihood_advantage_analysis(
             "subject_bin_summary_csv": str(subject_bin_summary_csv_path),
             "per_variable_plots": per_variable_plot_paths,
             "rnn_state_space": rnn_state_space_result,
+            "baseline_q_space": baseline_q_space_result,
         },
     }
     summary_path = resolved_output_dir / "summary.json"
@@ -411,6 +451,16 @@ def run_likelihood_advantage_analysis(
             None
             if rnn_state_space_result is None
             else rnn_state_space_result["rnn_state_condition_plots"]
+        ),
+        "baseline_q_space_summary": (
+            None
+            if baseline_q_space_result is None
+            else baseline_q_space_result["summary"]
+        ),
+        "baseline_q_condition_plots": (
+            None
+            if baseline_q_space_result is None
+            else baseline_q_space_result["baseline_q_condition_plots"]
         ),
     }
 
@@ -608,6 +658,155 @@ def run_rnn_state_space_subject_analysis(
         "subject_ids": selected_subject_ids,
         "pca_fit_n_trials": int(pca_result["fit_n_trials"]),
         "n_trials_projected": int(pca_result["n_trials_projected"]),
+    }
+
+
+def run_baseline_q_space_condition_analysis(
+    trial_advantage_pickle: str | Path,
+    *,
+    condition_columns: Sequence[str] | None = None,
+    condition_values_by_column: Mapping[str, Sequence[Any]] | None = None,
+    output_dir: str | Path | None = None,
+) -> dict[str, Any]:
+    """Plot baseline RL Q-space for condition-matched trials."""
+
+    pd = _import_pandas()
+
+    pickle_path = Path(trial_advantage_pickle).expanduser().resolve()
+    trial_df = pd.read_pickle(pickle_path)
+    resolved_output_dir = (
+        pickle_path.parent / "figures" / "baseline_q_space"
+        if output_dir is None
+        else Path(output_dir).expanduser().resolve()
+    )
+    resolved_output_dir.mkdir(parents=True, exist_ok=True)
+
+    q_space_result = _build_baseline_q_space_result(
+        trial_df,
+        finite_value_columns=["advantage"],
+    )
+    selected_condition_columns = _resolve_state_condition_columns(
+        trial_df,
+        condition_columns=condition_columns,
+    )
+    condition_specs = _build_state_condition_specs(
+        trial_df,
+        condition_columns=selected_condition_columns,
+        condition_values_by_column=condition_values_by_column or {},
+    )
+
+    condition_plot_paths: dict[str, dict[str, str]] = {}
+    condition_root = resolved_output_dir / "conditions"
+    for condition_column, condition_entries in condition_specs.items():
+        column_dir = condition_root / _safe_filename_component(condition_column)
+        condition_plot_paths[condition_column] = {}
+        for condition_entry in condition_entries:
+            plot_path = column_dir / f"{condition_entry['slug']}.png"
+            _plot_baseline_q_space_condition_figure(
+                q_space_result,
+                condition_column=condition_column,
+                condition_label=str(condition_entry["label"]),
+                condition_mask=condition_entry["mask"],
+                output_path=plot_path,
+            )
+            condition_plot_paths[condition_column][str(condition_entry["label"])] = str(
+                plot_path
+            )
+
+    summary_payload = {
+        "trial_advantage_pickle": str(pickle_path),
+        "output_dir": str(resolved_output_dir),
+        "condition_columns": selected_condition_columns,
+        "n_trials_projected": int(q_space_result["n_trials_projected"]),
+        "artifacts": {
+            "baseline_q_condition_plots": condition_plot_paths,
+        },
+    }
+    summary_path = resolved_output_dir / "summary.json"
+    summary_path.write_text(json.dumps(summary_payload, indent=2, default=lc._json_default))
+
+    return {
+        "output_dir": str(resolved_output_dir),
+        "summary": str(summary_path),
+        "trial_advantage_pickle": str(pickle_path),
+        "condition_columns": selected_condition_columns,
+        "baseline_q_condition_plots": condition_plot_paths,
+        "n_trials_projected": int(q_space_result["n_trials_projected"]),
+    }
+
+
+def run_baseline_q_space_subject_analysis(
+    trial_advantage_pickle: str | Path,
+    *,
+    probability_column: str = "p_rl_left",
+    subject_ids: Sequence[Any] | None = None,
+    output_dir: str | Path | None = None,
+) -> dict[str, Any]:
+    """Plot baseline RL Q-space per subject, colored by baseline probability."""
+
+    pd = _import_pandas()
+
+    pickle_path = Path(trial_advantage_pickle).expanduser().resolve()
+    trial_df = pd.read_pickle(pickle_path)
+    probability_column = str(probability_column)
+    resolved_output_dir = (
+        pickle_path.parent
+        / "figures"
+        / "baseline_q_space_subjects"
+        / _safe_filename_component(probability_column)
+        if output_dir is None
+        else Path(output_dir).expanduser().resolve()
+    )
+    resolved_output_dir.mkdir(parents=True, exist_ok=True)
+
+    _validate_baseline_q_space_dataframe(
+        trial_df,
+        required_value_columns=[probability_column],
+    )
+    q_space_result = _build_baseline_q_space_result(
+        trial_df,
+        finite_value_columns=[],
+    )
+    selected_subject_ids = _resolve_subject_ids_for_state_space_plot(
+        trial_df,
+        subject_ids=subject_ids,
+    )
+    subject_plot_paths: dict[str, str] = {}
+    subject_plot_dir = resolved_output_dir / "subjects"
+    subject_series = pd.DataFrame(trial_df)["subject_id"].astype(str)
+    for subject_id in selected_subject_ids:
+        subject_mask = (subject_series == str(subject_id)).to_numpy(dtype=bool)
+        plot_path = subject_plot_dir / f"{_safe_filename_component(subject_id)}.png"
+        _plot_baseline_q_space_subject_probability_figure(
+            q_space_result,
+            subject_id=str(subject_id),
+            subject_mask=subject_mask,
+            probability_column=probability_column,
+            output_path=plot_path,
+        )
+        subject_plot_paths[str(subject_id)] = str(plot_path)
+
+    summary_payload = {
+        "trial_advantage_pickle": str(pickle_path),
+        "output_dir": str(resolved_output_dir),
+        "probability_column": probability_column,
+        "subject_ids": selected_subject_ids,
+        "n_trials_projected": int(q_space_result["n_trials_projected"]),
+        "artifacts": {
+            "subject_probability_plots": subject_plot_paths,
+        },
+    }
+    summary_path = resolved_output_dir / "summary.json"
+    summary_path.write_text(json.dumps(summary_payload, indent=2, default=lc._json_default))
+
+    return {
+        "output_dir": str(resolved_output_dir),
+        "summary": str(summary_path),
+        "trial_advantage_pickle": str(pickle_path),
+        "probability_column": probability_column,
+        "subject_probability_plots": subject_plot_paths,
+        "subject_ids": selected_subject_ids,
+        "n_trials_projected": int(q_space_result["n_trials_projected"]),
     }
 
 
@@ -1262,6 +1461,7 @@ def _build_baseline_probability_frame(
     *,
     trial_df: Any,
     split_name: str,
+    require_q_values: bool = True,
 ) -> Any:
     pd = _import_pandas()
 
@@ -1295,13 +1495,19 @@ def _build_baseline_probability_frame(
                     run,
                     trial_df=subject_df,
                     fitted_params=fitted_params,
+                    require_q_values=require_q_values,
                 )
             )
-        return (
+        combined_df = (
             pd.concat(all_frames, ignore_index=True)
             if all_frames
-            else pd.DataFrame(columns=["subject_id", "ses_idx", "trial_idx", "action", "p_rl"])
+            else pd.DataFrame(columns=_BASELINE_PROBABILITY_FRAME_COLUMNS)
         )
+        combined_df.attrs["q_alignment"] = {
+            str(frame.attrs.get("subject_id", index)): frame.attrs.get("q_alignment", {})
+            for index, frame in enumerate(all_frames)
+        }
+        return combined_df
 
     fitted_params = baseline_output.get("fitted_params")
     if not isinstance(fitted_params, Mapping) or not fitted_params:
@@ -1310,6 +1516,7 @@ def _build_baseline_probability_frame(
         run,
         trial_df=pd.DataFrame(trial_df).copy(),
         fitted_params=dict(fitted_params),
+        require_q_values=require_q_values,
     )
 
 
@@ -1318,6 +1525,7 @@ def _rollout_baseline_probabilities(
     *,
     trial_df: Any,
     fitted_params: Mapping[str, Any],
+    require_q_values: bool = True,
 ) -> Any:
     pd = _import_pandas()
 
@@ -1325,27 +1533,368 @@ def _rollout_baseline_probabilities(
     agent_class_name, agent_kwargs = lc._resolve_baseline_agent_spec(run, baseline_output)
     session_payloads = _session_rollout_payloads_from_trial_df(trial_df)
     if not session_payloads:
-        return pd.DataFrame(
-            columns=["subject_id", "ses_idx", "trial_idx", "action", "p_rl"]
-        )
+        return pd.DataFrame(columns=_BASELINE_PROBABILITY_FRAME_COLUMNS)
 
-    choice_prob_sessions = lc._perform_baseline_agent_rollout(
-        agent_class_name=agent_class_name,
-        agent_kwargs=agent_kwargs,
-        fitted_params=fitted_params,
-        choice_sessions=[payload["choices"] for payload in session_payloads],
-        reward_sessions=[payload["rewards"] for payload in session_payloads],
-        seed=run.seed,
+    choice_prob_sessions, q_value_sessions, q_alignment = (
+        _perform_baseline_agent_rollout_with_q_histories(
+            agent_class_name=agent_class_name,
+            agent_kwargs=agent_kwargs,
+            fitted_params=fitted_params,
+            choice_sessions=[payload["choices"] for payload in session_payloads],
+            reward_sessions=[payload["rewards"] for payload in session_payloads],
+            seed=run.seed,
+            require_q_values=require_q_values,
+        )
     )
     if len(choice_prob_sessions) != len(session_payloads):
         raise ValueError(
             "Baseline rollout returned a different number of sessions than requested: "
             f"expected={len(session_payloads)} received={len(choice_prob_sessions)}"
         )
-    return _probability_frame_from_rollout_sessions(
+    if q_value_sessions is not None and len(q_value_sessions) != len(session_payloads):
+        raise ValueError(
+            "Baseline Q-history recovery returned a different number of sessions than "
+            f"requested: expected={len(session_payloads)} received={len(q_value_sessions)}"
+        )
+    result_df = _probability_frame_from_rollout_sessions(
         session_payloads,
         choice_prob_sessions=choice_prob_sessions,
+        q_value_sessions=q_value_sessions,
     )
+    result_df.attrs["q_alignment"] = q_alignment
+    if session_payloads:
+        result_df.attrs["subject_id"] = str(session_payloads[0]["subject_id"])
+    return result_df
+
+
+def _perform_baseline_agent_rollout_with_q_histories(
+    *,
+    agent_class_name: str,
+    agent_kwargs: Mapping[str, Any],
+    fitted_params: Mapping[str, Any],
+    choice_sessions: Sequence[Any],
+    reward_sessions: Sequence[Any],
+    seed: int | None,
+    require_q_values: bool,
+) -> tuple[list[Any], list[Any] | None, dict[str, Any]]:
+    from aind_dynamic_foraging_models import generative_model
+
+    agent_class_obj = getattr(generative_model, agent_class_name, None)
+    if agent_class_obj is None:
+        raise ValueError(
+            f"Agent class {agent_class_name!r} was not found in generative_model."
+        )
+
+    agent = agent_class_obj(
+        **dict(agent_kwargs),
+        seed=seed,
+    )
+    agent.set_params(
+        **{
+            str(param_name): float(param_value)
+            for param_name, param_value in dict(fitted_params).items()
+        }
+    )
+    choice_prob_sessions = list(
+        agent.perform_closed_loop_multi_session(
+            list(choice_sessions),
+            list(reward_sessions),
+        )
+    )
+    if not require_q_values:
+        return choice_prob_sessions, None, {"status": "not_requested"}
+
+    q_value_sessions, q_alignment = _extract_policy_time_q_histories(
+        agent,
+        choice_prob_sessions=choice_prob_sessions,
+        expected_trials_per_session=[len(session) for session in choice_sessions],
+    )
+    return choice_prob_sessions, q_value_sessions, q_alignment
+
+
+def _extract_policy_time_q_histories(
+    eval_agent: Any,
+    *,
+    choice_prob_sessions: Sequence[Any],
+    expected_trials_per_session: Sequence[int],
+) -> tuple[list[Any], dict[str, Any]]:
+    try:
+        from utils.baseline_rl_evaluation import _extract_q_histories
+    except Exception:  # pragma: no cover - import should be available in repo runtime
+        _extract_q_histories = None
+
+    if _extract_q_histories is not None:
+        exact_histories = _extract_q_histories(
+            eval_agent,
+            [
+                _import_numpy().asarray(choice_prob_session, dtype=float)
+                for choice_prob_session in choice_prob_sessions
+            ],
+        )
+        if exact_histories is not None:
+            return list(exact_histories), {
+                "status": "recovered",
+                "alignment": "trial_aligned",
+                "source": "utils.baseline_rl_evaluation._extract_q_histories",
+            }
+
+    recovered = _coerce_policy_time_q_history_candidate(
+        eval_agent,
+        expected_trials_per_session=[int(value) for value in expected_trials_per_session],
+    )
+    if recovered is not None:
+        q_histories, alignment_modes = recovered
+        return q_histories, {
+            "status": "recovered",
+            "alignment": _summarize_alignment_modes(alignment_modes),
+            "session_alignments": alignment_modes,
+            "source": "policy_time_fallback",
+        }
+
+    raise ValueError(
+        "Could not recover policy-time baseline RL Q-value histories from the rollout "
+        "agent. Q-space plotting requires q_rl_left/q_rl_right; verify the baseline "
+        "agent exposes Q histories aligned to trial time or pre/post histories with "
+        "n_trials + 1 entries."
+    )
+
+
+def _coerce_policy_time_q_history_candidate(
+    candidate: Any,
+    *,
+    expected_trials_per_session: Sequence[int],
+    depth: int = 0,
+    seen: set[int] | None = None,
+) -> tuple[list[Any], list[str]] | None:
+    np = _import_numpy()
+
+    if candidate is None or depth > 6:
+        return None
+
+    if seen is None:
+        seen = set()
+
+    if not isinstance(candidate, (str, bytes, int, float, bool, np.generic)):
+        candidate_id = id(candidate)
+        if candidate_id in seen:
+            return None
+        seen.add(candidate_id)
+
+    expected_lengths = [int(value) for value in expected_trials_per_session]
+    expected_n_sessions = len(expected_lengths)
+
+    if isinstance(candidate, np.ndarray) or hasattr(candidate, "__array__"):
+        arr = np.asarray(candidate, dtype=float)
+        if arr.ndim == 2 and expected_n_sessions == 1:
+            try:
+                aligned_session, alignment_mode = _align_policy_time_q_session(
+                    arr,
+                    n_trials=expected_lengths[0],
+                )
+            except ValueError:
+                return None
+            return [aligned_session], [alignment_mode]
+        if arr.ndim == 3:
+            for axis in range(arr.ndim):
+                if arr.shape[axis] != expected_n_sessions:
+                    continue
+                aligned_sessions: list[Any] = []
+                alignment_modes: list[str] = []
+                valid = True
+                for session_index, expected_trials in enumerate(expected_lengths):
+                    session_arr = np.take(arr, session_index, axis=axis)
+                    try:
+                        aligned_session, alignment_mode = _align_policy_time_q_session(
+                            session_arr,
+                            n_trials=expected_trials,
+                        )
+                    except ValueError:
+                        valid = False
+                        break
+                    aligned_sessions.append(aligned_session)
+                    alignment_modes.append(alignment_mode)
+                if valid:
+                    return aligned_sessions, alignment_modes
+        return None
+
+    if isinstance(candidate, (list, tuple)):
+        if len(candidate) == expected_n_sessions:
+            aligned_sessions = []
+            alignment_modes = []
+            valid = True
+            for item, expected_trials in zip(candidate, expected_lengths):
+                recovered = _coerce_policy_time_q_history_candidate(
+                    item,
+                    expected_trials_per_session=[expected_trials],
+                    depth=depth + 1,
+                    seen=seen,
+                )
+                if recovered is None:
+                    valid = False
+                    break
+                item_sessions, item_modes = recovered
+                if len(item_sessions) != 1:
+                    valid = False
+                    break
+                aligned_sessions.append(item_sessions[0])
+                alignment_modes.append(item_modes[0])
+            if valid:
+                return aligned_sessions, alignment_modes
+
+        for item in candidate:
+            recovered = _coerce_policy_time_q_history_candidate(
+                item,
+                expected_trials_per_session=expected_lengths,
+                depth=depth + 1,
+                seen=seen,
+            )
+            if recovered is not None:
+                return recovered
+        return None
+
+    if isinstance(candidate, Mapping):
+        preferred_keys = [
+            "q_values",
+            "q_value_history",
+            "q_values_history",
+            "q_history",
+            "Q",
+            "Qs",
+            "history",
+            "values",
+        ]
+        for key in preferred_keys:
+            if key in candidate:
+                recovered = _coerce_policy_time_q_history_candidate(
+                    candidate[key],
+                    expected_trials_per_session=expected_lengths,
+                    depth=depth + 1,
+                    seen=seen,
+                )
+                if recovered is not None:
+                    return recovered
+
+        for key, value in candidate.items():
+            if isinstance(key, str) and any(
+                token in key.lower() for token in ("q", "value", "history")
+            ):
+                recovered = _coerce_policy_time_q_history_candidate(
+                    value,
+                    expected_trials_per_session=expected_lengths,
+                    depth=depth + 1,
+                    seen=seen,
+                )
+                if recovered is not None:
+                    return recovered
+
+        for value in candidate.values():
+            recovered = _coerce_policy_time_q_history_candidate(
+                value,
+                expected_trials_per_session=expected_lengths,
+                depth=depth + 1,
+                seen=seen,
+            )
+            if recovered is not None:
+                return recovered
+        return None
+
+    if hasattr(candidate, "__dict__"):
+        attrs = vars(candidate)
+        preferred_attr_names = [
+            "q_value_history",
+            "q_values_history",
+            "Q_history",
+            "Q_values_history",
+            "Qs_history",
+            "q_values",
+            "q_history",
+            "session_q_values",
+            "q_values_all_sessions",
+        ]
+        for attr_name in preferred_attr_names:
+            if attr_name in attrs:
+                recovered = _coerce_policy_time_q_history_candidate(
+                    attrs[attr_name],
+                    expected_trials_per_session=expected_lengths,
+                    depth=depth + 1,
+                    seen=seen,
+                )
+                if recovered is not None:
+                    return recovered
+
+        for attr_name, value in attrs.items():
+            if any(token in attr_name.lower() for token in ("q", "value", "history")):
+                recovered = _coerce_policy_time_q_history_candidate(
+                    value,
+                    expected_trials_per_session=expected_lengths,
+                    depth=depth + 1,
+                    seen=seen,
+                )
+                if recovered is not None:
+                    return recovered
+
+        for value in attrs.values():
+            recovered = _coerce_policy_time_q_history_candidate(
+                value,
+                expected_trials_per_session=expected_lengths,
+                depth=depth + 1,
+                seen=seen,
+            )
+            if recovered is not None:
+                return recovered
+
+    return None
+
+
+def _align_policy_time_q_session(q_session: Any, *, n_trials: int) -> tuple[Any, str]:
+    np = _import_numpy()
+
+    arr = np.asarray(q_session, dtype=float)
+    if arr.ndim != 2:
+        raise ValueError(f"Q session must be 2D, received shape={arr.shape}")
+
+    if arr.shape[0] == 2 and arr.shape[1] in {int(n_trials), int(n_trials) + 1}:
+        alignment = (
+            "trial_aligned"
+            if arr.shape[1] == int(n_trials)
+            else "prepost_first_n"
+        )
+        return arr[:2, : int(n_trials)], alignment
+    if arr.shape[1] == 2 and arr.shape[0] in {int(n_trials), int(n_trials) + 1}:
+        alignment = (
+            "trial_aligned"
+            if arr.shape[0] == int(n_trials)
+            else "prepost_first_n"
+        )
+        return arr[: int(n_trials), :2].T, alignment
+    if arr.shape[1] in {int(n_trials), int(n_trials) + 1} and arr.shape[0] >= 2:
+        alignment = (
+            "trial_aligned"
+            if arr.shape[1] == int(n_trials)
+            else "prepost_first_n"
+        )
+        return arr[:2, : int(n_trials)], alignment
+    if arr.shape[0] in {int(n_trials), int(n_trials) + 1} and arr.shape[1] >= 2:
+        alignment = (
+            "trial_aligned"
+            if arr.shape[0] == int(n_trials)
+            else "prepost_first_n"
+        )
+        return arr[: int(n_trials), :2].T, alignment
+
+    raise ValueError(
+        "Unable to align baseline RL Q values with policy-time trials: "
+        f"q_shape={arr.shape}, n_trials={n_trials}"
+    )
+
+
+def _summarize_alignment_modes(alignment_modes: Sequence[str]) -> str:
+    unique_modes = list(dict.fromkeys(str(mode) for mode in alignment_modes))
+    if not unique_modes:
+        return "unknown"
+    if len(unique_modes) == 1:
+        return unique_modes[0]
+    return "mixed"
 
 
 def _session_rollout_payloads_from_trial_df(trial_df: Any) -> list[dict[str, Any]]:
@@ -1375,11 +1924,21 @@ def _probability_frame_from_rollout_sessions(
     session_payloads: Sequence[Mapping[str, Any]],
     *,
     choice_prob_sessions: Sequence[Any],
+    q_value_sessions: Sequence[Any] | None = None,
 ) -> Any:
     pd = _import_pandas()
 
     records: list[dict[str, Any]] = []
-    for payload, choice_prob_session in zip(session_payloads, choice_prob_sessions):
+    q_sessions = (
+        [None] * len(session_payloads)
+        if q_value_sessions is None
+        else list(q_value_sessions)
+    )
+    for payload, choice_prob_session, q_value_session in zip(
+        session_payloads,
+        choice_prob_sessions,
+        q_sessions,
+    ):
         choices = payload["choices"]
         aligned_probabilities = _align_binary_choice_prob_session(
             choice_prob_session,
@@ -1391,19 +1950,41 @@ def _probability_frame_from_rollout_sessions(
                 f"trial count for session {payload['ses_idx']!r}: "
                 f"expected={len(choices)} received={aligned_probabilities.shape[1]}"
             )
-        for trial_idx, action in enumerate(choices.tolist(), start=1):
-            records.append(
-                {
-                    "subject_id": payload["subject_id"],
-                    "ses_idx": payload["ses_idx"],
-                    "trial_idx": int(trial_idx),
-                    "action": int(action),
-                    "p_rl": float(aligned_probabilities[int(action), trial_idx - 1]),
-                }
+        aligned_q_values = None
+        if q_value_session is not None:
+            aligned_q_values, _ = _align_policy_time_q_session(
+                q_value_session,
+                n_trials=int(len(choices)),
             )
+        for trial_idx, action in enumerate(choices.tolist(), start=1):
+            record = {
+                "subject_id": payload["subject_id"],
+                "ses_idx": payload["ses_idx"],
+                "trial_idx": int(trial_idx),
+                "action": int(action),
+                "p_rl": float(aligned_probabilities[int(action), trial_idx - 1]),
+                "p_rl_left": float(aligned_probabilities[0, trial_idx - 1]),
+                "p_rl_right": float(aligned_probabilities[1, trial_idx - 1]),
+            }
+            if aligned_q_values is not None:
+                record["q_rl_left"] = float(aligned_q_values[0, trial_idx - 1])
+                record["q_rl_right"] = float(aligned_q_values[1, trial_idx - 1])
+            records.append(record)
     return pd.DataFrame.from_records(
         records,
-        columns=["subject_id", "ses_idx", "trial_idx", "action", "p_rl"],
+        columns=(
+            _BASELINE_PROBABILITY_FRAME_COLUMNS
+            if q_value_sessions is not None
+            else [
+                "subject_id",
+                "ses_idx",
+                "trial_idx",
+                "action",
+                "p_rl",
+                "p_rl_left",
+                "p_rl_right",
+            ]
+        ),
     )
 
 
@@ -2354,6 +2935,263 @@ def _plot_rnn_state_subject_probability_figure(
     fig.tight_layout(rect=(0, 0, 0.88, 0.94))
     if last_scatter is not None:
         colorbar_axis = fig.add_axes((0.91, 0.14, 0.018, 0.74))
+        colorbar = fig.colorbar(last_scatter, cax=colorbar_axis)
+        colorbar.set_label(probability_column)
+    fig.savefig(output_path)
+    plt.close(fig)
+
+
+def _validate_baseline_q_space_dataframe(
+    trial_df: Any,
+    *,
+    required_value_columns: Sequence[str] = (),
+) -> None:
+    pd = _import_pandas()
+
+    df = pd.DataFrame(trial_df)
+    required_columns = ["q_rl_left", "q_rl_right", *[str(column) for column in required_value_columns]]
+    missing_columns = [column for column in required_columns if column not in df.columns]
+    if missing_columns:
+        raise ValueError(
+            "trial_advantage_pickle is missing required columns for baseline Q-space "
+            f"analysis: {missing_columns}"
+        )
+
+
+def _build_baseline_q_space_result(
+    trial_df: Any,
+    *,
+    finite_value_columns: Sequence[str],
+) -> dict[str, Any]:
+    pd = _import_pandas()
+    np = _import_numpy()
+
+    _validate_baseline_q_space_dataframe(
+        trial_df,
+        required_value_columns=finite_value_columns,
+    )
+    df = pd.DataFrame(trial_df).copy().reset_index(drop=True)
+    q_left = df["q_rl_left"].to_numpy(dtype=float)
+    q_right = df["q_rl_right"].to_numpy(dtype=float)
+    finite_mask = np.isfinite(q_left) & np.isfinite(q_right)
+    for column in finite_value_columns:
+        finite_mask = finite_mask & np.isfinite(df[str(column)].to_numpy(dtype=float))
+    n_valid = int(np.sum(finite_mask))
+    if n_valid < 1:
+        raise ValueError(
+            "At least one finite baseline RL Q-space trial is required for plotting."
+        )
+    x_limits, y_limits = _baseline_q_space_axis_limits(q_left[finite_mask], q_right[finite_mask])
+    return {
+        "trial_df": df,
+        "finite_mask": finite_mask,
+        "q_left": q_left,
+        "q_right": q_right,
+        "x_limits": x_limits,
+        "y_limits": y_limits,
+        "n_trials_projected": n_valid,
+    }
+
+
+def _baseline_q_space_axis_limits(q_left: Any, q_right: Any) -> tuple[tuple[float, float], tuple[float, float]]:
+    np = _import_numpy()
+
+    q_left = np.asarray(q_left, dtype=float)
+    q_right = np.asarray(q_right, dtype=float)
+
+    def _limits(values: Any) -> tuple[float, float]:
+        finite_values = np.asarray(values, dtype=float)
+        finite_values = finite_values[np.isfinite(finite_values)]
+        if finite_values.size == 0:
+            return (-1.0, 1.0)
+        min_value = float(np.min(finite_values))
+        max_value = float(np.max(finite_values))
+        if math.isclose(min_value, max_value):
+            padding = max(0.05, abs(min_value) * 0.05)
+        else:
+            padding = max(0.05, (max_value - min_value) * 0.05)
+        return (min_value - padding, max_value + padding)
+
+    return _limits(q_left), _limits(q_right)
+
+
+def _plot_baseline_q_space_condition_figure(
+    q_space_result: Mapping[str, Any],
+    *,
+    condition_column: str,
+    condition_label: str,
+    condition_mask: Any,
+    output_path: Path,
+) -> None:
+    plt = _import_pyplot()
+    np = _import_numpy()
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    df = q_space_result["trial_df"]
+    q_left = np.asarray(q_space_result["q_left"], dtype=float)
+    q_right = np.asarray(q_space_result["q_right"], dtype=float)
+    finite_mask = np.asarray(q_space_result["finite_mask"], dtype=bool)
+    advantages = df["advantage"].to_numpy(dtype=float)
+    condition_mask = np.asarray(condition_mask, dtype=bool)
+    highlight_mask = finite_mask & condition_mask & np.isfinite(advantages)
+    highlight_advantages = advantages[highlight_mask]
+    highlight_count = int(np.sum(highlight_mask))
+    highlight_mean_advantage = (
+        float(np.mean(highlight_advantages))
+        if highlight_advantages.size
+        else math.nan
+    )
+    highlight_sem_advantage = (
+        float(np.std(highlight_advantages, ddof=1) / math.sqrt(highlight_advantages.size))
+        if highlight_advantages.size > 1
+        else 0.0 if highlight_advantages.size == 1 else math.nan
+    )
+    finite_advantages = advantages[finite_mask]
+    max_abs_advantage = (
+        float(np.nanmax(np.abs(finite_advantages)))
+        if finite_advantages.size
+        else 1.0
+    )
+    if not np.isfinite(max_abs_advantage) or max_abs_advantage <= 0.0:
+        max_abs_advantage = 1.0
+
+    fig, ax = plt.subplots(figsize=(7.2, 6.2), dpi=120)
+    ax.scatter(
+        q_left[finite_mask],
+        q_right[finite_mask],
+        color="#8c8c8c",
+        alpha=0.06,
+        s=8,
+        linewidths=0,
+    )
+    last_scatter = None
+    if highlight_count > 0:
+        last_scatter = ax.scatter(
+            q_left[highlight_mask],
+            q_right[highlight_mask],
+            c=highlight_advantages,
+            cmap="coolwarm",
+            vmin=-max_abs_advantage,
+            vmax=max_abs_advantage,
+            s=8,
+            alpha=0.9,
+            linewidths=0,
+        )
+    else:
+        ax.text(0.5, 0.5, "No matching trials", ha="center", va="center", transform=ax.transAxes)
+    ax.axhline(0.0, color="#d0d0d0", linewidth=0.7, zorder=0)
+    ax.axvline(0.0, color="#d0d0d0", linewidth=0.7, zorder=0)
+    ax.set_xlim(*q_space_result["x_limits"])
+    ax.set_ylim(*q_space_result["y_limits"])
+    ax.set_xlabel("Q(left)")
+    ax.set_ylabel("Q(right)")
+    if math.isfinite(highlight_mean_advantage) and math.isfinite(highlight_sem_advantage):
+        value_summary = (
+            f"advantage={highlight_mean_advantage:.4g} +/- "
+            f"{highlight_sem_advantage:.4g}"
+        )
+    else:
+        value_summary = "advantage=nan +/- nan"
+    fig.suptitle(
+        f"Baseline Q-space | {condition_column} = {condition_label} "
+        f"(n={highlight_count}, {value_summary})"
+    )
+    fig.tight_layout(rect=(0, 0, 0.86, 0.94))
+    if last_scatter is not None:
+        colorbar_axis = fig.add_axes((0.89, 0.16, 0.025, 0.72))
+        colorbar = fig.colorbar(last_scatter, cax=colorbar_axis)
+        colorbar.set_label("Log-likelihood advantage")
+    fig.savefig(output_path)
+    plt.close(fig)
+
+
+def _plot_baseline_q_space_subject_probability_figure(
+    q_space_result: Mapping[str, Any],
+    *,
+    subject_id: str,
+    subject_mask: Any,
+    probability_column: str,
+    output_path: Path,
+) -> None:
+    plt = _import_pyplot()
+    np = _import_numpy()
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    df = q_space_result["trial_df"]
+    if probability_column not in df.columns:
+        raise ValueError(
+            f"trial_advantage_pickle must contain probability_column={probability_column!r}."
+        )
+
+    q_left = np.asarray(q_space_result["q_left"], dtype=float)
+    q_right = np.asarray(q_space_result["q_right"], dtype=float)
+    finite_mask = np.asarray(q_space_result["finite_mask"], dtype=bool)
+    probability_values = df[probability_column].to_numpy(dtype=float)
+    subject_mask = np.asarray(subject_mask, dtype=bool)
+    if subject_mask.shape[0] != finite_mask.shape[0]:
+        raise ValueError("subject_mask must be row-aligned to the Q-space dataframe.")
+
+    highlight_mask = finite_mask & subject_mask & np.isfinite(probability_values)
+    highlight_probabilities = probability_values[highlight_mask]
+    highlight_count = int(np.sum(highlight_mask))
+    highlight_mean_probability = (
+        float(np.mean(highlight_probabilities))
+        if highlight_probabilities.size
+        else math.nan
+    )
+    highlight_sem_probability = (
+        float(
+            np.std(highlight_probabilities, ddof=1)
+            / math.sqrt(highlight_probabilities.size)
+        )
+        if highlight_probabilities.size > 1
+        else 0.0 if highlight_probabilities.size == 1 else math.nan
+    )
+
+    fig, ax = plt.subplots(figsize=(7.2, 6.2), dpi=120)
+    ax.scatter(
+        q_left[finite_mask],
+        q_right[finite_mask],
+        color="#8c8c8c",
+        alpha=0.06,
+        s=8,
+        linewidths=0,
+    )
+    last_scatter = None
+    if highlight_count > 0:
+        last_scatter = ax.scatter(
+            q_left[highlight_mask],
+            q_right[highlight_mask],
+            c=highlight_probabilities,
+            cmap="viridis",
+            vmin=0.0,
+            vmax=1.0,
+            s=8,
+            alpha=0.9,
+            linewidths=0,
+        )
+    else:
+        ax.text(0.5, 0.5, "No matching trials", ha="center", va="center", transform=ax.transAxes)
+    ax.axhline(0.0, color="#d0d0d0", linewidth=0.7, zorder=0)
+    ax.axvline(0.0, color="#d0d0d0", linewidth=0.7, zorder=0)
+    ax.set_xlim(*q_space_result["x_limits"])
+    ax.set_ylim(*q_space_result["y_limits"])
+    ax.set_xlabel("Q(left)")
+    ax.set_ylabel("Q(right)")
+    if math.isfinite(highlight_mean_probability) and math.isfinite(highlight_sem_probability):
+        value_summary = (
+            f"mean={highlight_mean_probability:.4g} +/- "
+            f"{highlight_sem_probability:.4g}"
+        )
+    else:
+        value_summary = "mean=nan +/- nan"
+    fig.suptitle(
+        f"Baseline Q-space | subject_id={subject_id} | {probability_column} "
+        f"(n={highlight_count}, {value_summary})"
+    )
+    fig.tight_layout(rect=(0, 0, 0.86, 0.94))
+    if last_scatter is not None:
+        colorbar_axis = fig.add_axes((0.89, 0.16, 0.025, 0.72))
         colorbar = fig.colorbar(last_scatter, cax=colorbar_axis)
         colorbar.set_label(probability_column)
     fig.savefig(output_path)

@@ -13,6 +13,14 @@ _EXPORTS = {
         "post_training_analysis.baseline_rl_analysis",
         "run_baseline_rl_post_training_analysis",
     ),
+    "run_baseline_q_space_condition_analysis": (
+        "post_training_analysis.likelihood_advantage_analysis",
+        "run_baseline_q_space_condition_analysis",
+    ),
+    "run_baseline_q_space_subject_analysis": (
+        "post_training_analysis.likelihood_advantage_analysis",
+        "run_baseline_q_space_subject_analysis",
+    ),
     "run_embedding_space_analysis": (
         "post_training_analysis.embedding_space_analysis",
         "run_embedding_space_analysis",
