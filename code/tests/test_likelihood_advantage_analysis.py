@@ -396,8 +396,278 @@ class TestLikelihoodAdvantageAnalysis(unittest.TestCase):
 
         self.assertEqual(len(choice_prob_sessions), 1)
         self.assertEqual(len(q_value_sessions), 1)
+        self.assertEqual(q_alignment["q_source"], "agent_exposed_history")
         self.assertEqual(q_alignment["alignment"], "prepost_first_n")
         self.assertTrue(np.allclose(q_value_sessions[0], [[1.0, 2.0], [3.0, 4.0]]))
+
+    def test_exposed_q_history_wins_over_manual_forager_fallback(self):
+        class ForagerQLearning:
+            def __init__(self, **kwargs):
+                del kwargs
+                self.q_value_history = None
+
+            def set_params(self, **kwargs):
+                del kwargs
+
+            def perform_closed_loop_multi_session(self, choice_sessions, reward_sessions):
+                del reward_sessions
+                self.q_value_history = [
+                    np.array([[0.5, 0.6], [0.5, 0.4]])
+                    for _ in choice_sessions
+                ]
+                return [
+                    np.array([[0.5, 0.6], [0.5, 0.4]])
+                    for _ in choice_sessions
+                ]
+
+        package = types.ModuleType("aind_dynamic_foraging_models")
+        package.generative_model = types.SimpleNamespace(ForagerQLearning=ForagerQLearning)
+        with mock.patch.dict(sys.modules, {"aind_dynamic_foraging_models": package}), mock.patch.object(
+            likelihood_advantage_analysis,
+            "_manual_forager_q_learning_q_histories",
+            side_effect=AssertionError("manual fallback should not run"),
+        ):
+            _, q_value_sessions, q_alignment = (
+                likelihood_advantage_analysis._perform_baseline_agent_rollout_with_q_histories(
+                    agent_class_name="ForagerQLearning",
+                    agent_kwargs={
+                        "action_selection": "softmax",
+                        "choice_kernel": "none",
+                    },
+                    fitted_params={"learn_rate": 0.1},
+                    choice_sessions=[np.array([0, 1])],
+                    reward_sessions=[np.array([1.0, 0.0])],
+                    seed=0,
+                    require_q_values=True,
+                )
+            )
+
+        self.assertEqual(q_alignment["q_source"], "agent_exposed_history")
+        self.assertTrue(np.allclose(q_value_sessions[0], [[0.5, 0.6], [0.5, 0.4]]))
+
+    def test_manual_forager_q_learning_fallback_produces_policy_time_q_values(self):
+        agent_kwargs = {
+            "action_selection": "softmax",
+            "choice_kernel": "none",
+            "number_of_learning_rate": 2,
+            "number_of_forget_rate": 1,
+        }
+        fitted_params = {
+            "learn_rate_rew": 0.5,
+            "learn_rate_unrew": 0.25,
+            "forget_rate_unchosen": 0.1,
+            "softmax_inverse_temperature": 2.0,
+            "biasL": 0.0,
+        }
+
+        class ForagerQLearning:
+            def __init__(self, **kwargs):
+                del kwargs
+                self.params = {}
+
+            def set_params(self, **kwargs):
+                self.params = kwargs
+
+            def perform_closed_loop_multi_session(self, choice_sessions, reward_sessions):
+                probabilities = []
+                for choices, rewards in zip(choice_sessions, reward_sessions):
+                    q_values = (
+                        likelihood_advantage_analysis._manual_forager_q_learning_session_q_values(
+                            choices=choices,
+                            rewards=rewards,
+                            fitted_params=self.params,
+                            number_of_learning_rate=2,
+                            number_of_forget_rate=1,
+                            forget_rate=self.params["forget_rate_unchosen"],
+                            initial_q=np.array([0.5, 0.5]),
+                        )
+                    )
+                    probabilities.append(
+                        likelihood_advantage_analysis._manual_forager_q_learning_softmax_probabilities(
+                            q_values,
+                            fitted_params=self.params,
+                        )
+                    )
+                return probabilities
+
+        package = types.ModuleType("aind_dynamic_foraging_models")
+        package.generative_model = types.SimpleNamespace(ForagerQLearning=ForagerQLearning)
+        with mock.patch.dict(sys.modules, {"aind_dynamic_foraging_models": package}):
+            choice_prob_sessions, q_value_sessions, q_alignment = (
+                likelihood_advantage_analysis._perform_baseline_agent_rollout_with_q_histories(
+                    agent_class_name="ForagerQLearning",
+                    agent_kwargs=agent_kwargs,
+                    fitted_params=fitted_params,
+                    choice_sessions=[np.array([0, 1, 0])],
+                    reward_sessions=[np.array([1.0, 0.0, 1.0])],
+                    seed=0,
+                    require_q_values=True,
+                )
+            )
+
+        self.assertEqual(q_alignment["q_source"], "manual_forager_q_learning")
+        self.assertEqual(q_alignment["validation"], "manual_validation_passed")
+        self.assertEqual(len(choice_prob_sessions), 1)
+        self.assertTrue(
+            np.allclose(
+                q_value_sessions[0],
+                np.array([[0.5, 0.75, 0.725], [0.5, 0.5, 0.375]]),
+            )
+        )
+
+    def test_manual_forager_q_learning_preserves_live_agent_probabilities_for_one_step(self):
+        class ForagerQLearning:
+            def __init__(self, **kwargs):
+                del kwargs
+
+            def set_params(self, **kwargs):
+                self.params = kwargs
+
+            def perform_closed_loop_multi_session(self, choice_sessions, reward_sessions):
+                del reward_sessions
+                return [
+                    np.array([[0.9, 0.1], [0.1, 0.9]])
+                    for _ in choice_sessions
+                ]
+
+        session_payloads = [
+            {
+                "subject_id": "m1",
+                "ses_idx": "s1",
+                "choices": np.array([0, 1]),
+                "rewards": np.array([1.0, 0.0]),
+                "trial_indices": np.array([1, 2]),
+            }
+        ]
+        package = types.ModuleType("aind_dynamic_foraging_models")
+        package.generative_model = types.SimpleNamespace(ForagerQLearning=ForagerQLearning)
+        with mock.patch.dict(sys.modules, {"aind_dynamic_foraging_models": package}):
+            choice_prob_sessions, q_value_sessions, q_alignment = (
+                likelihood_advantage_analysis._perform_baseline_agent_rollout_with_q_histories(
+                    agent_class_name="ForagerQLearning",
+                    agent_kwargs={
+                        "action_selection": "softmax",
+                        "choice_kernel": "one_step",
+                        "number_of_learning_rate": 1,
+                        "number_of_forget_rate": 0,
+                    },
+                    fitted_params={"learn_rate": 0.5},
+                    choice_sessions=[session_payloads[0]["choices"]],
+                    reward_sessions=[session_payloads[0]["rewards"]],
+                    seed=0,
+                    require_q_values=True,
+                )
+            )
+
+        baseline_df = likelihood_advantage_analysis._probability_frame_from_rollout_sessions(
+            session_payloads,
+            choice_prob_sessions=choice_prob_sessions,
+            q_value_sessions=q_value_sessions,
+        )
+        self.assertEqual(q_alignment["validation"], "manual_validation_skipped_choice_kernel")
+        self.assertEqual(baseline_df["p_rl"].tolist(), [0.9, 0.9])
+        self.assertEqual(baseline_df["p_rl_left"].tolist(), [0.9, 0.1])
+        self.assertEqual(baseline_df["p_rl_right"].tolist(), [0.1, 0.9])
+
+    def test_manual_forager_q_learning_validates_softmax_probability_mismatch(self):
+        with self.assertRaisesRegex(ValueError, "did not reproduce live-agent"):
+            likelihood_advantage_analysis._manual_forager_q_learning_q_histories(
+                agent_kwargs={
+                    "action_selection": "softmax",
+                    "choice_kernel": "none",
+                    "number_of_learning_rate": 1,
+                    "number_of_forget_rate": 0,
+                },
+                fitted_params={
+                    "learn_rate": 0.5,
+                    "softmax_inverse_temperature": 2.0,
+                    "biasL": 0.0,
+                },
+                choice_sessions=[np.array([0, 1])],
+                reward_sessions=[np.array([1.0, 0.0])],
+                choice_prob_sessions=[np.array([[0.5, 0.5], [0.5, 0.5]])],
+            )
+
+    def test_manual_forager_q_learning_skips_validation_for_one_step(self):
+        q_value_sessions, q_alignment = (
+            likelihood_advantage_analysis._manual_forager_q_learning_q_histories(
+                agent_kwargs={
+                    "action_selection": "softmax",
+                    "choice_kernel": "one_step",
+                    "number_of_learning_rate": 1,
+                    "number_of_forget_rate": 0,
+                },
+                fitted_params={"learn_rate": 0.5},
+                choice_sessions=[np.array([0, 1])],
+                reward_sessions=[np.array([1.0, 0.0])],
+                choice_prob_sessions=[np.array([[0.99, 0.01], [0.01, 0.99]])],
+            )
+        )
+
+        self.assertEqual(q_alignment["q_source"], "manual_forager_q_learning")
+        self.assertEqual(q_alignment["validation"], "manual_validation_skipped_choice_kernel")
+        self.assertTrue(np.allclose(q_value_sessions[0], [[0.5, 0.75], [0.5, 0.5]]))
+
+    def test_unsupported_baseline_agent_fails_clearly_when_q_space_requested(self):
+        class ForagerCompareThreshold:
+            def __init__(self, **kwargs):
+                del kwargs
+
+            def set_params(self, **kwargs):
+                del kwargs
+
+            def perform_closed_loop_multi_session(self, choice_sessions, reward_sessions):
+                del reward_sessions
+                return [np.ones((2, len(session))) * 0.5 for session in choice_sessions]
+
+        package = types.ModuleType("aind_dynamic_foraging_models")
+        package.generative_model = types.SimpleNamespace(
+            ForagerCompareThreshold=ForagerCompareThreshold
+        )
+        with mock.patch.dict(sys.modules, {"aind_dynamic_foraging_models": package}):
+            with self.assertRaisesRegex(ValueError, "include_baseline_q_space=False"):
+                likelihood_advantage_analysis._perform_baseline_agent_rollout_with_q_histories(
+                    agent_class_name="ForagerCompareThreshold",
+                    agent_kwargs={},
+                    fitted_params={"biasL": 0.0},
+                    choice_sessions=[np.array([0, 1])],
+                    reward_sessions=[np.array([1.0, 0.0])],
+                    seed=0,
+                    require_q_values=True,
+                )
+
+    def test_q_space_not_requested_skips_q_recovery_for_unsupported_agent(self):
+        class ForagerCompareThreshold:
+            def __init__(self, **kwargs):
+                del kwargs
+
+            def set_params(self, **kwargs):
+                del kwargs
+
+            def perform_closed_loop_multi_session(self, choice_sessions, reward_sessions):
+                del reward_sessions
+                return [np.ones((2, len(session))) * 0.5 for session in choice_sessions]
+
+        package = types.ModuleType("aind_dynamic_foraging_models")
+        package.generative_model = types.SimpleNamespace(
+            ForagerCompareThreshold=ForagerCompareThreshold
+        )
+        with mock.patch.dict(sys.modules, {"aind_dynamic_foraging_models": package}):
+            choice_prob_sessions, q_value_sessions, q_alignment = (
+                likelihood_advantage_analysis._perform_baseline_agent_rollout_with_q_histories(
+                    agent_class_name="ForagerCompareThreshold",
+                    agent_kwargs={},
+                    fitted_params={"biasL": 0.0},
+                    choice_sessions=[np.array([0, 1])],
+                    reward_sessions=[np.array([1.0, 0.0])],
+                    seed=0,
+                    require_q_values=False,
+                )
+            )
+
+        self.assertEqual(len(choice_prob_sessions), 1)
+        self.assertIsNone(q_value_sessions)
+        self.assertEqual(q_alignment["q_source"], "not_requested")
 
     def test_extract_policy_time_q_histories_rejects_missing_q_history(self):
         class NoQAgent:

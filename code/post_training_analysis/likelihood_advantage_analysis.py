@@ -29,6 +29,7 @@ _SESSION_STAGE_COLORS = {
     "late": "#e15759",
 }
 _EPSILON = 1e-6
+_MANUAL_Q_PROBABILITY_VALIDATION_ATOL = 1e-4
 _BASELINE_PROBABILITY_FRAME_COLUMNS = [
     "subject_id",
     "ses_idx",
@@ -196,6 +197,8 @@ def run_likelihood_advantage_analysis(
     )
     trial_df = add_candidate_variables(trial_df, history_warmup=history_warmup)
     trial_df = _add_session_stage(trial_df)
+    trial_df.attrs["baseline_q_alignment"] = baseline_q_alignment
+    trial_df.attrs["q_source"] = _summarize_q_source(baseline_q_alignment)
 
     trial_advantage_pickle_path = resolved_output_dir / "trial_advantage.pkl"
     trial_df.to_pickle(trial_advantage_pickle_path)
@@ -394,6 +397,7 @@ def run_likelihood_advantage_analysis(
                 if baseline_q_condition_columns is not None
                 else [spec.name for spec in _VARIABLE_SPECS]
             ),
+            "baseline_q_source": _summarize_q_source(baseline_q_alignment),
             "baseline_q_alignment": baseline_q_alignment,
         },
         "model1": {
@@ -1507,6 +1511,7 @@ def _build_baseline_probability_frame(
             str(frame.attrs.get("subject_id", index)): frame.attrs.get("q_alignment", {})
             for index, frame in enumerate(all_frames)
         }
+        combined_df.attrs["q_source"] = _summarize_q_source(combined_df.attrs["q_alignment"])
         return combined_df
 
     fitted_params = baseline_output.get("fitted_params")
@@ -1562,6 +1567,7 @@ def _rollout_baseline_probabilities(
         q_value_sessions=q_value_sessions,
     )
     result_df.attrs["q_alignment"] = q_alignment
+    result_df.attrs["q_source"] = _summarize_q_source(q_alignment)
     if session_payloads:
         result_df.attrs["subject_id"] = str(session_payloads[0]["subject_id"])
     return result_df
@@ -1602,14 +1608,413 @@ def _perform_baseline_agent_rollout_with_q_histories(
         )
     )
     if not require_q_values:
-        return choice_prob_sessions, None, {"status": "not_requested"}
+        return choice_prob_sessions, None, {
+            "status": "not_requested",
+            "q_source": "not_requested",
+        }
 
-    q_value_sessions, q_alignment = _extract_policy_time_q_histories(
-        agent,
-        choice_prob_sessions=choice_prob_sessions,
-        expected_trials_per_session=[len(session) for session in choice_sessions],
-    )
+    expected_trials_per_session = [len(session) for session in choice_sessions]
+    try:
+        q_value_sessions, q_alignment = _extract_policy_time_q_histories(
+            agent,
+            choice_prob_sessions=choice_prob_sessions,
+            expected_trials_per_session=expected_trials_per_session,
+        )
+    except ValueError as recovery_error:
+        if str(agent_class_name) != "ForagerQLearning":
+            raise ValueError(
+                f"Could not recover policy-time Q values for baseline agent "
+                f"{agent_class_name!r}. Q-space plotting is supported when the fitted "
+                "agent exposes two-action Q histories or for supported ForagerQLearning "
+                "softmax configurations. Run with include_baseline_q_space=False to "
+                "skip baseline Q-space plots."
+            ) from recovery_error
+        try:
+            q_value_sessions, q_alignment = _manual_forager_q_learning_q_histories(
+                agent_kwargs=agent_kwargs,
+                fitted_params=fitted_params,
+                choice_sessions=choice_sessions,
+                reward_sessions=reward_sessions,
+                choice_prob_sessions=choice_prob_sessions,
+            )
+        except ValueError as manual_error:
+            raise ValueError(
+                f"Could not recover policy-time Q values for baseline agent "
+                f"{agent_class_name!r}. Manual ForagerQLearning Q-space fallback "
+                f"failed: {manual_error}. Run with include_baseline_q_space=False "
+                "to skip baseline Q-space plots."
+            ) from manual_error
+    else:
+        q_alignment = dict(q_alignment)
+        q_alignment.setdefault("q_source", "agent_exposed_history")
+        q_alignment.setdefault("agent_class", str(agent_class_name))
     return choice_prob_sessions, q_value_sessions, q_alignment
+
+
+def _manual_forager_q_learning_q_histories(
+    *,
+    agent_kwargs: Mapping[str, Any],
+    fitted_params: Mapping[str, Any],
+    choice_sessions: Sequence[Any],
+    reward_sessions: Sequence[Any],
+    choice_prob_sessions: Sequence[Any],
+) -> tuple[list[Any], dict[str, Any]]:
+    np = _import_numpy()
+
+    normalized_agent_kwargs = dict(agent_kwargs)
+    normalized_params = dict(fitted_params)
+    if not (
+        len(choice_sessions) == len(reward_sessions) == len(choice_prob_sessions)
+    ):
+        raise ValueError(
+            "manual fallback requires the same number of choice, reward, and "
+            "probability sessions"
+        )
+    action_selection = str(
+        normalized_agent_kwargs.get("action_selection", "softmax")
+    ).lower()
+    choice_kernel = _normalize_manual_q_choice_kernel(
+        normalized_agent_kwargs.get("choice_kernel", "none")
+    )
+    number_of_learning_rate = _safe_int(
+        normalized_agent_kwargs.get("number_of_learning_rate", 1),
+        default=1,
+    )
+    number_of_forget_rate = _safe_int(
+        normalized_agent_kwargs.get("number_of_forget_rate", 0),
+        default=0,
+    )
+
+    if action_selection != "softmax":
+        raise ValueError(
+            "manual fallback supports ForagerQLearning only with "
+            f"action_selection='softmax', received {action_selection!r}"
+        )
+    if choice_kernel not in {"none", "one_step"}:
+        raise ValueError(
+            "manual fallback supports ForagerQLearning only with "
+            f"choice_kernel in {{'none', 'one_step'}}, received {choice_kernel!r}"
+        )
+    if number_of_learning_rate not in {1, 2}:
+        raise ValueError(
+            "manual fallback supports number_of_learning_rate in {1, 2}, "
+            f"received {number_of_learning_rate!r}"
+        )
+    if number_of_forget_rate not in {0, 1}:
+        raise ValueError(
+            "manual fallback supports number_of_forget_rate in {0, 1}, "
+            f"received {number_of_forget_rate!r}"
+        )
+
+    initial_q, initial_q_source = _resolve_manual_q_initial_values(
+        normalized_agent_kwargs,
+        normalized_params,
+    )
+    forget_rate, forget_rate_source = _resolve_manual_q_forget_rate(
+        normalized_params,
+        number_of_forget_rate=number_of_forget_rate,
+    )
+
+    q_value_sessions: list[Any] = []
+    for choices, rewards in zip(choice_sessions, reward_sessions):
+        q_value_sessions.append(
+            _manual_forager_q_learning_session_q_values(
+                choices=choices,
+                rewards=rewards,
+                fitted_params=normalized_params,
+                number_of_learning_rate=number_of_learning_rate,
+                number_of_forget_rate=number_of_forget_rate,
+                forget_rate=forget_rate,
+                initial_q=initial_q,
+            )
+        )
+
+    validation = "manual_validation_skipped_choice_kernel"
+    validation_details: dict[str, Any] = {
+        "reason": "choice_kernel alters action probabilities beyond raw Q values"
+    }
+    if choice_kernel == "none":
+        validation_details = _validate_manual_forager_q_learning_probabilities(
+            q_value_sessions,
+            choice_prob_sessions=choice_prob_sessions,
+            fitted_params=normalized_params,
+        )
+        validation = "manual_validation_passed"
+
+    return q_value_sessions, {
+        "status": "recovered",
+        "q_source": "manual_forager_q_learning",
+        "alignment": "manual_policy_time",
+        "agent_class": "ForagerQLearning",
+        "action_selection": action_selection,
+        "choice_kernel": choice_kernel,
+        "number_of_learning_rate": int(number_of_learning_rate),
+        "number_of_forget_rate": int(number_of_forget_rate),
+        "initial_q": np.asarray(initial_q, dtype=float).tolist(),
+        "initial_q_source": initial_q_source,
+        "forget_rate_unchosen": float(forget_rate),
+        "forget_rate_source": forget_rate_source,
+        "validation": validation,
+        "validation_details": validation_details,
+    }
+
+
+def _manual_forager_q_learning_session_q_values(
+    *,
+    choices: Any,
+    rewards: Any,
+    fitted_params: Mapping[str, Any],
+    number_of_learning_rate: int,
+    number_of_forget_rate: int,
+    forget_rate: float,
+    initial_q: Any,
+) -> Any:
+    np = _import_numpy()
+
+    choice_array = np.asarray(choices, dtype=int)
+    reward_array = np.asarray(rewards, dtype=float)
+    if choice_array.ndim != 1 or reward_array.ndim != 1:
+        raise ValueError("manual fallback expects 1D choice and reward sessions")
+    if choice_array.shape[0] != reward_array.shape[0]:
+        raise ValueError(
+            "manual fallback choice/reward length mismatch: "
+            f"choices={choice_array.shape[0]} rewards={reward_array.shape[0]}"
+        )
+    if not np.isin(choice_array, [0, 1]).all():
+        raise ValueError("manual fallback supports only binary actions 0/1")
+
+    q_values = np.asarray(initial_q, dtype=float).reshape(2).copy()
+    q_history = np.zeros((2, int(choice_array.shape[0])), dtype=float)
+    for trial_index, (choice, reward) in enumerate(zip(choice_array, reward_array)):
+        q_history[:, trial_index] = q_values
+        chosen_action = int(choice)
+        unchosen_action = 1 - chosen_action
+        learn_rate = _resolve_manual_q_learning_rate(
+            fitted_params,
+            reward=float(reward),
+            number_of_learning_rate=int(number_of_learning_rate),
+        )
+        q_values[chosen_action] = q_values[chosen_action] + learn_rate * (
+            float(reward) - q_values[chosen_action]
+        )
+        if int(number_of_forget_rate) == 1:
+            q_values[unchosen_action] = q_values[unchosen_action] + float(
+                forget_rate
+            ) * (float(initial_q[unchosen_action]) - q_values[unchosen_action])
+    return q_history
+
+
+def _validate_manual_forager_q_learning_probabilities(
+    q_value_sessions: Sequence[Any],
+    *,
+    choice_prob_sessions: Sequence[Any],
+    fitted_params: Mapping[str, Any],
+) -> dict[str, Any]:
+    np = _import_numpy()
+
+    max_abs_error = 0.0
+    for q_session, choice_prob_session in zip(q_value_sessions, choice_prob_sessions):
+        q_values = _align_policy_time_q_session(
+            q_session,
+            n_trials=int(np.asarray(q_session).shape[-1]),
+        )[0]
+        agent_probabilities = _align_binary_choice_prob_session(
+            choice_prob_session,
+            n_trials=int(q_values.shape[1]),
+        )
+        manual_probabilities = _manual_forager_q_learning_softmax_probabilities(
+            q_values,
+            fitted_params=fitted_params,
+        )
+        session_max_abs_error = float(
+            np.max(np.abs(agent_probabilities - manual_probabilities))
+        )
+        max_abs_error = max(max_abs_error, session_max_abs_error)
+        if not np.allclose(
+            agent_probabilities,
+            manual_probabilities,
+            atol=_MANUAL_Q_PROBABILITY_VALIDATION_ATOL,
+            rtol=_MANUAL_Q_PROBABILITY_VALIDATION_ATOL,
+        ):
+            raise ValueError(
+                "manual ForagerQLearning Q fallback did not reproduce live-agent "
+                "softmax probabilities for choice_kernel='none' "
+                f"(max_abs_error={session_max_abs_error:.6g})"
+            )
+    return {
+        "max_abs_probability_error": max_abs_error,
+        "atol": _MANUAL_Q_PROBABILITY_VALIDATION_ATOL,
+        "rtol": _MANUAL_Q_PROBABILITY_VALIDATION_ATOL,
+    }
+
+
+def _manual_forager_q_learning_softmax_probabilities(
+    q_values: Any,
+    *,
+    fitted_params: Mapping[str, Any],
+) -> Any:
+    np = _import_numpy()
+
+    q_array = np.asarray(q_values, dtype=float)
+    if q_array.ndim != 2 or q_array.shape[0] != 2:
+        raise ValueError(
+            "manual softmax validation expects Q values with shape (2, n_trials), "
+            f"received {q_array.shape}"
+        )
+    inverse_temperature = _optional_float_param(
+        fitted_params,
+        (
+            "softmax_inverse_temperature",
+            "inverse_temperature",
+            "beta",
+            "temperature_inverse",
+        ),
+        default=1.0,
+    )
+    bias_left = _optional_float_param(
+        fitted_params,
+        ("biasL", "bias_left", "left_bias", "bias"),
+        default=0.0,
+    )
+    logits = np.vstack(
+        [
+            float(inverse_temperature) * q_array[0, :] + float(bias_left),
+            float(inverse_temperature) * q_array[1, :],
+        ]
+    )
+    stabilized = logits - np.max(logits, axis=0, keepdims=True)
+    exp_values = np.exp(stabilized)
+    denom = np.sum(exp_values, axis=0, keepdims=True)
+    denom = np.where(denom == 0.0, 1.0, denom)
+    return exp_values / denom
+
+
+def _resolve_manual_q_initial_values(
+    agent_kwargs: Mapping[str, Any],
+    fitted_params: Mapping[str, Any],
+) -> tuple[Any, str]:
+    np = _import_numpy()
+
+    for source_name, source_mapping in (
+        ("fitted_param", fitted_params),
+        ("agent_kwarg", agent_kwargs),
+    ):
+        for key in ("initial_q", "initial_Q", "q_initial", "q0", "Q0"):
+            if key not in source_mapping:
+                continue
+            raw_value = source_mapping[key]
+            value = np.asarray(raw_value, dtype=float)
+            if value.size == 1:
+                return np.full(2, float(value.reshape(-1)[0]), dtype=float), (
+                    f"{source_name}:{key}"
+                )
+            if value.size == 2:
+                return value.reshape(2).astype(float), f"{source_name}:{key}"
+            raise ValueError(
+                "manual fallback supports scalar or two-action initial Q values, "
+                f"received {key} with shape={value.shape}"
+            )
+    return np.full(2, 0.5, dtype=float), "default_neutral"
+
+
+def _resolve_manual_q_learning_rate(
+    fitted_params: Mapping[str, Any],
+    *,
+    reward: float,
+    number_of_learning_rate: int,
+) -> float:
+    if int(number_of_learning_rate) == 1:
+        return _required_float_param(
+            fitted_params,
+            ("learn_rate", "learning_rate", "alpha", "learn_rate_rew"),
+            label="single learning rate",
+        )
+    if float(reward) > 0.0:
+        return _required_float_param(
+            fitted_params,
+            ("learn_rate_rew", "learn_rate", "learning_rate", "alpha"),
+            label="reward learning rate",
+        )
+    return _required_float_param(
+        fitted_params,
+        ("learn_rate_unrew", "learn_rate", "learning_rate", "alpha"),
+        label="unrewarded learning rate",
+    )
+
+
+def _resolve_manual_q_forget_rate(
+    fitted_params: Mapping[str, Any],
+    *,
+    number_of_forget_rate: int,
+) -> tuple[float, str]:
+    if int(number_of_forget_rate) == 0:
+        return 0.0, "not_used"
+    value, source = _required_float_param_with_source(
+        fitted_params,
+        (
+            "forget_rate_unchosen",
+            "forget_rate",
+            "forget_rate_unselected",
+            "forget_rate_unchoosen",
+        ),
+        label="unchosen forget rate",
+    )
+    return value, source
+
+
+def _required_float_param(
+    params: Mapping[str, Any],
+    names: Sequence[str],
+    *,
+    label: str,
+) -> float:
+    value, _ = _required_float_param_with_source(params, names, label=label)
+    return value
+
+
+def _required_float_param_with_source(
+    params: Mapping[str, Any],
+    names: Sequence[str],
+    *,
+    label: str,
+) -> tuple[float, str]:
+    for name in names:
+        if name not in params or params[name] is None:
+            continue
+        return float(params[name]), str(name)
+    raise ValueError(
+        f"manual ForagerQLearning fallback requires {label}; tried {list(names)!r}"
+    )
+
+
+def _optional_float_param(
+    params: Mapping[str, Any],
+    names: Sequence[str],
+    *,
+    default: float,
+) -> float:
+    for name in names:
+        if name in params and params[name] is not None:
+            return float(params[name])
+    return float(default)
+
+
+def _normalize_manual_q_choice_kernel(value: Any) -> str:
+    if value is None:
+        return "none"
+    normalized = str(value).strip().lower()
+    if normalized in {"", "none", "null", "false"}:
+        return "none"
+    return normalized
+
+
+def _safe_int(value: Any, *, default: int) -> int:
+    if value is None:
+        return int(default)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return int(float(value))
 
 
 def _extract_policy_time_q_histories(
@@ -1894,6 +2299,25 @@ def _summarize_alignment_modes(alignment_modes: Sequence[str]) -> str:
         return "unknown"
     if len(unique_modes) == 1:
         return unique_modes[0]
+    return "mixed"
+
+
+def _summarize_q_source(q_alignment: Mapping[str, Any] | None) -> str:
+    if not isinstance(q_alignment, Mapping) or not q_alignment:
+        return "unknown"
+    q_source = q_alignment.get("q_source")
+    if q_source is not None:
+        return str(q_source)
+    nested_sources = [
+        str(value.get("q_source"))
+        for value in q_alignment.values()
+        if isinstance(value, Mapping) and value.get("q_source") is not None
+    ]
+    unique_sources = list(dict.fromkeys(nested_sources))
+    if not unique_sources:
+        return "unknown"
+    if len(unique_sources) == 1:
+        return unique_sources[0]
     return "mixed"
 
 
