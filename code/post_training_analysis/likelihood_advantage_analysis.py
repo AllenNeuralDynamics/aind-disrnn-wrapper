@@ -41,6 +41,14 @@ _BASELINE_PROBABILITY_FRAME_COLUMNS = [
     "q_rl_left",
     "q_rl_right",
 ]
+_SUBJECT_TASK_COLUMN_CANDIDATES = (
+    "curriculum_name",
+    "task_structure",
+    "task",
+    "task_majority",
+)
+_UNKNOWN_TASK_LABEL = "Unknown"
+_MIXED_TASK_LABEL = "Mixed"
 
 
 @dataclass(frozen=True)
@@ -199,6 +207,9 @@ def run_likelihood_advantage_analysis(
     trial_df = _add_session_stage(trial_df)
     trial_df.attrs["baseline_q_alignment"] = baseline_q_alignment
     trial_df.attrs["q_source"] = _summarize_q_source(baseline_q_alignment)
+    model1_subject_embeddings_path = _resolve_model_subject_embeddings_path(run_model1)
+    if model1_subject_embeddings_path is not None:
+        trial_df.attrs["subject_embeddings_path"] = str(model1_subject_embeddings_path)
 
     trial_advantage_pickle_path = resolved_output_dir / "trial_advantage.pkl"
     trial_df.to_pickle(trial_advantage_pickle_path)
@@ -403,11 +414,21 @@ def run_likelihood_advantage_analysis(
         "model1": {
             "resolved_run": run_model1.to_dict(),
             "artifact_selection_reason": run_model1.artifact_selection_reason,
+            "subject_embeddings_path": (
+                None
+                if model1_subject_embeddings_path is None
+                else str(model1_subject_embeddings_path)
+            ),
         },
         "model2": {
             "resolved_run": run_model2.to_dict(),
             "artifact_selection_reason": run_model2.artifact_selection_reason,
         },
+        "subject_embeddings_path": (
+            None
+            if model1_subject_embeddings_path is None
+            else str(model1_subject_embeddings_path)
+        ),
         "top_variables": top_variable_names,
         "artifacts": {
             "trial_advantage_pickle": str(trial_advantage_pickle_path),
@@ -433,6 +454,11 @@ def run_likelihood_advantage_analysis(
         "output_dir": str(resolved_output_dir),
         "summary": str(summary_path),
         "trial_advantage_pickle": str(trial_advantage_pickle_path),
+        "subject_embeddings_path": (
+            None
+            if model1_subject_embeddings_path is None
+            else str(model1_subject_embeddings_path)
+        ),
         "advantage_histogram": str(advantage_histogram_path),
         "subject_mean_advantage_scatter": str(subject_mean_advantage_scatter_path),
         "bin_summary_long_csv": str(bin_summary_long_csv_path),
@@ -566,6 +592,7 @@ def run_rnn_state_space_subject_analysis(
     *,
     probability_column: str = "p_model1_left",
     subject_ids: Sequence[Any] | None = None,
+    subject_embeddings_path: str | Path | None = None,
     output_dir: str | Path | None = None,
     pca_seed: int = 0,
     pca_fit_fraction: float = 0.5,
@@ -618,11 +645,56 @@ def run_rnn_state_space_subject_analysis(
         trial_df,
         subject_ids=subject_ids,
     )
+    subject_task_labels = _resolve_subject_task_labels(trial_df)
+    (
+        subject_embeddings_df,
+        resolved_subject_embeddings_path,
+        subject_embedding_skip_reason,
+    ) = _load_subject_embeddings_for_state_space(
+        pickle_path=pickle_path,
+        trial_df=trial_df,
+        subject_embeddings_path=subject_embeddings_path,
+    )
+    if subject_embeddings_df is not None:
+        subject_task_labels = _merge_subject_embedding_task_labels(
+            subject_task_labels,
+            subject_embeddings_df,
+        )
+    subject_embedding_distance_summaries: dict[str, dict[str, Any]] = {}
+    if subject_embeddings_df is not None:
+        subject_embedding_distance_summaries = (
+            _build_subject_embedding_distance_summaries(
+                subject_embeddings_df,
+                subject_ids=selected_subject_ids,
+            )
+        )
+
+    subject_embedding_task_space_path: str | None = None
+    if subject_embeddings_df is not None:
+        embedding_plot_df = _prepare_subject_embedding_task_dataframe(
+            subject_embeddings_df,
+            subject_task_labels=subject_task_labels,
+        )
+        if len(_subject_embedding_columns(embedding_plot_df)) >= 2:
+            embedding_plot_path = resolved_output_dir / "subject_embedding_task_space.png"
+            _plot_subject_embedding_task_space_figure(
+                embedding_plot_df,
+                output_path=embedding_plot_path,
+            )
+            subject_embedding_task_space_path = str(embedding_plot_path)
+        else:
+            subject_embedding_skip_reason = (
+                "Skipped subject embedding task-space plot because fewer than two "
+                "embedding dimensions were available."
+            )
+
     subject_plot_paths: dict[str, str] = {}
     subject_plot_dir = resolved_output_dir / "subjects"
-    subject_series = pd.DataFrame(trial_df)["subject_id"].astype(str)
+    subject_series = pd.DataFrame(trial_df)["subject_id"].map(_normalize_subject_key)
     for subject_id in selected_subject_ids:
-        subject_mask = (subject_series == str(subject_id)).to_numpy(dtype=bool)
+        subject_mask = (
+            subject_series == _normalize_subject_key(subject_id)
+        ).to_numpy(dtype=bool)
         plot_path = subject_plot_dir / f"{_safe_filename_component(subject_id)}.png"
         _plot_rnn_state_subject_probability_figure(
             pca_result,
@@ -631,6 +703,13 @@ def run_rnn_state_space_subject_analysis(
             probability_column=probability_column,
             output_path=plot_path,
             n_plot_pcs=n_plot_pcs,
+            subject_task_label=subject_task_labels.get(
+                _normalize_subject_key(subject_id),
+                _UNKNOWN_TASK_LABEL,
+            ),
+            embedding_neighbors=subject_embedding_distance_summaries.get(
+                str(subject_id),
+            ),
         )
         subject_plot_paths[str(subject_id)] = str(plot_path)
 
@@ -643,10 +722,18 @@ def run_rnn_state_space_subject_analysis(
         "pca_fit_fraction": float(pca_fit_fraction),
         "pca_fit_n_trials": int(pca_result["fit_n_trials"]),
         "n_trials_projected": int(pca_result["n_trials_projected"]),
+        "subject_embeddings_path": (
+            None
+            if resolved_subject_embeddings_path is None
+            else str(resolved_subject_embeddings_path)
+        ),
+        "subject_embedding_skip_reason": subject_embedding_skip_reason,
+        "subject_embedding_distances": subject_embedding_distance_summaries,
         "artifacts": {
             "rnn_state_pca_variance": str(variance_plot_path),
             "rnn_state_pca_variance_csv": str(variance_csv_path),
             "subject_probability_plots": subject_plot_paths,
+            "subject_embedding_task_space": subject_embedding_task_space_path,
         },
     }
     summary_path = resolved_output_dir / "summary.json"
@@ -659,6 +746,14 @@ def run_rnn_state_space_subject_analysis(
         "rnn_state_pca_variance": str(variance_plot_path),
         "rnn_state_pca_variance_csv": str(variance_csv_path),
         "subject_probability_plots": subject_plot_paths,
+        "subject_embedding_task_space": subject_embedding_task_space_path,
+        "subject_embeddings_path": (
+            None
+            if resolved_subject_embeddings_path is None
+            else str(resolved_subject_embeddings_path)
+        ),
+        "subject_embedding_skip_reason": subject_embedding_skip_reason,
+        "subject_embedding_distances": subject_embedding_distance_summaries,
         "subject_ids": selected_subject_ids,
         "pca_fit_n_trials": int(pca_result["fit_n_trials"]),
         "n_trials_projected": int(pca_result["n_trials_projected"]),
@@ -3209,17 +3304,17 @@ def _resolve_subject_ids_for_state_space_plot(
     if "subject_id" not in df.columns:
         raise ValueError("trial_advantage_pickle must contain a subject_id column.")
 
-    subject_series = df["subject_id"]
+    subject_series = df["subject_id"].map(_normalize_subject_key)
     available_subject_ids = list(
-        dict.fromkeys(subject_series[subject_series.notna()].map(str).tolist())
+        dict.fromkeys(subject_series[subject_series != ""].tolist())
     )
     if subject_ids is None:
         return available_subject_ids
 
     requested_subject_ids = (
-        [str(subject_ids)]
+        [_normalize_subject_key(subject_ids)]
         if isinstance(subject_ids, (str, bytes))
-        else [str(subject_id) for subject_id in subject_ids]
+        else [_normalize_subject_key(subject_id) for subject_id in subject_ids]
     )
     missing_subject_ids = [
         subject_id
@@ -3234,6 +3329,553 @@ def _resolve_subject_ids_for_state_space_plot(
     return requested_subject_ids
 
 
+def _resolve_model_subject_embeddings_path(
+    run: lc.ResolvedLikelihoodRun,
+) -> Path | None:
+    candidates: list[Path] = []
+    if getattr(run, "outputs_dir", None):
+        candidates.append(Path(run.outputs_dir) / "subject_embeddings.pkl")
+    if getattr(run, "params_path", None):
+        candidates.append(Path(str(run.params_path)).parent / "subject_embeddings.pkl")
+    return _first_existing_path(candidates)
+
+
+def _first_existing_path(candidates: Sequence[Path]) -> Path | None:
+    seen: set[str] = set()
+    for candidate in candidates:
+        try:
+            resolved = Path(candidate).expanduser().resolve()
+        except (TypeError, RuntimeError, OSError):
+            continue
+        candidate_key = str(resolved)
+        if candidate_key in seen:
+            continue
+        seen.add(candidate_key)
+        if resolved.exists():
+            return resolved
+    return None
+
+
+def _resolve_subject_embeddings_path_for_state_space(
+    *,
+    pickle_path: Path,
+    trial_df: Any,
+    subject_embeddings_path: str | Path | None,
+) -> Path | None:
+    if subject_embeddings_path is not None:
+        requested_path = Path(subject_embeddings_path).expanduser().resolve()
+        if not requested_path.exists():
+            raise FileNotFoundError(
+                f"subject_embeddings_path does not exist: {requested_path}"
+            )
+        return requested_path
+
+    candidates: list[Path] = []
+    attrs = getattr(trial_df, "attrs", {}) or {}
+    for attr_name in (
+        "subject_embeddings_path",
+        "model1_subject_embeddings_path",
+        "subject_embedding_path",
+    ):
+        path_value = attrs.get(attr_name)
+        if path_value:
+            candidate = Path(str(path_value)).expanduser()
+            if not candidate.is_absolute():
+                candidate = pickle_path.parent / candidate
+            candidates.append(candidate)
+
+    summary_path = pickle_path.parent / "summary.json"
+    if summary_path.exists():
+        try:
+            summary_payload = json.loads(summary_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            summary_payload = {}
+        candidates.extend(_subject_embedding_candidates_from_summary(summary_payload))
+
+    candidates.extend(
+        [
+            pickle_path.parent / "subject_embeddings.pkl",
+            pickle_path.parent / "outputs" / "subject_embeddings.pkl",
+            pickle_path.parent.parent / "subject_embeddings.pkl",
+            pickle_path.parent.parent / "outputs" / "subject_embeddings.pkl",
+        ]
+    )
+    return _first_existing_path(candidates)
+
+
+def _subject_embedding_candidates_from_summary(
+    summary_payload: Mapping[str, Any],
+) -> list[Path]:
+    top_level_path = summary_payload.get("subject_embeddings_path")
+    model1_payload = summary_payload.get("model1", {})
+    if isinstance(model1_payload, Mapping):
+        direct_path = model1_payload.get("subject_embeddings_path")
+        resolved_run = model1_payload.get("resolved_run", {})
+    else:
+        direct_path = None
+        resolved_run = {}
+
+    candidates: list[Path] = []
+    if top_level_path:
+        candidates.append(Path(str(top_level_path)))
+    if direct_path:
+        candidates.append(Path(str(direct_path)))
+    if isinstance(resolved_run, Mapping):
+        outputs_dir = resolved_run.get("outputs_dir")
+        if outputs_dir:
+            candidates.append(Path(str(outputs_dir)) / "subject_embeddings.pkl")
+        params_path = resolved_run.get("params_path")
+        if params_path:
+            candidates.append(Path(str(params_path)).parent / "subject_embeddings.pkl")
+    return candidates
+
+
+def _load_subject_embeddings_for_state_space(
+    *,
+    pickle_path: Path,
+    trial_df: Any,
+    subject_embeddings_path: str | Path | None,
+) -> tuple[Any | None, Path | None, str | None]:
+    pd = _import_pandas()
+
+    resolved_path = _resolve_subject_embeddings_path_for_state_space(
+        pickle_path=pickle_path,
+        trial_df=trial_df,
+        subject_embeddings_path=subject_embeddings_path,
+    )
+    if resolved_path is None:
+        return (
+            None,
+            None,
+            "Skipped subject embedding additions because subject_embeddings.pkl "
+            "could not be found.",
+        )
+
+    embedding_df = pd.DataFrame(pd.read_pickle(resolved_path)).copy()
+    missing_columns = [
+        column for column in ("subject_id",) if column not in embedding_df.columns
+    ]
+    if missing_columns:
+        if subject_embeddings_path is not None:
+            raise ValueError(
+                "subject_embeddings_path is missing required columns: "
+                f"{missing_columns}"
+            )
+        return (
+            None,
+            resolved_path,
+            "Skipped subject embedding additions because the embedding dataframe "
+            f"is missing required columns: {missing_columns}.",
+        )
+    if not _subject_embedding_columns(embedding_df):
+        if subject_embeddings_path is not None:
+            raise ValueError(
+                "subject_embeddings_path must contain embedding_* columns."
+            )
+        return (
+            None,
+            resolved_path,
+            "Skipped subject embedding additions because no embedding_* columns "
+            "were available.",
+        )
+    return embedding_df, resolved_path, None
+
+
+def _subject_embedding_columns(df: Any) -> list[str]:
+    columns: list[tuple[int, str]] = []
+    for column in _import_pandas().DataFrame(df).columns:
+        match = re.fullmatch(r"embedding_(\d+)", str(column))
+        if match is not None:
+            columns.append((int(match.group(1)), str(column)))
+    return [column for _, column in sorted(columns, key=lambda item: item[0])]
+
+
+def _normalize_subject_key(value: Any) -> str:
+    normalized = lc._normalize_identifier(value)
+    if normalized is None or lc._is_nan(normalized):
+        return ""
+    if isinstance(normalized, float) and math.isfinite(normalized) and normalized.is_integer():
+        normalized = int(normalized)
+    label = str(normalized).strip()
+    if re.fullmatch(r"[+-]?\d+\.0+", label):
+        return str(int(float(label)))
+    return label
+
+
+def _clean_task_label(value: Any) -> str:
+    normalized = lc._normalize_identifier(value)
+    if normalized is None or lc._is_nan(normalized):
+        return _UNKNOWN_TASK_LABEL
+    label = str(normalized).strip()
+    if not label or label in {"None", "nan", "NaN", "null"}:
+        return _UNKNOWN_TASK_LABEL
+    return label
+
+
+def _format_task_label(values: Sequence[Any]) -> str:
+    cleaned_values = [
+        label
+        for label in (_clean_task_label(value) for value in values)
+        if label != _UNKNOWN_TASK_LABEL
+    ]
+    unique_values = list(dict.fromkeys(cleaned_values))
+    if not unique_values:
+        return _UNKNOWN_TASK_LABEL
+    if len(unique_values) == 1:
+        return unique_values[0]
+    displayed_values = unique_values[:3]
+    suffix = "" if len(unique_values) <= 3 else f"/+{len(unique_values) - 3}"
+    return f"{_MIXED_TASK_LABEL} ({'/'.join(displayed_values)}{suffix})"
+
+
+def _resolve_subject_task_labels(trial_df: Any) -> dict[str, str]:
+    pd = _import_pandas()
+
+    df = pd.DataFrame(trial_df).copy()
+    if "subject_id" not in df.columns:
+        return {}
+    task_column = next(
+        (column for column in _SUBJECT_TASK_COLUMN_CANDIDATES if column in df.columns),
+        None,
+    )
+    if task_column is None:
+        return {}
+
+    df["_subject_key"] = df["subject_id"].map(_normalize_subject_key)
+    df = df[df["_subject_key"] != ""]
+    return {
+        str(subject_key): _format_task_label(subject_rows[task_column].tolist())
+        for subject_key, subject_rows in df.groupby("_subject_key", sort=False)
+    }
+
+
+def _merge_subject_embedding_task_labels(
+    subject_task_labels: Mapping[str, str],
+    subject_embeddings_df: Any,
+) -> dict[str, str]:
+    pd = _import_pandas()
+
+    merged_labels = dict(subject_task_labels)
+    embedding_df = pd.DataFrame(subject_embeddings_df)
+    if "subject_id" not in embedding_df.columns:
+        return merged_labels
+
+    for row in embedding_df.to_dict(orient="records"):
+        subject_key = _normalize_subject_key(row.get("subject_id"))
+        if not subject_key:
+            continue
+        existing_label = merged_labels.get(subject_key, _UNKNOWN_TASK_LABEL)
+        if existing_label != _UNKNOWN_TASK_LABEL:
+            continue
+        for column in _SUBJECT_TASK_COLUMN_CANDIDATES:
+            if column not in row:
+                continue
+            task_label = _clean_task_label(row.get(column))
+            if task_label != _UNKNOWN_TASK_LABEL:
+                merged_labels[subject_key] = task_label
+                break
+        merged_labels.setdefault(subject_key, _UNKNOWN_TASK_LABEL)
+    return merged_labels
+
+
+def _prepare_subject_embedding_task_dataframe(
+    subject_embeddings_df: Any,
+    *,
+    subject_task_labels: Mapping[str, str],
+) -> Any:
+    pd = _import_pandas()
+
+    plot_df = pd.DataFrame(subject_embeddings_df).copy()
+    if "subject_index" not in plot_df.columns:
+        plot_df["subject_index"] = list(range(len(plot_df)))
+    plot_df["_subject_key"] = plot_df["subject_id"].map(_normalize_subject_key)
+    plot_df["task_structure"] = plot_df["_subject_key"].map(
+        lambda subject_key: subject_task_labels.get(
+            str(subject_key),
+            _UNKNOWN_TASK_LABEL,
+        )
+    )
+    plot_df["task_structure"] = plot_df["task_structure"].map(_clean_task_label)
+    plot_df["_dot_id"] = [
+        _format_dot_id(row.get("subject_index"), fallback=index)
+        for index, row in enumerate(plot_df.to_dict(orient="records"))
+    ]
+    return plot_df
+
+
+def _format_dot_id(value: Any, *, fallback: int) -> str:
+    normalized = lc._normalize_identifier(value)
+    if normalized is None or lc._is_nan(normalized):
+        return str(int(fallback))
+    if isinstance(normalized, float) and math.isfinite(normalized) and normalized.is_integer():
+        return str(int(normalized))
+    return str(normalized)
+
+
+def _build_subject_embedding_distance_summaries(
+    subject_embeddings_df: Any,
+    *,
+    subject_ids: Sequence[Any],
+) -> dict[str, dict[str, Any]]:
+    pd = _import_pandas()
+    np = _import_numpy()
+
+    embedding_df = pd.DataFrame(subject_embeddings_df)
+    embedding_columns = _subject_embedding_columns(embedding_df)
+    if not embedding_columns or "subject_id" not in embedding_df.columns:
+        return {}
+
+    vectors_by_subject: dict[str, dict[str, Any]] = {}
+    for row in embedding_df.to_dict(orient="records"):
+        subject_key = _normalize_subject_key(row.get("subject_id"))
+        if not subject_key or subject_key in vectors_by_subject:
+            continue
+        vector = np.asarray([row.get(column) for column in embedding_columns], dtype=float)
+        if vector.ndim != 1 or not np.all(np.isfinite(vector)):
+            continue
+        vectors_by_subject[subject_key] = {
+            "subject_id": str(row.get("subject_id")),
+            "vector": vector,
+        }
+
+    distance_summaries: dict[str, dict[str, Any]] = {}
+    for subject_id in subject_ids:
+        subject_key = _normalize_subject_key(subject_id)
+        subject_entry = vectors_by_subject.get(subject_key)
+        if subject_entry is None:
+            distance_summaries[str(subject_id)] = {
+                "closest": None,
+                "farthest": None,
+                "reason": "subject_id was not found in subject embeddings.",
+            }
+            continue
+
+        distances: list[tuple[float, str, str]] = []
+        subject_vector = np.asarray(subject_entry["vector"], dtype=float)
+        for other_key, other_entry in vectors_by_subject.items():
+            if other_key == subject_key:
+                continue
+            other_vector = np.asarray(other_entry["vector"], dtype=float)
+            if other_vector.shape != subject_vector.shape:
+                continue
+            distance = float(np.linalg.norm(subject_vector - other_vector))
+            distances.append((distance, str(other_entry["subject_id"]), other_key))
+
+        if not distances:
+            distance_summaries[str(subject_id)] = {
+                "closest": None,
+                "farthest": None,
+                "reason": "no other finite subject embeddings were available.",
+            }
+            continue
+
+        ordered_distances = sorted(distances, key=lambda item: (item[0], item[1]))
+        closest = ordered_distances[0]
+        farthest = ordered_distances[-1]
+        distance_summaries[str(subject_id)] = {
+            "closest": {
+                "subject_id": closest[1],
+                "distance": float(closest[0]),
+            },
+            "farthest": {
+                "subject_id": farthest[1],
+                "distance": float(farthest[0]),
+            },
+        }
+    return distance_summaries
+
+
+def _ordered_task_categories(values: Any) -> list[str]:
+    pd = _import_pandas()
+
+    cleaned_values = pd.Series(values).map(_clean_task_label)
+    categories = list(dict.fromkeys(cleaned_values.tolist()))
+    non_unknown = sorted(
+        category for category in categories if category != _UNKNOWN_TASK_LABEL
+    )
+    if _UNKNOWN_TASK_LABEL in categories:
+        non_unknown.append(_UNKNOWN_TASK_LABEL)
+    return non_unknown
+
+
+def _format_subject_id_legend(entries: Sequence[tuple[str, str]]) -> tuple[str, int]:
+    if not entries:
+        return "Dot ID -> subject_id", 1
+
+    max_rows_per_column = 32
+    n_columns = min(
+        3,
+        max(1, int(math.ceil(len(entries) / max_rows_per_column))),
+    )
+    rows_per_column = int(math.ceil(len(entries) / n_columns))
+    chunks = [
+        list(entries[index * rows_per_column : (index + 1) * rows_per_column])
+        for index in range(n_columns)
+    ]
+    rendered_chunks = [
+        [f"{dot_id}: {subject_id}" for dot_id, subject_id in chunk]
+        for chunk in chunks
+    ]
+    widths = [
+        max((len(value) for value in chunk), default=0)
+        for chunk in rendered_chunks
+    ]
+    lines = ["Dot ID -> subject_id"]
+    for row_index in range(rows_per_column):
+        row_parts = []
+        for column_index, chunk in enumerate(rendered_chunks):
+            if row_index < len(chunk):
+                row_parts.append(chunk[row_index].ljust(widths[column_index]))
+            else:
+                row_parts.append(" " * widths[column_index])
+        lines.append("   ".join(row_parts).rstrip())
+    return "\n".join(lines), n_columns
+
+
+def _plot_subject_embedding_task_space_figure(
+    subject_embeddings_df: Any,
+    *,
+    output_path: Path,
+) -> None:
+    plt = _import_pyplot()
+    pd = _import_pandas()
+    from matplotlib.lines import Line2D
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    plot_df = pd.DataFrame(subject_embeddings_df).copy()
+    embedding_columns = _subject_embedding_columns(plot_df)
+    if len(embedding_columns) < 2:
+        raise ValueError("subject embedding task-space plotting requires >= 2 dimensions.")
+
+    dim_pairs = list(combinations(embedding_columns, 2))
+    n_panels = max(1, len(dim_pairs))
+    n_cols = min(3, n_panels)
+    n_rows = int(math.ceil(n_panels / n_cols))
+    fig, axes = plt.subplots(
+        n_rows,
+        n_cols,
+        figsize=(5.2 * n_cols + 3.8, 4.7 * n_rows),
+        dpi=120,
+    )
+    axes_flat = axes.flatten() if hasattr(axes, "flatten") else [axes]
+
+    task_categories = _ordered_task_categories(plot_df["task_structure"])
+    palette = lc._build_curriculum_palette(
+        pd.DataFrame({"curriculum_name": task_categories})
+    )
+    task_values = plot_df["task_structure"].map(_clean_task_label)
+
+    for axis, (x_column, y_column) in zip(axes_flat, dim_pairs, strict=False):
+        for task_category in task_categories:
+            category_rows = plot_df[task_values == task_category]
+            if category_rows.empty:
+                continue
+            axis.scatter(
+                category_rows[x_column].to_numpy(dtype=float),
+                category_rows[y_column].to_numpy(dtype=float),
+                color=palette.get(str(task_category), "#4e79a7"),
+                s=62,
+                alpha=0.9,
+                edgecolors="black",
+                linewidths=0.4,
+            )
+        for row in plot_df.to_dict(orient="records"):
+            axis.text(
+                float(row[x_column]),
+                float(row[y_column]),
+                str(row["_dot_id"]),
+                fontsize=8,
+                alpha=0.85,
+                ha="left",
+                va="bottom",
+            )
+        axis.axhline(0.0, color="#d0d0d0", linewidth=0.8, zorder=0)
+        axis.axvline(0.0, color="#d0d0d0", linewidth=0.8, zorder=0)
+        axis.set_xlabel(x_column.replace("_", " ").title())
+        axis.set_ylabel(y_column.replace("_", " ").title())
+        axis.set_title(f"{x_column} vs {y_column}")
+
+    for axis in axes_flat[len(dim_pairs) :]:
+        axis.axis("off")
+
+    task_handles = [
+        Line2D(
+            [0],
+            [0],
+            marker="o",
+            linestyle="",
+            markerfacecolor=palette.get(str(task_category), "#4e79a7"),
+            markeredgecolor="black",
+            label=str(task_category),
+        )
+        for task_category in task_categories
+    ]
+    if task_handles:
+        fig.legend(
+            handles=task_handles,
+            loc="lower center",
+            bbox_to_anchor=(0.39, -0.01),
+            ncol=min(4, len(task_handles)),
+            title="Task",
+            frameon=False,
+        )
+
+    subject_entries = [
+        (str(row["_dot_id"]), str(row["subject_id"]))
+        for row in plot_df.sort_values("subject_index").to_dict(orient="records")
+    ]
+    subject_legend, n_subject_legend_columns = _format_subject_id_legend(subject_entries)
+    subject_legend_fontsize = max(5.0, 8.0 - 0.03 * len(subject_entries))
+    fig.text(
+        0.80,
+        0.92,
+        subject_legend,
+        ha="left",
+        va="top",
+        fontsize=subject_legend_fontsize,
+        family="monospace",
+    )
+    fig.suptitle("Subject Embedding Space by Task", fontsize=14)
+    right_margin = 0.79 if n_subject_legend_columns <= 1 else 0.76
+    fig.tight_layout(rect=(0.03, 0.07, right_margin, 0.92))
+    fig.savefig(output_path, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _format_neighbor_title_part(
+    label: str,
+    neighbor: Mapping[str, Any] | None,
+) -> str | None:
+    if not neighbor:
+        return None
+    subject_id = neighbor.get("subject_id")
+    distance = neighbor.get("distance")
+    if subject_id is None or distance is None:
+        return None
+    return f"{label}: {subject_id} (L2={float(distance):.3g})"
+
+
+def _format_subject_title_metadata(
+    *,
+    subject_task_label: str | None,
+    embedding_neighbors: Mapping[str, Any] | None,
+) -> str | None:
+    parts: list[str] = []
+    if subject_task_label:
+        parts.append(f"Task: {_clean_task_label(subject_task_label)}")
+    if embedding_neighbors:
+        for label, key in (("closest", "closest"), ("farthest", "farthest")):
+            title_part = _format_neighbor_title_part(
+                label,
+                embedding_neighbors.get(key),
+            )
+            if title_part is not None:
+                parts.append(title_part)
+    if not parts:
+        return None
+    return " | ".join(parts)
+
+
 def _plot_rnn_state_subject_probability_figure(
     pca_result: Mapping[str, Any],
     *,
@@ -3242,6 +3884,8 @@ def _plot_rnn_state_subject_probability_figure(
     probability_column: str,
     output_path: Path,
     n_plot_pcs: int,
+    subject_task_label: str | None = None,
+    embedding_neighbors: Mapping[str, Any] | None = None,
 ) -> None:
     plt = _import_pyplot()
     np = _import_numpy()
@@ -3352,11 +3996,19 @@ def _plot_rnn_state_subject_probability_figure(
         )
     else:
         probability_summary = "mean=nan +/- nan"
-    fig.suptitle(
+    title = (
         f"subject_id={subject_id} | {probability_column} "
         f"(n={highlight_count}, {probability_summary})"
     )
-    fig.tight_layout(rect=(0, 0, 0.88, 0.94))
+    title_metadata = _format_subject_title_metadata(
+        subject_task_label=subject_task_label,
+        embedding_neighbors=embedding_neighbors,
+    )
+    title_top = 0.90 if title_metadata else 0.94
+    if title_metadata:
+        title = f"{title}\n{title_metadata}"
+    fig.suptitle(title)
+    fig.tight_layout(rect=(0, 0, 0.88, title_top))
     if last_scatter is not None:
         colorbar_axis = fig.add_axes((0.91, 0.14, 0.018, 0.74))
         colorbar = fig.colorbar(last_scatter, cax=colorbar_axis)

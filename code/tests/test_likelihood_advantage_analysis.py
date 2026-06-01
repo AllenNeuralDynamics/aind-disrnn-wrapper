@@ -985,6 +985,95 @@ class TestLikelihoodAdvantageAnalysis(unittest.TestCase):
             self.assertTrue(Path(result["rnn_state_pca_variance_csv"]).exists())
             self.assertTrue(Path(result["subject_probability_plots"]["m2"]).exists())
 
+    def test_run_rnn_state_space_subject_analysis_adds_embedding_metadata(self):
+        trial_df = pd.DataFrame(
+            {
+                "subject_id": ["m1"] * 6 + ["m2"] * 6 + ["m3"] * 6,
+                "curriculum_name": ["A"] * 6 + ["B"] * 6 + ["C"] * 6,
+                "p_model1_left": np.linspace(0.1, 0.9, 18),
+                "p_model1_right": np.linspace(0.9, 0.1, 18),
+                "rnn_state_0": np.linspace(0.0, 1.0, 18),
+                "rnn_state_1": np.linspace(1.0, 0.0, 18),
+                "rnn_state_2": np.sin(np.linspace(0.0, 1.0, 18)),
+                "rnn_state_3": np.cos(np.linspace(0.0, 1.0, 18)),
+            }
+        )
+        embeddings_df = pd.DataFrame(
+            {
+                "subject_index": [0, 1, 2],
+                "subject_id": ["m1", "m2", "m3"],
+                "embedding_1": [0.0, 1.0, 4.0],
+                "embedding_2": [0.0, 0.0, 0.0],
+            }
+        )
+        captured_subject_kwargs = {}
+        captured_embedding_plot = {}
+
+        def _write_placeholder_plot(*args, output_path: Path, **kwargs):
+            del args
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text("plot")
+            if "subject_id" in kwargs:
+                captured_subject_kwargs.update(kwargs)
+
+        def _write_embedding_plot(plot_df, *, output_path: Path):
+            captured_embedding_plot["plot_df"] = pd.DataFrame(plot_df).copy()
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text("embedding plot")
+
+        with tempfile.TemporaryDirectory(prefix="rnn_state_subjects_embedding_") as tmpdir, mock.patch.object(
+            likelihood_advantage_analysis,
+            "_plot_rnn_state_pca_variance",
+            side_effect=_write_placeholder_plot,
+        ), mock.patch.object(
+            likelihood_advantage_analysis,
+            "_plot_rnn_state_subject_probability_figure",
+            side_effect=_write_placeholder_plot,
+        ), mock.patch.object(
+            likelihood_advantage_analysis,
+            "_plot_subject_embedding_task_space_figure",
+            side_effect=_write_embedding_plot,
+        ):
+            pickle_path = Path(tmpdir) / "trial_advantage.pkl"
+            embeddings_path = Path(tmpdir) / "subject_embeddings.pkl"
+            trial_df.to_pickle(pickle_path)
+            embeddings_df.to_pickle(embeddings_path)
+
+            result = likelihood_advantage_analysis.run_rnn_state_space_subject_analysis(
+                pickle_path,
+                probability_column="p_model1_right",
+                subject_ids=["m2"],
+                subject_embeddings_path=embeddings_path,
+                output_dir=Path(tmpdir) / "subject_plots",
+                pca_seed=0,
+            )
+
+            self.assertEqual(captured_subject_kwargs["subject_task_label"], "B")
+            self.assertEqual(
+                captured_subject_kwargs["embedding_neighbors"]["closest"]["subject_id"],
+                "m1",
+            )
+            self.assertAlmostEqual(
+                captured_subject_kwargs["embedding_neighbors"]["closest"]["distance"],
+                1.0,
+            )
+            self.assertEqual(
+                captured_subject_kwargs["embedding_neighbors"]["farthest"]["subject_id"],
+                "m3",
+            )
+            self.assertAlmostEqual(
+                captured_subject_kwargs["embedding_neighbors"]["farthest"]["distance"],
+                3.0,
+            )
+            self.assertTrue(Path(result["subject_embedding_task_space"]).exists())
+            self.assertEqual(result["subject_embeddings_path"], str(embeddings_path.resolve()))
+            self.assertEqual(
+                result["subject_embedding_distances"]["m2"]["closest"]["subject_id"],
+                "m1",
+            )
+            plot_df = captured_embedding_plot["plot_df"].set_index("subject_id")
+            self.assertEqual(plot_df.loc["m2", "task_structure"], "B")
+
     def test_run_rnn_state_space_subject_analysis_validates_required_columns(self):
         base_df = pd.DataFrame(
             {
@@ -1285,6 +1374,7 @@ class TestLikelihoodAdvantageAnalysis(unittest.TestCase):
                 "output_dir",
                 "summary",
                 "trial_advantage_pickle",
+                "subject_embeddings_path",
                 "advantage_histogram",
                 "subject_mean_advantage_scatter",
                 "bin_summary_long_csv",
@@ -1303,6 +1393,8 @@ class TestLikelihoodAdvantageAnalysis(unittest.TestCase):
             for key, path in result.items():
                 if key == "output_dir":
                     self.assertTrue(Path(path).exists())
+                elif key == "subject_embeddings_path":
+                    self.assertIsNone(path)
                 elif key == "rnn_state_condition_plots":
                     self.assertEqual(
                         set(path.keys()),
