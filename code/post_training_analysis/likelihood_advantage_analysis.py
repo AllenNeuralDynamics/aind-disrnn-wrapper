@@ -1899,6 +1899,16 @@ def _plot_rnn_state_condition_figure(
     background_scores = scores[finite_mask]
     highlight_scores = scores[highlight_mask]
     highlight_advantages = advantages[highlight_mask]
+    highlight_mean_advantage = (
+        float(np.mean(highlight_advantages))
+        if highlight_advantages.size
+        else math.nan
+    )
+    highlight_sem_advantage = (
+        float(np.std(highlight_advantages, ddof=1) / math.sqrt(highlight_advantages.size))
+        if highlight_advantages.size > 1
+        else 0.0 if highlight_advantages.size == 1 else math.nan
+    )
     finite_advantages = advantages[finite_mask]
     max_abs_advantage = (
         float(np.nanmax(np.abs(finite_advantages)))
@@ -1937,7 +1947,7 @@ def _plot_rnn_state_condition_figure(
             background_scores[:, pc_x],
             background_scores[:, pc_y],
             color="#8c8c8c",
-            alpha=0.14,
+            alpha=0.06,
             s=8,
             linewidths=0,
         )
@@ -1949,7 +1959,7 @@ def _plot_rnn_state_condition_figure(
                 cmap="coolwarm",
                 vmin=-max_abs_advantage,
                 vmax=max_abs_advantage,
-                s=18,
+                s=8,
                 alpha=0.9,
                 linewidths=0,
             )
@@ -1971,11 +1981,22 @@ def _plot_rnn_state_condition_figure(
     for axis in axes_flat[len(pc_pairs) :]:
         axis.axis("off")
 
-    fig.suptitle(f"{condition_column} = {condition_label} (n={highlight_count})")
+    if math.isfinite(highlight_mean_advantage) and math.isfinite(highlight_sem_advantage):
+        advantage_summary = (
+            f"advantage={highlight_mean_advantage:.4g} +/- "
+            f"{highlight_sem_advantage:.4g}"
+        )
+    else:
+        advantage_summary = "advantage=nan +/- nan"
+    fig.suptitle(
+        f"{condition_column} = {condition_label} "
+        f"(n={highlight_count}, {advantage_summary})"
+    )
+    fig.tight_layout(rect=(0, 0, 0.88, 0.94))
     if last_scatter is not None:
-        colorbar = fig.colorbar(last_scatter, ax=list(axes_flat), shrink=0.86)
+        colorbar_axis = fig.add_axes((0.91, 0.14, 0.018, 0.74))
+        colorbar = fig.colorbar(last_scatter, cax=colorbar_axis)
         colorbar.set_label("Log-likelihood advantage")
-    fig.tight_layout(rect=(0, 0, 1, 0.94))
     fig.savefig(output_path)
     plt.close(fig)
 
