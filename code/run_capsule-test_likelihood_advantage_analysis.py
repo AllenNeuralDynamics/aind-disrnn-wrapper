@@ -29,11 +29,11 @@ result = run_likelihood_advantage_analysis(
 
 print(result)
 
-standalone_state_space_result = run_rnn_state_space_condition_analysis(
-    "/data/trial_advantage.pkl",
-    # condition_columns=["switch_x_prev_outcome", "trial_position"],
-    output_dir="/results/figures/rnn_state_space_standalone",
-    pca_seed=0,
-)
+# standalone_state_space_result = run_rnn_state_space_condition_analysis(
+#     "/data/trial_advantage.pkl",
+#     # condition_columns=["switch_x_prev_outcome", "trial_position"],
+#     output_dir="/results/figures/rnn_state_space_standalone",
+#     pca_seed=0,
+# )
 
-print(standalone_state_space_result)
+# print(standalone_state_space_result)
