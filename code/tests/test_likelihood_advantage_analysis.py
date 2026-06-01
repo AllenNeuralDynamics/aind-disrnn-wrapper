@@ -208,6 +208,8 @@ class TestLikelihoodAdvantageAnalysis(unittest.TestCase):
 
         self.assertEqual(prob_df["trial_idx"].tolist(), [1, 2, 1, 1])
         self.assertEqual(prob_df["p_model1"].tolist(), [0.8, 0.7, 0.9, 0.7])
+        self.assertEqual(prob_df["p_model1_left"].tolist(), [0.8, 0.3, 0.1, 0.7])
+        self.assertEqual(prob_df["p_model1_right"].tolist(), [0.2, 0.7, 0.9, 0.3])
 
     def test_extract_model1_rnn_state_frame_sorts_and_renames_latents(self):
         output_df = self._model_output_rows().copy()
@@ -266,6 +268,8 @@ class TestLikelihoodAdvantageAnalysis(unittest.TestCase):
             prob_column="p_model1",
             source_label="gru",
         )
+        self.assertIn("p_model1_left", merged_df.columns)
+        self.assertIn("p_model1_right", merged_df.columns)
         merged_df = likelihood_advantage_analysis._merge_probability_frame(
             merged_df,
             baseline_prob_df,
@@ -544,6 +548,91 @@ class TestLikelihoodAdvantageAnalysis(unittest.TestCase):
             self.assertIn("switch", result["rnn_state_condition_plots"])
             self.assertIn("trial_position", result["rnn_state_condition_plots"])
 
+    def test_run_rnn_state_space_subject_analysis_from_pickle(self):
+        trial_df = pd.DataFrame(
+            {
+                "subject_id": ["m1"] * 6 + ["m2"] * 6,
+                "p_model1_left": np.linspace(0.1, 0.9, 12),
+                "p_model1_right": np.linspace(0.9, 0.1, 12),
+                "rnn_state_0": np.linspace(0.0, 1.0, 12),
+                "rnn_state_1": np.linspace(1.0, 0.0, 12),
+                "rnn_state_2": np.sin(np.linspace(0.0, 1.0, 12)),
+                "rnn_state_3": np.cos(np.linspace(0.0, 1.0, 12)),
+            }
+        )
+
+        def _write_placeholder_plot(*args, output_path: Path, **kwargs):
+            del args
+            del kwargs
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text("plot")
+
+        with tempfile.TemporaryDirectory(prefix="rnn_state_subjects_") as tmpdir, mock.patch.object(
+            likelihood_advantage_analysis,
+            "_plot_rnn_state_pca_variance",
+            side_effect=_write_placeholder_plot,
+        ), mock.patch.object(
+            likelihood_advantage_analysis,
+            "_plot_rnn_state_subject_probability_figure",
+            side_effect=_write_placeholder_plot,
+        ):
+            pickle_path = Path(tmpdir) / "trial_advantage.pkl"
+            trial_df.to_pickle(pickle_path)
+            result = likelihood_advantage_analysis.run_rnn_state_space_subject_analysis(
+                pickle_path,
+                probability_column="p_model1_right",
+                subject_ids=["m2"],
+                output_dir=Path(tmpdir) / "subject_plots",
+                pca_seed=0,
+            )
+
+            self.assertEqual(result["probability_column"], "p_model1_right")
+            self.assertEqual(result["subject_ids"], ["m2"])
+            self.assertEqual(set(result["subject_probability_plots"].keys()), {"m2"})
+            self.assertTrue(Path(result["rnn_state_pca_variance"]).exists())
+            self.assertTrue(Path(result["rnn_state_pca_variance_csv"]).exists())
+            self.assertTrue(Path(result["subject_probability_plots"]["m2"]).exists())
+
+    def test_run_rnn_state_space_subject_analysis_validates_required_columns(self):
+        base_df = pd.DataFrame(
+            {
+                "subject_id": ["m1", "m1"],
+                "p_model1_left": [0.2, 0.8],
+                "rnn_state_0": [0.0, 1.0],
+                "rnn_state_1": [1.0, 0.0],
+            }
+        )
+
+        with tempfile.TemporaryDirectory(prefix="rnn_state_subjects_missing_") as tmpdir:
+            missing_probability_path = Path(tmpdir) / "missing_probability.pkl"
+            base_df.drop(columns=["p_model1_left"]).to_pickle(missing_probability_path)
+            with self.assertRaisesRegex(ValueError, "p_model1_left"):
+                likelihood_advantage_analysis.run_rnn_state_space_subject_analysis(
+                    missing_probability_path,
+                    probability_column="p_model1_left",
+                    output_dir=Path(tmpdir) / "missing_probability",
+                )
+
+            missing_subject_path = Path(tmpdir) / "missing_subject.pkl"
+            base_df.drop(columns=["subject_id"]).to_pickle(missing_subject_path)
+            with self.assertRaisesRegex(ValueError, "subject_id"):
+                likelihood_advantage_analysis.run_rnn_state_space_subject_analysis(
+                    missing_subject_path,
+                    probability_column="p_model1_left",
+                    output_dir=Path(tmpdir) / "missing_subject",
+                )
+
+            missing_state_path = Path(tmpdir) / "missing_state.pkl"
+            base_df.drop(columns=["rnn_state_0", "rnn_state_1"]).to_pickle(
+                missing_state_path
+            )
+            with self.assertRaisesRegex(ValueError, "rnn_state_"):
+                likelihood_advantage_analysis.run_rnn_state_space_subject_analysis(
+                    missing_state_path,
+                    probability_column="p_model1_left",
+                    output_dir=Path(tmpdir) / "missing_state",
+                )
+
     def test_validate_model_pair_rejects_invalid_model_types(self):
         with self.assertRaisesRegex(ValueError, "model1_dir must resolve"):
             likelihood_advantage_analysis._validate_model_pair(
@@ -722,6 +811,8 @@ class TestLikelihoodAdvantageAnalysis(unittest.TestCase):
             trial_df = pd.read_pickle(result["trial_advantage_pickle"])
             self.assertIn("advantage", trial_df.columns)
             self.assertIn("session_stage", trial_df.columns)
+            self.assertIn("p_model1_left", trial_df.columns)
+            self.assertIn("p_model1_right", trial_df.columns)
             self.assertIn("rnn_state_0", trial_df.columns)
             self.assertIn("rnn_state_3", trial_df.columns)
 

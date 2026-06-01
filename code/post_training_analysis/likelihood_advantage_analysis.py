@@ -158,16 +158,18 @@ def run_likelihood_advantage_analysis(
     )
 
     trial_df = pd.DataFrame(trial_df).copy()
-    trial_df["p_model1"] = np.clip(
-        trial_df["p_model1"].to_numpy(dtype=float),
-        _EPSILON,
-        1.0 - _EPSILON,
-    )
-    trial_df["p_rl"] = np.clip(
-        trial_df["p_rl"].to_numpy(dtype=float),
-        _EPSILON,
-        1.0 - _EPSILON,
-    )
+    for probability_column in (
+        "p_model1",
+        "p_model1_left",
+        "p_model1_right",
+        "p_rl",
+    ):
+        if probability_column in trial_df.columns:
+            trial_df[probability_column] = np.clip(
+                trial_df[probability_column].to_numpy(dtype=float),
+                _EPSILON,
+                1.0 - _EPSILON,
+            )
     trial_df["log_p_model1"] = np.log(trial_df["p_model1"].to_numpy(dtype=float))
     trial_df["log_p_rl"] = np.log(trial_df["p_rl"].to_numpy(dtype=float))
     trial_df["advantage"] = (
@@ -500,6 +502,110 @@ def run_rnn_state_space_condition_analysis(
         "rnn_state_pca_variance_csv": str(variance_csv_path),
         "rnn_state_condition_plots": condition_plot_paths,
         "condition_columns": selected_condition_columns,
+        "pca_fit_n_trials": int(pca_result["fit_n_trials"]),
+        "n_trials_projected": int(pca_result["n_trials_projected"]),
+    }
+
+
+def run_rnn_state_space_subject_analysis(
+    trial_advantage_pickle: str | Path,
+    *,
+    probability_column: str = "p_model1_left",
+    subject_ids: Sequence[Any] | None = None,
+    output_dir: str | Path | None = None,
+    pca_seed: int = 0,
+    pca_fit_fraction: float = 0.5,
+    n_variance_pcs: int = 10,
+    n_plot_pcs: int = 4,
+) -> dict[str, Any]:
+    """Plot shared-PCA RNN states per subject, colored by model probability."""
+
+    pd = _import_pandas()
+
+    pickle_path = Path(trial_advantage_pickle).expanduser().resolve()
+    trial_df = pd.read_pickle(pickle_path)
+    probability_column = str(probability_column)
+    resolved_output_dir = (
+        pickle_path.parent
+        / "figures"
+        / "rnn_state_space_subjects"
+        / _safe_filename_component(probability_column)
+        if output_dir is None
+        else Path(output_dir).expanduser().resolve()
+    )
+    resolved_output_dir.mkdir(parents=True, exist_ok=True)
+
+    _validate_subject_state_space_dataframe(
+        trial_df,
+        probability_column=probability_column,
+    )
+    state_columns = _rnn_state_columns(trial_df)
+    pca_result = _fit_and_project_rnn_state_pca(
+        trial_df,
+        state_columns=state_columns,
+        pca_seed=pca_seed,
+        pca_fit_fraction=pca_fit_fraction,
+        finite_value_columns=[],
+    )
+    variance_df = _build_pca_variance_dataframe(
+        pca_result,
+        n_variance_pcs=n_variance_pcs,
+    )
+    variance_csv_path = resolved_output_dir / "rnn_state_pca_variance.csv"
+    variance_df.to_csv(variance_csv_path, index=False)
+
+    variance_plot_path = resolved_output_dir / "rnn_state_pca_variance.png"
+    _plot_rnn_state_pca_variance(
+        variance_df,
+        output_path=variance_plot_path,
+    )
+
+    selected_subject_ids = _resolve_subject_ids_for_state_space_plot(
+        trial_df,
+        subject_ids=subject_ids,
+    )
+    subject_plot_paths: dict[str, str] = {}
+    subject_plot_dir = resolved_output_dir / "subjects"
+    subject_series = pd.DataFrame(trial_df)["subject_id"].astype(str)
+    for subject_id in selected_subject_ids:
+        subject_mask = (subject_series == str(subject_id)).to_numpy(dtype=bool)
+        plot_path = subject_plot_dir / f"{_safe_filename_component(subject_id)}.png"
+        _plot_rnn_state_subject_probability_figure(
+            pca_result,
+            subject_id=str(subject_id),
+            subject_mask=subject_mask,
+            probability_column=probability_column,
+            output_path=plot_path,
+            n_plot_pcs=n_plot_pcs,
+        )
+        subject_plot_paths[str(subject_id)] = str(plot_path)
+
+    summary_payload = {
+        "trial_advantage_pickle": str(pickle_path),
+        "output_dir": str(resolved_output_dir),
+        "probability_column": probability_column,
+        "subject_ids": selected_subject_ids,
+        "pca_seed": int(pca_seed),
+        "pca_fit_fraction": float(pca_fit_fraction),
+        "pca_fit_n_trials": int(pca_result["fit_n_trials"]),
+        "n_trials_projected": int(pca_result["n_trials_projected"]),
+        "artifacts": {
+            "rnn_state_pca_variance": str(variance_plot_path),
+            "rnn_state_pca_variance_csv": str(variance_csv_path),
+            "subject_probability_plots": subject_plot_paths,
+        },
+    }
+    summary_path = resolved_output_dir / "summary.json"
+    summary_path.write_text(json.dumps(summary_payload, indent=2, default=lc._json_default))
+
+    return {
+        "output_dir": str(resolved_output_dir),
+        "trial_advantage_pickle": str(pickle_path),
+        "probability_column": probability_column,
+        "rnn_state_pca_variance": str(variance_plot_path),
+        "rnn_state_pca_variance_csv": str(variance_csv_path),
+        "subject_probability_plots": subject_plot_paths,
+        "subject_ids": selected_subject_ids,
         "pca_fit_n_trials": int(pca_result["fit_n_trials"]),
         "n_trials_projected": int(pca_result["n_trials_projected"]),
     }
@@ -991,8 +1097,11 @@ def _extract_model1_probability_frame(
     pd = _import_pandas()
     np = _import_numpy()
 
-    if n_action_logits <= 0:
-        raise ValueError(f"Expected n_action_logits > 0, received {n_action_logits}")
+    if n_action_logits < 2:
+        raise ValueError(
+            "Expected n_action_logits >= 2 so left/right action probabilities can be "
+            f"extracted, received {n_action_logits}"
+        )
 
     normalized_output_df = lc._normalize_raw_dataframe(pd.DataFrame(output_df).copy())
     if "ses_idx" not in normalized_output_df.columns or "animal_response" not in normalized_output_df.columns:
@@ -1017,17 +1126,35 @@ def _extract_model1_probability_frame(
         if not np.any(binary_mask):
             continue
         binary_choices = choices[binary_mask]
-        chosen_probabilities = action_probabilities[binary_mask, binary_choices]
+        binary_action_probabilities = action_probabilities[binary_mask]
+        if binary_action_probabilities.shape[1] < 2:
+            raise ValueError(
+                "Aligned action probabilities must include left and right columns."
+            )
+        chosen_probabilities = binary_action_probabilities[
+            np.arange(len(binary_choices)),
+            binary_choices,
+        ]
+        left_probabilities = binary_action_probabilities[:, 0]
+        right_probabilities = binary_action_probabilities[:, 1]
         subject_values = (
             session_df.loc[binary_mask, "subject_id"].tolist()
             if "subject_id" in session_df.columns
             else ["unknown"] * int(np.sum(binary_mask))
         )
-        for trial_idx, (subject_id, action, probability) in enumerate(
+        for trial_idx, (
+            subject_id,
+            action,
+            probability,
+            left_probability,
+            right_probability,
+        ) in enumerate(
             zip(
                 subject_values,
                 binary_choices.tolist(),
                 chosen_probabilities.tolist(),
+                left_probabilities.tolist(),
+                right_probabilities.tolist(),
             ),
             start=1,
         ):
@@ -1038,12 +1165,22 @@ def _extract_model1_probability_frame(
                     "trial_idx": int(trial_idx),
                     "action": int(action),
                     "p_model1": float(probability),
+                    "p_model1_left": float(left_probability),
+                    "p_model1_right": float(right_probability),
                 }
             )
 
     return pd.DataFrame.from_records(
         records,
-        columns=["subject_id", "ses_idx", "trial_idx", "action", "p_model1"],
+        columns=[
+            "subject_id",
+            "ses_idx",
+            "trial_idx",
+            "action",
+            "p_model1",
+            "p_model1_left",
+            "p_model1_right",
+        ],
     )
 
 
@@ -1362,22 +1499,30 @@ def _merge_probability_frame(
 
     left_df = _sort_trial_dataframe(pd.DataFrame(trial_df).copy())
     right_df = pd.DataFrame(probability_df).copy()
-    expected_columns = {"ses_idx", "trial_idx", "action", prob_column}
+    key_columns = ["ses_idx", "trial_idx"]
+    expected_columns = {*key_columns, "action", prob_column}
     missing_columns = [column for column in expected_columns if column not in right_df.columns]
     if missing_columns:
         raise ValueError(
             f"Probability frame for {source_label!r} is missing columns: {missing_columns}"
         )
 
-    duplicated = right_df.duplicated(subset=["ses_idx", "trial_idx"])
+    duplicated = right_df.duplicated(subset=key_columns)
     if duplicated.any():
         raise ValueError(
             f"Probability frame for {source_label!r} contains duplicate ses_idx/trial_idx keys."
         )
 
+    excluded_columns = {"subject_id", *key_columns, "action", prob_column}
+    extra_probability_columns = [
+        str(column)
+        for column in right_df.columns
+        if column not in excluded_columns and column not in left_df.columns
+    ]
+    merge_columns = [*key_columns, "action", prob_column, *extra_probability_columns]
     merged = left_df.merge(
-        right_df.loc[:, ["ses_idx", "trial_idx", "action", prob_column]],
-        on=["ses_idx", "trial_idx"],
+        right_df.loc[:, merge_columns],
+        on=key_columns,
         how="left",
         validate="one_to_one",
         suffixes=("", "_prob"),
@@ -1403,10 +1548,13 @@ def _merge_probability_frame(
         merged = merged.drop(columns=["action_prob"])
 
     merged = merged.drop(columns=["_merge"])
-    if merged[prob_column].isna().any():
-        missing_rows = merged.loc[merged[prob_column].isna(), ["ses_idx", "trial_idx"]]
+    value_columns = [prob_column, *extra_probability_columns]
+    missing_value_mask = merged.loc[:, value_columns].isna().any(axis=1)
+    if missing_value_mask.any():
+        missing_rows = merged.loc[missing_value_mask, ["ses_idx", "trial_idx"]]
         raise ValueError(
-            f"Merged probability column {prob_column!r} contains NaNs for {source_label!r}: "
+            f"Merged probability columns {value_columns!r} contain NaNs for "
+            f"{source_label!r}: "
             f"{missing_rows.head(10).to_dict(orient='records')}"
         )
     return _sort_trial_dataframe(merged)
@@ -1562,6 +1710,7 @@ def _fit_and_project_rnn_state_pca(
     state_columns: Sequence[str],
     pca_seed: int,
     pca_fit_fraction: float,
+    finite_value_columns: Sequence[str] = ("advantage",),
 ) -> dict[str, Any]:
     np = _import_numpy()
     pd = _import_pandas()
@@ -1571,12 +1720,32 @@ def _fit_and_project_rnn_state_pca(
 
     df = pd.DataFrame(trial_df).copy().reset_index(drop=True)
     state_matrix = df.loc[:, list(state_columns)].to_numpy(dtype=float)
-    advantages = df["advantage"].to_numpy(dtype=float)
-    finite_mask = np.isfinite(state_matrix).all(axis=1) & np.isfinite(advantages)
+    finite_value_column_names = [str(column) for column in finite_value_columns]
+    missing_value_columns = [
+        column for column in finite_value_column_names if column not in df.columns
+    ]
+    if missing_value_columns:
+        raise ValueError(
+            "trial_df is missing finite value columns for PCA: "
+            f"{missing_value_columns}"
+        )
+    advantages = (
+        df["advantage"].to_numpy(dtype=float)
+        if "advantage" in df.columns
+        else np.full(len(df), np.nan, dtype=float)
+    )
+    finite_mask = np.isfinite(state_matrix).all(axis=1)
+    for column in finite_value_column_names:
+        finite_mask = finite_mask & np.isfinite(df[column].to_numpy(dtype=float))
     n_valid = int(np.sum(finite_mask))
     if n_valid < 2:
+        finite_label = (
+            ", ".join(finite_value_column_names)
+            if finite_value_column_names
+            else "state values"
+        )
         raise ValueError(
-            "At least two finite RNN-state trials with finite advantage are required "
+            f"At least two finite RNN-state trials with finite {finite_label} are required "
             "to fit PCA."
         )
 
@@ -1602,6 +1771,7 @@ def _fit_and_project_rnn_state_pca(
     return {
         "trial_df": df,
         "state_columns": list(state_columns),
+        "finite_value_columns": finite_value_column_names,
         "finite_mask": finite_mask,
         "scores": scores,
         "advantages": advantages,
@@ -1997,6 +2167,195 @@ def _plot_rnn_state_condition_figure(
         colorbar_axis = fig.add_axes((0.91, 0.14, 0.018, 0.74))
         colorbar = fig.colorbar(last_scatter, cax=colorbar_axis)
         colorbar.set_label("Log-likelihood advantage")
+    fig.savefig(output_path)
+    plt.close(fig)
+
+
+def _validate_subject_state_space_dataframe(
+    trial_df: Any,
+    *,
+    probability_column: str,
+) -> None:
+    pd = _import_pandas()
+
+    df = pd.DataFrame(trial_df)
+    required_columns = ["subject_id", str(probability_column)]
+    missing_columns = [column for column in required_columns if column not in df.columns]
+    if missing_columns:
+        raise ValueError(
+            "trial_advantage_pickle is missing required columns for subject "
+            f"state-space analysis: {missing_columns}"
+        )
+    if not _rnn_state_columns(df):
+        raise ValueError(
+            "trial_advantage_pickle must contain rnn_state_* columns before "
+            "subject state-space plotting can run."
+        )
+
+
+def _resolve_subject_ids_for_state_space_plot(
+    trial_df: Any,
+    *,
+    subject_ids: Sequence[Any] | None,
+) -> list[str]:
+    pd = _import_pandas()
+
+    df = pd.DataFrame(trial_df)
+    if "subject_id" not in df.columns:
+        raise ValueError("trial_advantage_pickle must contain a subject_id column.")
+
+    subject_series = df["subject_id"]
+    available_subject_ids = list(
+        dict.fromkeys(subject_series[subject_series.notna()].map(str).tolist())
+    )
+    if subject_ids is None:
+        return available_subject_ids
+
+    requested_subject_ids = (
+        [str(subject_ids)]
+        if isinstance(subject_ids, (str, bytes))
+        else [str(subject_id) for subject_id in subject_ids]
+    )
+    missing_subject_ids = [
+        subject_id
+        for subject_id in requested_subject_ids
+        if subject_id not in set(available_subject_ids)
+    ]
+    if missing_subject_ids:
+        raise ValueError(
+            "Requested subject_ids are not present in trial_advantage_pickle: "
+            f"{missing_subject_ids}"
+        )
+    return requested_subject_ids
+
+
+def _plot_rnn_state_subject_probability_figure(
+    pca_result: Mapping[str, Any],
+    *,
+    subject_id: str,
+    subject_mask: Any,
+    probability_column: str,
+    output_path: Path,
+    n_plot_pcs: int,
+) -> None:
+    plt = _import_pyplot()
+    np = _import_numpy()
+
+    if int(n_plot_pcs) < 2:
+        raise ValueError("n_plot_pcs must be >= 2.")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    df = pca_result["trial_df"]
+    if probability_column not in df.columns:
+        raise ValueError(
+            f"trial_advantage_pickle must contain probability_column={probability_column!r}."
+        )
+
+    scores = np.asarray(pca_result["scores"], dtype=float)
+    finite_mask = np.asarray(pca_result["finite_mask"], dtype=bool)
+    probability_values = df[probability_column].to_numpy(dtype=float)
+    subject_mask = np.asarray(subject_mask, dtype=bool)
+    if subject_mask.shape[0] != finite_mask.shape[0]:
+        raise ValueError("subject_mask must be row-aligned to the PCA trial dataframe.")
+
+    highlight_mask = finite_mask & subject_mask & np.isfinite(probability_values)
+    highlight_count = int(np.sum(highlight_mask))
+    background_scores = scores[finite_mask]
+    highlight_scores = scores[highlight_mask]
+    highlight_probabilities = probability_values[highlight_mask]
+    highlight_mean_probability = (
+        float(np.mean(highlight_probabilities))
+        if highlight_probabilities.size
+        else math.nan
+    )
+    highlight_sem_probability = (
+        float(
+            np.std(highlight_probabilities, ddof=1)
+            / math.sqrt(highlight_probabilities.size)
+        )
+        if highlight_probabilities.size > 1
+        else 0.0 if highlight_probabilities.size == 1 else math.nan
+    )
+
+    pc_pairs = list(combinations(range(int(n_plot_pcs)), 2))
+    n_panels = max(1, len(pc_pairs))
+    n_cols = min(3, n_panels)
+    n_rows = int(math.ceil(n_panels / n_cols))
+    fig, axes = plt.subplots(
+        n_rows,
+        n_cols,
+        figsize=(5.2 * n_cols, 4.6 * n_rows),
+        dpi=120,
+    )
+    axes_flat = axes.flatten() if hasattr(axes, "flatten") else [axes]
+    last_scatter = None
+    for axis, (pc_x, pc_y) in zip(axes_flat, pc_pairs, strict=False):
+        if scores.shape[1] <= max(pc_x, pc_y):
+            axis.text(
+                0.5,
+                0.5,
+                "Not enough PCs",
+                ha="center",
+                va="center",
+                transform=axis.transAxes,
+            )
+            axis.set_axis_off()
+            continue
+
+        axis.scatter(
+            background_scores[:, pc_x],
+            background_scores[:, pc_y],
+            color="#8c8c8c",
+            alpha=0.06,
+            s=8,
+            linewidths=0,
+        )
+        if highlight_count > 0:
+            last_scatter = axis.scatter(
+                highlight_scores[:, pc_x],
+                highlight_scores[:, pc_y],
+                c=highlight_probabilities,
+                cmap="viridis",
+                vmin=0.0,
+                vmax=1.0,
+                s=8,
+                alpha=0.9,
+                linewidths=0,
+            )
+        else:
+            axis.text(
+                0.5,
+                0.5,
+                "No matching trials",
+                ha="center",
+                va="center",
+                transform=axis.transAxes,
+            )
+        axis.axhline(0.0, color="#d0d0d0", linewidth=0.7, zorder=0)
+        axis.axvline(0.0, color="#d0d0d0", linewidth=0.7, zorder=0)
+        axis.set_xlabel(f"PC{pc_x + 1}")
+        axis.set_ylabel(f"PC{pc_y + 1}")
+        axis.set_title(f"PC{pc_x + 1} vs PC{pc_y + 1}")
+
+    for axis in axes_flat[len(pc_pairs) :]:
+        axis.axis("off")
+
+    if math.isfinite(highlight_mean_probability) and math.isfinite(highlight_sem_probability):
+        probability_summary = (
+            f"mean={highlight_mean_probability:.4g} +/- "
+            f"{highlight_sem_probability:.4g}"
+        )
+    else:
+        probability_summary = "mean=nan +/- nan"
+    fig.suptitle(
+        f"subject_id={subject_id} | {probability_column} "
+        f"(n={highlight_count}, {probability_summary})"
+    )
+    fig.tight_layout(rect=(0, 0, 0.88, 0.94))
+    if last_scatter is not None:
+        colorbar_axis = fig.add_axes((0.91, 0.14, 0.018, 0.74))
+        colorbar = fig.colorbar(last_scatter, cax=colorbar_axis)
+        colorbar.set_label(probability_column)
     fig.savefig(output_path)
     plt.close(fig)
 
