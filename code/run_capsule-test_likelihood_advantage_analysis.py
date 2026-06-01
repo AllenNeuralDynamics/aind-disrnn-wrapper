@@ -27,7 +27,9 @@ result = run_likelihood_advantage_analysis(
     include_rnn_state_space=True,
     pca_seed=0,
     pca_fit_fraction=0.5,
-    include_baseline_q_space=True,
+    # This baseline run does not expose recoverable policy-time Q histories.
+    # Set to True only for baseline agents that save q_rl_left/q_rl_right.
+    include_baseline_q_space=False,
 )
 
 print(result)
@@ -57,12 +59,13 @@ print(right_subject_state_result)
 # )
 # print(left_baseline_q_subject_result)
 
-right_baseline_q_subject_result = run_baseline_q_space_subject_analysis(
-    result["trial_advantage_pickle"],
-    probability_column="p_rl_right",
-    output_dir="/results/figures/baseline_q_space_subjects_right",
-)
-print(right_baseline_q_subject_result)
+if result.get("baseline_q_condition_plots") is not None:
+    right_baseline_q_subject_result = run_baseline_q_space_subject_analysis(
+        result["trial_advantage_pickle"],
+        probability_column="p_rl_right",
+        output_dir="/results/figures/baseline_q_space_subjects_right",
+    )
+    print(right_baseline_q_subject_result)
 
 # standalone_state_space_result = run_rnn_state_space_condition_analysis(
 #     "/data/trial_advantage.pkl",
