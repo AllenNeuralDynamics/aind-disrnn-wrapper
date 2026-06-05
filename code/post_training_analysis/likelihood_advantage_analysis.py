@@ -58,6 +58,9 @@ _RNN_STATE_SPACE_OVERVIEW_COLOR_COLUMNS = (
     "recent_reward_rate_5",
     "trial_position",
 )
+RNN_STATE_SPACE_OVERVIEW_OUTPUT_DIR = Path(
+    "/results/figures/rnn_state_space_overview"
+)
 
 
 @dataclass(frozen=True)
@@ -663,7 +666,7 @@ def run_rnn_state_space_overview_analysis(
     pickle_path = Path(trial_advantage_pickle).expanduser().resolve()
     trial_df = _add_rnn_state_space_overview_columns(pd.read_pickle(pickle_path))
     resolved_output_dir = (
-        pickle_path.parent / "figures" / "rnn_state_space_overview"
+        RNN_STATE_SPACE_OVERVIEW_OUTPUT_DIR
         if output_dir is None
         else Path(output_dir).expanduser().resolve()
     )

@@ -948,6 +948,10 @@ class TestLikelihoodAdvantageAnalysis(unittest.TestCase):
             )
 
     def test_run_rnn_state_space_overview_analysis_from_pickle(self):
+        self.assertEqual(
+            likelihood_advantage_analysis.RNN_STATE_SPACE_OVERVIEW_OUTPUT_DIR,
+            Path("/results/figures/rnn_state_space_overview"),
+        )
         trial_df = pd.DataFrame(
             {
                 "ses_idx": ["s1"] * 6 + ["s2"] * 6,
