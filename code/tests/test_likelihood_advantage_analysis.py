@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 import sys
 import tempfile
@@ -1032,6 +1033,124 @@ class TestLikelihoodAdvantageAnalysis(unittest.TestCase):
             self.assertAlmostEqual(
                 switch_values[3],
                 float(trial_df.loc[3, "p_model1_left"]),
+            )
+
+    def test_run_subject_embedding_baseline_parameter_analysis(self):
+        embedding_df = pd.DataFrame(
+            {
+                "subject_id": ["m1", "m2", "m3"],
+                "subject_index": [0, 1, 2],
+                "embedding_1": [0.0, 1.0, 2.0],
+                "embedding_2": [0.5, 1.5, 2.5],
+            }
+        )
+        baseline_output = {
+            "multisubject": True,
+            "fit_strategy": "per_subject",
+            "fitted_params_per_subject": {
+                "m1": {
+                    "fitted_params": {
+                        "learn_rate_rew": 0.2,
+                        "biasL": -0.1,
+                    }
+                },
+                "m2": {
+                    "fitted_params": {
+                        "learn_rate_rew": 0.4,
+                        "biasL": 0.1,
+                    }
+                },
+                "m4": {
+                    "fitted_params": {
+                        "learn_rate_rew": 0.6,
+                        "biasL": 0.3,
+                    }
+                },
+            },
+        }
+        captured_parameters = []
+
+        def _write_placeholder_parameter_plot(plot_df, *, parameter_column: str, output_path: Path):
+            captured_parameters.append(parameter_column)
+            self.assertIn(parameter_column, pd.DataFrame(plot_df).columns)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text("plot")
+
+        with tempfile.TemporaryDirectory(prefix="embedding_baseline_params_") as tmpdir:
+            root = Path(tmpdir)
+            embedding_path = root / "subject_embeddings.pkl"
+            baseline_output_path = root / "baseline_rl_output.json"
+            embedding_df.to_pickle(embedding_path)
+            baseline_output_path.write_text(json.dumps(baseline_output, indent=2))
+            model1_run = ResolvedLikelihoodRun(
+                model_dir=str(root / "model1"),
+                inputs_path=str(root / "model1" / "inputs.yaml"),
+                outputs_dir=str(root / "model1" / "outputs"),
+                model_type="gru",
+                model_label="model1",
+                model_index=0,
+                multisubject=True,
+                seed=0,
+                checkpoint_policy="best_eval",
+                checkpoint_step=10,
+                checkpoint_label="step_10",
+                params_path=str(root / "model1" / "outputs" / "params.json"),
+                baseline_output_path=None,
+                artifact_selection_reason="selected",
+                run_config={},
+                model_config={},
+            )
+            model2_run = ResolvedLikelihoodRun(
+                model_dir=str(root / "model2"),
+                inputs_path=str(root / "model2" / "inputs.yaml"),
+                outputs_dir=str(root / "model2" / "outputs"),
+                model_type="baseline_rl",
+                model_label="baseline_rl",
+                model_index=1,
+                multisubject=True,
+                seed=0,
+                checkpoint_policy="final_fit",
+                checkpoint_step=None,
+                checkpoint_label="final_fit",
+                params_path=None,
+                baseline_output_path=str(baseline_output_path),
+                artifact_selection_reason="selected",
+                run_config={},
+                model_config={},
+            )
+            with mock.patch.object(
+                likelihood_advantage_analysis.lc,
+                "_resolve_likelihood_run",
+                side_effect=[model1_run, model2_run],
+            ), mock.patch.object(
+                likelihood_advantage_analysis,
+                "_plot_subject_embedding_baseline_parameter_figure",
+                side_effect=_write_placeholder_parameter_plot,
+            ):
+                result = (
+                    likelihood_advantage_analysis.run_subject_embedding_baseline_parameter_analysis(
+                        root / "model1",
+                        root / "model2",
+                        output_dir=root / "embedding_param_plots",
+                        subject_embeddings_path=embedding_path,
+                    )
+                )
+
+            self.assertEqual(result["parameter_names"], ["learn_rate_rew", "biasL"])
+            self.assertEqual(captured_parameters, ["learn_rate_rew", "biasL"])
+            self.assertEqual(set(result["parameter_plots"].keys()), {"learn_rate_rew", "biasL"})
+            for plot_path in result["parameter_plots"].values():
+                self.assertTrue(Path(plot_path).exists())
+            merged_df = pd.read_csv(result["merged_subject_parameter_csv"])
+            self.assertEqual(merged_df["subject_id"].tolist(), ["m1", "m2"])
+            self.assertEqual(result["merge_summary"]["n_shared_subjects"], 2)
+            self.assertEqual(
+                result["merge_summary"]["embedding_subjects_missing_parameters"],
+                ["m3"],
+            )
+            self.assertEqual(
+                result["merge_summary"]["parameter_subjects_missing_embeddings"],
+                ["m4"],
             )
 
     def test_run_rnn_state_space_subject_analysis_from_pickle(self):

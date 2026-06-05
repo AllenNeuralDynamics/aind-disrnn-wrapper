@@ -61,6 +61,9 @@ _RNN_STATE_SPACE_OVERVIEW_COLOR_COLUMNS = (
 RNN_STATE_SPACE_OVERVIEW_OUTPUT_DIR = Path(
     "/results/figures/rnn_state_space_overview"
 )
+SUBJECT_EMBEDDING_BASELINE_PARAMETER_OUTPUT_DIR = Path(
+    "/results/figures/subject_embedding_baseline_rl_parameters"
+)
 
 
 @dataclass(frozen=True)
@@ -742,6 +745,123 @@ def run_rnn_state_space_overview_analysis(
         "overview_plots": overview_plot_paths,
         "pca_fit_n_trials": int(pca_result["fit_n_trials"]),
         "n_trials_projected": int(pca_result["n_trials_projected"]),
+    }
+
+
+def run_subject_embedding_baseline_parameter_analysis(
+    model1_dir: str | Path,
+    model2_dir: str | Path,
+    *,
+    checkpoint_policy: str = "best_eval",
+    parameter_names: Sequence[str] | str | None = None,
+    output_dir: str | Path | None = None,
+    subject_embeddings_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Plot model1 subject embeddings colored by model2 baseline RL parameters."""
+
+    pd = _import_pandas()
+
+    run_model1 = lc._resolve_likelihood_run(
+        model_dir=model1_dir,
+        model_label="model1",
+        model_index=0,
+        checkpoint_policy=checkpoint_policy,
+    )
+    run_model2 = lc._resolve_likelihood_run(
+        model_dir=model2_dir,
+        model_label="baseline_rl",
+        model_index=1,
+        checkpoint_policy=checkpoint_policy,
+    )
+    if run_model1.model_type not in {"gru", "disrnn"}:
+        raise ValueError(
+            "model1_dir must resolve to a GRU or disRNN run; "
+            f"received model_type={run_model1.model_type!r}."
+        )
+    if run_model2.model_type != "baseline_rl":
+        raise ValueError(
+            "model2_dir must resolve to a baseline_rl run; "
+            f"received model_type={run_model2.model_type!r}."
+        )
+
+    resolved_output_dir = (
+        SUBJECT_EMBEDDING_BASELINE_PARAMETER_OUTPUT_DIR
+        if output_dir is None
+        else Path(output_dir).expanduser().resolve()
+    )
+    resolved_output_dir.mkdir(parents=True, exist_ok=True)
+
+    embedding_path = (
+        Path(subject_embeddings_path).expanduser().resolve()
+        if subject_embeddings_path is not None
+        else _resolve_model_subject_embeddings_path(run_model1)
+    )
+    if embedding_path is None:
+        raise FileNotFoundError(
+            "Could not find model1 subject embeddings. Expected "
+            "outputs/subject_embeddings.pkl or a checkpoint-adjacent "
+            "subject_embeddings.pkl; pass subject_embeddings_path to override."
+        )
+    if not embedding_path.exists():
+        raise FileNotFoundError(f"subject_embeddings_path does not exist: {embedding_path}")
+
+    embedding_df = pd.DataFrame(pd.read_pickle(embedding_path)).copy()
+    parameter_df, ordered_parameter_names, baseline_output_path = (
+        _load_baseline_subject_parameter_frame(run_model2)
+    )
+    selected_parameter_names = _resolve_subject_parameter_names(
+        ordered_parameter_names,
+        parameter_names=parameter_names,
+    )
+    plot_df, merge_summary = _merge_subject_embeddings_with_parameters(
+        embedding_df,
+        parameter_df,
+        parameter_names=selected_parameter_names,
+    )
+
+    merged_csv_path = resolved_output_dir / "subject_embedding_baseline_parameters.csv"
+    plot_df.to_csv(merged_csv_path, index=False)
+
+    parameter_plot_paths: dict[str, str] = {}
+    parameter_plot_dir = resolved_output_dir / "parameters"
+    for parameter_name in selected_parameter_names:
+        plot_path = parameter_plot_dir / f"{_safe_filename_component(parameter_name)}.png"
+        _plot_subject_embedding_baseline_parameter_figure(
+            plot_df,
+            parameter_column=parameter_name,
+            output_path=plot_path,
+        )
+        parameter_plot_paths[str(parameter_name)] = str(plot_path)
+
+    summary_payload = {
+        "model1": {
+            "resolved_run": run_model1.to_dict(),
+            "subject_embeddings_path": str(embedding_path),
+        },
+        "model2": {
+            "resolved_run": run_model2.to_dict(),
+            "baseline_output_path": str(baseline_output_path),
+        },
+        "output_dir": str(resolved_output_dir),
+        "parameter_names": selected_parameter_names,
+        "merge_summary": merge_summary,
+        "artifacts": {
+            "merged_subject_parameter_csv": str(merged_csv_path),
+            "parameter_plots": parameter_plot_paths,
+        },
+    }
+    summary_path = resolved_output_dir / "summary.json"
+    summary_path.write_text(json.dumps(summary_payload, indent=2, default=lc._json_default))
+
+    return {
+        "output_dir": str(resolved_output_dir),
+        "summary": str(summary_path),
+        "model1_subject_embeddings_path": str(embedding_path),
+        "model2_baseline_output_path": str(baseline_output_path),
+        "parameter_names": selected_parameter_names,
+        "merged_subject_parameter_csv": str(merged_csv_path),
+        "parameter_plots": parameter_plot_paths,
+        "merge_summary": merge_summary,
     }
 
 
@@ -3141,6 +3261,172 @@ def _resolve_rnn_state_space_overview_color_columns(
     return selected_columns
 
 
+def _load_baseline_subject_parameter_frame(
+    run: lc.ResolvedLikelihoodRun,
+) -> tuple[Any, list[str], Path]:
+    pd = _import_pandas()
+
+    if run.baseline_output_path is None:
+        raise ValueError("baseline RL run is missing baseline_output_path.")
+    baseline_output = lc._load_baseline_output_for_run(run)
+    baseline_output_path = Path(str(run.baseline_output_path)).expanduser().resolve()
+    fitted_params_per_subject = baseline_output.get("fitted_params_per_subject")
+    if not isinstance(fitted_params_per_subject, Mapping) or not fitted_params_per_subject:
+        raise ValueError(
+            "baseline_rl_output.json must contain fitted_params_per_subject for "
+            "subject embedding parameter plots."
+        )
+
+    records: list[dict[str, Any]] = []
+    ordered_parameter_names: list[str] = []
+    seen_parameter_names: set[str] = set()
+    for subject_id, subject_fit_summary in fitted_params_per_subject.items():
+        fitted_params = lc._extract_subject_fitted_params(subject_fit_summary)
+        for parameter_name in fitted_params:
+            if parameter_name not in seen_parameter_names:
+                ordered_parameter_names.append(parameter_name)
+                seen_parameter_names.add(parameter_name)
+        record = {
+            "subject_id": str(subject_id),
+            "_subject_key": _normalize_subject_key(subject_id),
+        }
+        record.update(fitted_params)
+        records.append(record)
+
+    parameter_df = pd.DataFrame.from_records(records)
+    if parameter_df.empty:
+        raise ValueError("No per-subject fitted baseline RL parameters were available.")
+    return parameter_df, ordered_parameter_names, baseline_output_path
+
+
+def _resolve_subject_parameter_names(
+    available_parameter_names: Sequence[str],
+    *,
+    parameter_names: Sequence[str] | str | None,
+) -> list[str]:
+    available_names = [str(parameter_name) for parameter_name in available_parameter_names]
+    if parameter_names is None:
+        selected_names = available_names
+    elif isinstance(parameter_names, (str, bytes)):
+        selected_names = [str(parameter_names)]
+    else:
+        selected_names = [str(parameter_name) for parameter_name in parameter_names]
+    if not selected_names:
+        raise ValueError("At least one fitted baseline RL parameter must be requested.")
+    missing_names = [
+        parameter_name
+        for parameter_name in selected_names
+        if parameter_name not in set(available_names)
+    ]
+    if missing_names:
+        raise ValueError(
+            "Requested baseline RL fitted parameters are not available: "
+            f"{missing_names}. Available parameters: {available_names}"
+        )
+    return selected_names
+
+
+def _merge_subject_embeddings_with_parameters(
+    subject_embeddings_df: Any,
+    parameter_df: Any,
+    *,
+    parameter_names: Sequence[str],
+) -> tuple[Any, dict[str, Any]]:
+    pd = _import_pandas()
+    np = _import_numpy()
+
+    embedding_df = pd.DataFrame(subject_embeddings_df).copy()
+    if "subject_id" not in embedding_df.columns:
+        raise ValueError("subject_embeddings.pkl must contain a subject_id column.")
+    embedding_columns = _subject_embedding_columns(embedding_df)
+    if len(embedding_columns) < 2:
+        raise ValueError(
+            "subject_embeddings.pkl must contain at least two embedding_* columns."
+        )
+
+    parameter_frame = pd.DataFrame(parameter_df).copy()
+    required_parameter_columns = {"subject_id", "_subject_key", *map(str, parameter_names)}
+    missing_parameter_columns = [
+        column for column in required_parameter_columns if column not in parameter_frame.columns
+    ]
+    if missing_parameter_columns:
+        raise ValueError(
+            "Baseline RL parameter dataframe is missing columns: "
+            f"{missing_parameter_columns}"
+        )
+
+    embedding_df["_subject_key"] = embedding_df["subject_id"].map(_normalize_subject_key)
+    embedding_df = embedding_df[embedding_df["_subject_key"] != ""].copy()
+    parameter_frame = parameter_frame[parameter_frame["_subject_key"] != ""].copy()
+    duplicate_embedding_keys = embedding_df.loc[
+        embedding_df.duplicated(subset=["_subject_key"]),
+        "_subject_key",
+    ].tolist()
+    if duplicate_embedding_keys:
+        raise ValueError(
+            "subject_embeddings.pkl contains duplicate subject_id entries after "
+            f"normalization: {duplicate_embedding_keys}"
+        )
+    duplicate_parameter_keys = parameter_frame.loc[
+        parameter_frame.duplicated(subset=["_subject_key"]),
+        "_subject_key",
+    ].tolist()
+    if duplicate_parameter_keys:
+        raise ValueError(
+            "baseline_rl_output.json contains duplicate subject_id entries after "
+            f"normalization: {duplicate_parameter_keys}"
+        )
+
+    plot_df = embedding_df.merge(
+        parameter_frame.loc[:, ["_subject_key", *map(str, parameter_names)]],
+        on="_subject_key",
+        how="inner",
+        validate="one_to_one",
+    )
+    if plot_df.empty:
+        raise ValueError(
+            "No subjects were shared between model1 subject embeddings and model2 "
+            "per-subject baseline RL parameters."
+        )
+
+    if "subject_index" not in plot_df.columns:
+        plot_df["subject_index"] = list(range(len(plot_df)))
+    plot_df["_dot_id"] = [
+        _format_dot_id(row.get("subject_index"), fallback=index)
+        for index, row in enumerate(plot_df.to_dict(orient="records"))
+    ]
+    for column in [*embedding_columns, *map(str, parameter_names)]:
+        plot_df[column] = pd.to_numeric(plot_df[column], errors="coerce")
+    finite_embedding_mask = np.isfinite(
+        plot_df.loc[:, embedding_columns].to_numpy(dtype=float)
+    ).all(axis=1)
+    plot_df = plot_df.loc[finite_embedding_mask].copy()
+    if plot_df.empty:
+        raise ValueError(
+            "No shared subjects had finite model1 subject embedding coordinates."
+        )
+
+    embedding_subject_keys = set(embedding_df["_subject_key"].tolist())
+    parameter_subject_keys = set(parameter_frame["_subject_key"].tolist())
+    plotted_subject_keys = set(plot_df["_subject_key"].tolist())
+    merge_summary = {
+        "n_embedding_subjects": int(len(embedding_subject_keys)),
+        "n_parameter_subjects": int(len(parameter_subject_keys)),
+        "n_shared_subjects": int(len(embedding_subject_keys & parameter_subject_keys)),
+        "n_plotted_subjects": int(len(plotted_subject_keys)),
+        "embedding_subjects_missing_parameters": sorted(
+            embedding_subject_keys - parameter_subject_keys
+        ),
+        "parameter_subjects_missing_embeddings": sorted(
+            parameter_subject_keys - embedding_subject_keys
+        ),
+        "subjects_dropped_for_nonfinite_embeddings": sorted(
+            (embedding_subject_keys & parameter_subject_keys) - plotted_subject_keys
+        ),
+    }
+    return plot_df, merge_summary
+
+
 def _resolve_state_condition_columns(
     trial_df: Any,
     *,
@@ -4295,6 +4581,137 @@ def _plot_subject_embedding_task_space_figure(
     fig.suptitle("Subject Embedding Space by Task", fontsize=14)
     right_margin = 0.79 if n_subject_legend_columns <= 1 else 0.76
     fig.tight_layout(rect=(0.03, 0.07, right_margin, 0.92))
+    fig.savefig(output_path, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _plot_subject_embedding_baseline_parameter_figure(
+    subject_parameter_df: Any,
+    *,
+    parameter_column: str,
+    output_path: Path,
+) -> None:
+    plt = _import_pyplot()
+    pd = _import_pandas()
+    np = _import_numpy()
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    plot_df = pd.DataFrame(subject_parameter_df).copy()
+    embedding_columns = _subject_embedding_columns(plot_df)
+    if len(embedding_columns) < 2:
+        raise ValueError("subject embedding parameter plotting requires >= 2 dimensions.")
+    parameter_column = str(parameter_column)
+    if parameter_column not in plot_df.columns:
+        raise ValueError(
+            f"subject parameter dataframe must contain parameter_column={parameter_column!r}."
+        )
+
+    dim_pairs = list(combinations(embedding_columns, 2))
+    n_panels = max(1, len(dim_pairs))
+    n_cols = min(3, n_panels)
+    n_rows = int(math.ceil(n_panels / n_cols))
+    fig, axes = plt.subplots(
+        n_rows,
+        n_cols,
+        figsize=(5.2 * n_cols + 3.8, 4.7 * n_rows),
+        dpi=120,
+    )
+    axes_flat = axes.flatten() if hasattr(axes, "flatten") else [axes]
+
+    parameter_values = plot_df[parameter_column].to_numpy(dtype=float)
+    finite_parameter_values = parameter_values[np.isfinite(parameter_values)]
+    if finite_parameter_values.size:
+        vmin = float(np.nanmin(finite_parameter_values))
+        vmax = float(np.nanmax(finite_parameter_values))
+        if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin == vmax:
+            vmin = max(0.0, vmin - 0.5) if np.isfinite(vmin) else 0.0
+            vmax = vmin + 1.0
+    else:
+        vmin = 0.0
+        vmax = 1.0
+
+    last_scatter = None
+    for axis, (x_column, y_column) in zip(axes_flat, dim_pairs, strict=False):
+        finite_mask = (
+            np.isfinite(plot_df[x_column].to_numpy(dtype=float))
+            & np.isfinite(plot_df[y_column].to_numpy(dtype=float))
+            & np.isfinite(parameter_values)
+        )
+        if np.any(finite_mask):
+            last_scatter = axis.scatter(
+                plot_df.loc[finite_mask, x_column].to_numpy(dtype=float),
+                plot_df.loc[finite_mask, y_column].to_numpy(dtype=float),
+                c=parameter_values[finite_mask],
+                cmap="viridis",
+                vmin=vmin,
+                vmax=vmax,
+                s=68,
+                alpha=0.9,
+                edgecolors="black",
+                linewidths=0.4,
+            )
+        else:
+            axis.text(
+                0.5,
+                0.5,
+                "No finite values",
+                ha="center",
+                va="center",
+                transform=axis.transAxes,
+            )
+        for row in plot_df.to_dict(orient="records"):
+            x_value = row.get(x_column)
+            y_value = row.get(y_column)
+            try:
+                x_float = float(x_value)
+                y_float = float(y_value)
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(x_float) or not math.isfinite(y_float):
+                continue
+            axis.text(
+                x_float,
+                y_float,
+                str(row.get("_dot_id", "")),
+                fontsize=8,
+                alpha=0.85,
+                ha="left",
+                va="bottom",
+            )
+        axis.axhline(0.0, color="#d0d0d0", linewidth=0.8, zorder=0)
+        axis.axvline(0.0, color="#d0d0d0", linewidth=0.8, zorder=0)
+        axis.set_xlabel(x_column.replace("_", " ").title())
+        axis.set_ylabel(y_column.replace("_", " ").title())
+        axis.set_title(f"{x_column} vs {y_column}")
+
+    for axis in axes_flat[len(dim_pairs) :]:
+        axis.axis("off")
+
+    subject_entries = [
+        (str(row["_dot_id"]), str(row["subject_id"]))
+        for row in plot_df.sort_values("subject_index").to_dict(orient="records")
+    ]
+    subject_legend, n_subject_legend_columns = _format_subject_id_legend(subject_entries)
+    subject_legend_fontsize = max(5.0, 8.0 - 0.03 * len(subject_entries))
+    fig.text(
+        0.80,
+        0.92,
+        subject_legend,
+        ha="left",
+        va="top",
+        fontsize=subject_legend_fontsize,
+        family="monospace",
+    )
+    fig.suptitle(
+        f"Model1 Subject Embedding Space by Baseline RL {parameter_column}",
+        fontsize=14,
+    )
+    right_margin = 0.79 if n_subject_legend_columns <= 1 else 0.76
+    fig.tight_layout(rect=(0.03, 0.07, right_margin, 0.92))
+    if last_scatter is not None:
+        colorbar_axis = fig.add_axes((right_margin + 0.015, 0.14, 0.018, 0.70))
+        colorbar = fig.colorbar(last_scatter, cax=colorbar_axis)
+        colorbar.set_label(parameter_column)
     fig.savefig(output_path, bbox_inches="tight")
     plt.close(fig)
 
