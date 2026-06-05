@@ -14,6 +14,10 @@ from post_training_analysis import (
     run_rnn_state_space_condition_analysis,
     run_rnn_state_space_subject_analysis,
 )
+from post_training_analysis.likelihood_advantage_analysis import (
+    run_rnn_state_space_overview_analysis,
+)
+
 
 # result = run_likelihood_advantage_analysis(
 #     "/data/mice_multisubject_train10_all_stages-gru_session_conditioning-260505-14-H64_lr5e_06-b97c06b79f07",
@@ -67,15 +71,21 @@ from post_training_analysis import (
 #     )
 #     print(right_baseline_q_subject_result)
 
-standalone_state_space_result = run_rnn_state_space_condition_analysis(
+
+overview_state_space_result = run_rnn_state_space_overview_analysis(
     "/data/trial_advantage.pkl",
-    # condition_columns=["switch_x_prev_outcome", "trial_position"],
-    output_dir="/results/figures/rnn_state_space_standalone",
-    pca_seed=0,
 )
 
-print(standalone_state_space_result)
+print(overview_state_space_result)
 
+# standalone_state_space_result = run_rnn_state_space_condition_analysis(
+#     "/data/trial_advantage.pkl",
+#     # condition_columns=["switch_x_prev_outcome", "trial_position"],
+#     output_dir="/results/figures/rnn_state_space_standalone",
+#     pca_seed=0,
+# )
+
+# print(standalone_state_space_result)
 
 
 # result = run_rnn_state_space_subject_analysis(
