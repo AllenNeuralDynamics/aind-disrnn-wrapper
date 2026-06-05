@@ -947,6 +947,89 @@ class TestLikelihoodAdvantageAnalysis(unittest.TestCase):
                 result["rnn_state_condition_probability_plots"],
             )
 
+    def test_run_rnn_state_space_overview_analysis_from_pickle(self):
+        trial_df = pd.DataFrame(
+            {
+                "ses_idx": ["s1"] * 6 + ["s2"] * 6,
+                "trial_idx": list(range(1, 7)) + list(range(1, 7)),
+                "action": [0, 0, 1, 1, 0, 1, 1, 0, 0, 1, 1, 0],
+                "advantage": np.linspace(-0.5, 0.5, 12),
+                "p_model1_left": np.linspace(0.8, 0.2, 12),
+                "p_model1_right": np.linspace(0.2, 0.8, 12),
+                "recent_reward_rate_5": np.linspace(0.0, 1.0, 12),
+                "trial_position": np.linspace(0.0, 1.0, 12),
+                "rnn_state_0": np.linspace(0.0, 1.0, 12),
+                "rnn_state_1": np.linspace(1.0, 0.0, 12),
+                "rnn_state_2": np.sin(np.linspace(0.0, 1.0, 12)),
+                "rnn_state_3": np.cos(np.linspace(0.0, 1.0, 12)),
+            }
+        )
+        captured_color_columns = []
+        captured_plot_df = {}
+
+        def _write_placeholder_plot(*args, output_path: Path, **kwargs):
+            del args
+            del kwargs
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text("plot")
+
+        def _write_placeholder_overview(pca_result, *, output_path: Path, **kwargs):
+            captured_color_columns.append(kwargs["color_column"])
+            captured_plot_df["trial_df"] = pd.DataFrame(pca_result["trial_df"]).copy()
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text("plot")
+
+        with tempfile.TemporaryDirectory(prefix="rnn_state_overview_") as tmpdir, mock.patch.object(
+            likelihood_advantage_analysis,
+            "_plot_rnn_state_pca_variance",
+            side_effect=_write_placeholder_plot,
+        ), mock.patch.object(
+            likelihood_advantage_analysis,
+            "_plot_rnn_state_space_overview_figure",
+            side_effect=_write_placeholder_overview,
+        ):
+            pickle_path = Path(tmpdir) / "trial_advantage.pkl"
+            trial_df.to_pickle(pickle_path)
+            result = likelihood_advantage_analysis.run_rnn_state_space_overview_analysis(
+                pickle_path,
+                output_dir=Path(tmpdir) / "overview_plots",
+                pca_seed=0,
+            )
+
+            expected_color_columns = [
+                "p_model1_right",
+                "p_model1_right_minus_left",
+                "choice_confidence",
+                "p_model1_switch",
+                "advantage",
+                "recent_reward_rate_5",
+                "trial_position",
+            ]
+            self.assertEqual(result["color_columns"], expected_color_columns)
+            self.assertEqual(captured_color_columns, expected_color_columns)
+            self.assertEqual(set(result["overview_plots"].keys()), set(expected_color_columns))
+            self.assertTrue(Path(result["summary"]).exists())
+            self.assertTrue(Path(result["rnn_state_pca_variance"]).exists())
+            self.assertTrue(Path(result["rnn_state_pca_variance_csv"]).exists())
+            for plot_path in result["overview_plots"].values():
+                self.assertTrue(Path(plot_path).exists())
+            self.assertIn("p_model1_right_minus_left", captured_plot_df["trial_df"].columns)
+            self.assertIn("choice_confidence", captured_plot_df["trial_df"].columns)
+            self.assertIn("p_model1_switch", captured_plot_df["trial_df"].columns)
+            switch_values = captured_plot_df["trial_df"]["p_model1_switch"].to_numpy(
+                dtype=float
+            )
+            self.assertTrue(np.isnan(switch_values[0]))
+            self.assertTrue(np.isnan(switch_values[6]))
+            self.assertAlmostEqual(
+                switch_values[1],
+                float(trial_df.loc[1, "p_model1_right"]),
+            )
+            self.assertAlmostEqual(
+                switch_values[3],
+                float(trial_df.loc[3, "p_model1_left"]),
+            )
+
     def test_run_rnn_state_space_subject_analysis_from_pickle(self):
         trial_df = pd.DataFrame(
             {

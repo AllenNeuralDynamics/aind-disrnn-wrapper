@@ -49,6 +49,15 @@ _SUBJECT_TASK_COLUMN_CANDIDATES = (
 )
 _UNKNOWN_TASK_LABEL = "Unknown"
 _MIXED_TASK_LABEL = "Mixed"
+_RNN_STATE_SPACE_OVERVIEW_COLOR_COLUMNS = (
+    "p_model1_right",
+    "p_model1_right_minus_left",
+    "choice_confidence",
+    "p_model1_switch",
+    "advantage",
+    "recent_reward_rate_5",
+    "trial_position",
+)
 
 
 @dataclass(frozen=True)
@@ -632,6 +641,102 @@ def run_rnn_state_space_condition_analysis(
         "rnn_state_condition_probability_plots": condition_probability_plot_paths,
         "condition_probability_column": probability_color_column,
         "condition_columns": selected_condition_columns,
+        "pca_fit_n_trials": int(pca_result["fit_n_trials"]),
+        "n_trials_projected": int(pca_result["n_trials_projected"]),
+    }
+
+
+def run_rnn_state_space_overview_analysis(
+    trial_advantage_pickle: str | Path,
+    *,
+    color_columns: Sequence[str] | str | None = None,
+    output_dir: str | Path | None = None,
+    pca_seed: int = 0,
+    pca_fit_fraction: float = 0.5,
+    n_variance_pcs: int = 10,
+    n_plot_pcs: int = 4,
+) -> dict[str, Any]:
+    """Plot full RNN state-space projections colored by diagnostic columns."""
+
+    pd = _import_pandas()
+
+    pickle_path = Path(trial_advantage_pickle).expanduser().resolve()
+    trial_df = _add_rnn_state_space_overview_columns(pd.read_pickle(pickle_path))
+    resolved_output_dir = (
+        pickle_path.parent / "figures" / "rnn_state_space_overview"
+        if output_dir is None
+        else Path(output_dir).expanduser().resolve()
+    )
+    resolved_output_dir.mkdir(parents=True, exist_ok=True)
+
+    state_columns = _rnn_state_columns(trial_df)
+    if not state_columns:
+        raise ValueError(
+            "trial_advantage_pickle must contain rnn_state_* columns before "
+            "state-space overview plotting can run."
+        )
+
+    selected_color_columns = _resolve_rnn_state_space_overview_color_columns(
+        trial_df,
+        color_columns=color_columns,
+    )
+    pca_result = _fit_and_project_rnn_state_pca(
+        trial_df,
+        state_columns=state_columns,
+        pca_seed=pca_seed,
+        pca_fit_fraction=pca_fit_fraction,
+        finite_value_columns=[],
+    )
+    variance_df = _build_pca_variance_dataframe(
+        pca_result,
+        n_variance_pcs=n_variance_pcs,
+    )
+    variance_csv_path = resolved_output_dir / "rnn_state_pca_variance.csv"
+    variance_df.to_csv(variance_csv_path, index=False)
+
+    variance_plot_path = resolved_output_dir / "rnn_state_pca_variance.png"
+    _plot_rnn_state_pca_variance(
+        variance_df,
+        output_path=variance_plot_path,
+    )
+
+    overview_plot_paths: dict[str, str] = {}
+    color_plot_dir = resolved_output_dir / "colors"
+    for color_column in selected_color_columns:
+        plot_path = color_plot_dir / f"{_safe_filename_component(color_column)}.png"
+        _plot_rnn_state_space_overview_figure(
+            pca_result,
+            color_column=color_column,
+            output_path=plot_path,
+            n_plot_pcs=n_plot_pcs,
+        )
+        overview_plot_paths[color_column] = str(plot_path)
+
+    summary_payload = {
+        "trial_advantage_pickle": str(pickle_path),
+        "output_dir": str(resolved_output_dir),
+        "color_columns": selected_color_columns,
+        "pca_seed": int(pca_seed),
+        "pca_fit_fraction": float(pca_fit_fraction),
+        "pca_fit_n_trials": int(pca_result["fit_n_trials"]),
+        "n_trials_projected": int(pca_result["n_trials_projected"]),
+        "artifacts": {
+            "rnn_state_pca_variance": str(variance_plot_path),
+            "rnn_state_pca_variance_csv": str(variance_csv_path),
+            "overview_plots": overview_plot_paths,
+        },
+    }
+    summary_path = resolved_output_dir / "summary.json"
+    summary_path.write_text(json.dumps(summary_payload, indent=2, default=lc._json_default))
+
+    return {
+        "output_dir": str(resolved_output_dir),
+        "summary": str(summary_path),
+        "trial_advantage_pickle": str(pickle_path),
+        "color_columns": selected_color_columns,
+        "rnn_state_pca_variance": str(variance_plot_path),
+        "rnn_state_pca_variance_csv": str(variance_csv_path),
+        "overview_plots": overview_plot_paths,
         "pca_fit_n_trials": int(pca_result["fit_n_trials"]),
         "n_trials_projected": int(pca_result["n_trials_projected"]),
     }
@@ -2962,6 +3067,77 @@ def _build_pca_variance_dataframe(
     )
 
 
+def _add_rnn_state_space_overview_columns(trial_df: Any) -> Any:
+    pd = _import_pandas()
+    np = _import_numpy()
+
+    df = pd.DataFrame(trial_df).copy()
+    if "p_model1_right" in df.columns and "p_model1_left" in df.columns:
+        right_probability = df["p_model1_right"].to_numpy(dtype=float)
+        left_probability = df["p_model1_left"].to_numpy(dtype=float)
+        right_minus_left = right_probability - left_probability
+        df["p_model1_right_minus_left"] = right_minus_left
+        df["choice_confidence"] = np.abs(right_minus_left)
+        prev_action = _previous_action_for_state_space_overview(df)
+        if prev_action is not None:
+            switch_probability = np.full(len(df), np.nan, dtype=float)
+            previous_left_mask = prev_action == 0
+            previous_right_mask = prev_action == 1
+            switch_probability[previous_left_mask] = right_probability[previous_left_mask]
+            switch_probability[previous_right_mask] = left_probability[previous_right_mask]
+            df["p_model1_switch"] = switch_probability
+    return df
+
+
+def _previous_action_for_state_space_overview(trial_df: Any) -> Any | None:
+    pd = _import_pandas()
+    np = _import_numpy()
+
+    df = pd.DataFrame(trial_df)
+    if {"ses_idx", "action"}.issubset(df.columns):
+        working_df = df.reset_index(drop=True).copy()
+        working_df["_row_position"] = list(range(len(working_df)))
+        sort_columns = ["ses_idx"]
+        if "trial_idx" in working_df.columns:
+            sort_columns.append("trial_idx")
+        working_df = working_df.sort_values(sort_columns)
+        shifted_actions = working_df.groupby("ses_idx", sort=False)["action"].shift(1)
+        prev_action = np.full(len(df), np.nan, dtype=float)
+        prev_action[working_df["_row_position"].to_numpy(dtype=int)] = (
+            shifted_actions.to_numpy(dtype=float)
+        )
+        return prev_action
+    if "prev_action" in df.columns:
+        return df["prev_action"].to_numpy(dtype=float)
+    return None
+
+
+def _resolve_rnn_state_space_overview_color_columns(
+    trial_df: Any,
+    *,
+    color_columns: Sequence[str] | str | None,
+) -> list[str]:
+    pd = _import_pandas()
+
+    df = pd.DataFrame(trial_df)
+    if color_columns is None:
+        selected_columns = list(_RNN_STATE_SPACE_OVERVIEW_COLOR_COLUMNS)
+    elif isinstance(color_columns, (str, bytes)):
+        selected_columns = [str(color_columns)]
+    else:
+        selected_columns = [str(column) for column in color_columns]
+    if not selected_columns:
+        raise ValueError("At least one overview color column must be requested.")
+
+    missing_columns = [column for column in selected_columns if column not in df.columns]
+    if missing_columns:
+        raise ValueError(
+            "trial_advantage_pickle is missing state-space overview color columns: "
+            f"{missing_columns}"
+        )
+    return selected_columns
+
+
 def _resolve_state_condition_columns(
     trial_df: Any,
     *,
@@ -3354,6 +3530,199 @@ def _plot_rnn_state_condition_figure(
         colorbar.set_label(colorbar_label)
     fig.savefig(output_path)
     plt.close(fig)
+
+
+def _plot_rnn_state_space_overview_figure(
+    pca_result: Mapping[str, Any],
+    *,
+    color_column: str,
+    output_path: Path,
+    n_plot_pcs: int,
+) -> None:
+    plt = _import_pyplot()
+    np = _import_numpy()
+    pd = _import_pandas()
+
+    if int(n_plot_pcs) < 2:
+        raise ValueError("n_plot_pcs must be >= 2.")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    df = pd.DataFrame(pca_result["trial_df"])
+    color_column = str(color_column)
+    if color_column not in df.columns:
+        raise ValueError(
+            f"trial_advantage_pickle must contain color_column={color_column!r}."
+        )
+
+    scores = np.asarray(pca_result["scores"], dtype=float)
+    finite_mask = np.asarray(pca_result["finite_mask"], dtype=bool)
+    color_values = df[color_column].to_numpy(dtype=float)
+    colored_mask = finite_mask & np.isfinite(color_values)
+    background_scores = scores[finite_mask]
+    colored_scores = scores[colored_mask]
+    colored_values = color_values[colored_mask]
+    colored_count = int(np.sum(colored_mask))
+    projected_count = int(np.sum(finite_mask))
+    mean_value = float(np.mean(colored_values)) if colored_values.size else math.nan
+    sem_value = (
+        float(np.std(colored_values, ddof=1) / math.sqrt(colored_values.size))
+        if colored_values.size > 1
+        else 0.0 if colored_values.size == 1 else math.nan
+    )
+    color_config = _rnn_state_space_overview_color_config(
+        color_column,
+        color_values[finite_mask],
+    )
+
+    pc_pairs = list(combinations(range(int(n_plot_pcs)), 2))
+    n_panels = max(1, len(pc_pairs))
+    n_cols = min(3, n_panels)
+    n_rows = int(math.ceil(n_panels / n_cols))
+    fig, axes = plt.subplots(
+        n_rows,
+        n_cols,
+        figsize=(5.2 * n_cols, 4.6 * n_rows),
+        dpi=120,
+    )
+    axes_flat = axes.flatten() if hasattr(axes, "flatten") else [axes]
+    last_scatter = None
+    for axis, (pc_x, pc_y) in zip(axes_flat, pc_pairs, strict=False):
+        if scores.shape[1] <= max(pc_x, pc_y):
+            axis.text(
+                0.5,
+                0.5,
+                "Not enough PCs",
+                ha="center",
+                va="center",
+                transform=axis.transAxes,
+            )
+            axis.set_axis_off()
+            continue
+
+        axis.scatter(
+            background_scores[:, pc_x],
+            background_scores[:, pc_y],
+            color="#8c8c8c",
+            alpha=0.08,
+            s=8,
+            linewidths=0,
+        )
+        if colored_count > 0:
+            last_scatter = axis.scatter(
+                colored_scores[:, pc_x],
+                colored_scores[:, pc_y],
+                c=colored_values,
+                cmap=color_config["cmap"],
+                vmin=color_config["vmin"],
+                vmax=color_config["vmax"],
+                s=8,
+                alpha=0.9,
+                linewidths=0,
+            )
+        else:
+            axis.text(
+                0.5,
+                0.5,
+                "No finite color values",
+                ha="center",
+                va="center",
+                transform=axis.transAxes,
+            )
+        axis.axhline(0.0, color="#d0d0d0", linewidth=0.7, zorder=0)
+        axis.axvline(0.0, color="#d0d0d0", linewidth=0.7, zorder=0)
+        axis.set_xlabel(f"PC{pc_x + 1}")
+        axis.set_ylabel(f"PC{pc_y + 1}")
+        axis.set_title(f"PC{pc_x + 1} vs PC{pc_y + 1}")
+
+    for axis in axes_flat[len(pc_pairs) :]:
+        axis.axis("off")
+
+    label = str(color_config["label"])
+    if math.isfinite(mean_value) and math.isfinite(sem_value):
+        value_summary = f"mean={mean_value:.4g} +/- {sem_value:.4g}"
+    else:
+        value_summary = "mean=nan +/- nan"
+    fig.suptitle(
+        f"RNN state space colored by {label} "
+        f"(colored n={colored_count}/{projected_count}, {value_summary})"
+    )
+    fig.tight_layout(rect=(0, 0, 0.88, 0.94))
+    if last_scatter is not None:
+        colorbar_axis = fig.add_axes((0.91, 0.14, 0.018, 0.74))
+        colorbar = fig.colorbar(last_scatter, cax=colorbar_axis)
+        colorbar.set_label(label)
+    fig.savefig(output_path)
+    plt.close(fig)
+
+
+def _rnn_state_space_overview_color_config(
+    color_column: str,
+    finite_values: Any,
+) -> dict[str, Any]:
+    np = _import_numpy()
+
+    color_column = str(color_column)
+    values = np.asarray(finite_values, dtype=float)
+    values = values[np.isfinite(values)]
+    label = _rnn_state_space_overview_color_label(color_column)
+    if color_column == "advantage":
+        max_abs_value = float(np.nanmax(np.abs(values))) if values.size else 1.0
+        if not np.isfinite(max_abs_value) or max_abs_value <= 0.0:
+            max_abs_value = 1.0
+        return {
+            "label": label,
+            "cmap": "coolwarm",
+            "vmin": -max_abs_value,
+            "vmax": max_abs_value,
+        }
+    if color_column == "p_model1_right_minus_left":
+        return {
+            "label": label,
+            "cmap": "coolwarm",
+            "vmin": -1.0,
+            "vmax": 1.0,
+        }
+    if color_column in {
+        "p_model1_right",
+        "choice_confidence",
+        "p_model1_switch",
+        "recent_reward_rate_5",
+        "trial_position",
+    }:
+        return {
+            "label": label,
+            "cmap": "viridis",
+            "vmin": 0.0,
+            "vmax": 1.0,
+        }
+    if values.size:
+        vmin = float(np.nanmin(values))
+        vmax = float(np.nanmax(values))
+        if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin == vmax:
+            vmin = 0.0
+            vmax = 1.0
+    else:
+        vmin = 0.0
+        vmax = 1.0
+    return {
+        "label": label,
+        "cmap": "viridis",
+        "vmin": vmin,
+        "vmax": vmax,
+    }
+
+
+def _rnn_state_space_overview_color_label(color_column: str) -> str:
+    labels = {
+        "p_model1_right": "P(model1 choose right)",
+        "p_model1_right_minus_left": "P(model1 right) - P(model1 left)",
+        "choice_confidence": "|P(model1 right) - P(model1 left)|",
+        "p_model1_switch": "P(model1 switch)",
+        "advantage": "Log-likelihood advantage",
+        "recent_reward_rate_5": "Recent reward rate (5)",
+        "trial_position": "Trial position",
+    }
+    return labels.get(str(color_column), str(color_column))
 
 
 def _validate_subject_state_space_dataframe(
