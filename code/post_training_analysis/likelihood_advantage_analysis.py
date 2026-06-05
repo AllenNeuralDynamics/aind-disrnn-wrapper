@@ -482,6 +482,11 @@ def run_likelihood_advantage_analysis(
             if rnn_state_space_result is None
             else rnn_state_space_result["rnn_state_condition_plots"]
         ),
+        "rnn_state_condition_probability_plots": (
+            None
+            if rnn_state_space_result is None
+            else rnn_state_space_result["rnn_state_condition_probability_plots"]
+        ),
         "baseline_q_space_summary": (
             None
             if baseline_q_space_result is None
@@ -500,6 +505,7 @@ def run_rnn_state_space_condition_analysis(
     *,
     condition_columns: Sequence[str] | None = None,
     condition_values_by_column: Mapping[str, Sequence[Any]] | None = None,
+    probability_color_column: str | None = "p_model1_right",
     output_dir: str | Path | None = None,
     pca_seed: int = 0,
     pca_fit_fraction: float = 0.5,
@@ -527,6 +533,17 @@ def run_rnn_state_space_condition_analysis(
         )
     if "advantage" not in pd.DataFrame(trial_df).columns:
         raise ValueError("trial_advantage_pickle must contain an advantage column.")
+    probability_color_column = (
+        None if probability_color_column is None else str(probability_color_column)
+    )
+    if (
+        probability_color_column is not None
+        and probability_color_column not in pd.DataFrame(trial_df).columns
+    ):
+        raise ValueError(
+            "trial_advantage_pickle must contain "
+            f"probability_color_column={probability_color_column!r}."
+        )
 
     pca_result = _fit_and_project_rnn_state_pca(
         trial_df,
@@ -557,10 +574,22 @@ def run_rnn_state_space_condition_analysis(
         condition_values_by_column=condition_values_by_column or {},
     )
     condition_plot_paths: dict[str, dict[str, str]] = {}
+    condition_probability_plot_paths: dict[str, dict[str, str]] = {}
     condition_root = resolved_output_dir / "conditions"
+    condition_probability_root = (
+        None
+        if probability_color_column is None
+        else resolved_output_dir
+        / f"conditions_by_{_safe_filename_component(probability_color_column)}"
+    )
     for condition_column, condition_entries in condition_specs.items():
         column_dir = condition_root / _safe_filename_component(condition_column)
         condition_plot_paths[condition_column] = {}
+        if condition_probability_root is not None:
+            probability_column_dir = (
+                condition_probability_root / _safe_filename_component(condition_column)
+            )
+            condition_probability_plot_paths[condition_column] = {}
         for condition_entry in condition_entries:
             plot_path = column_dir / f"{condition_entry['slug']}.png"
             _plot_rnn_state_condition_figure(
@@ -574,6 +603,25 @@ def run_rnn_state_space_condition_analysis(
             condition_plot_paths[condition_column][str(condition_entry["label"])] = str(
                 plot_path
             )
+            if probability_color_column is not None:
+                probability_plot_path = (
+                    probability_column_dir / f"{condition_entry['slug']}.png"
+                )
+                _plot_rnn_state_condition_figure(
+                    pca_result,
+                    condition_column=condition_column,
+                    condition_label=str(condition_entry["label"]),
+                    condition_mask=condition_entry["mask"],
+                    output_path=probability_plot_path,
+                    n_plot_pcs=n_plot_pcs,
+                    color_column=probability_color_column,
+                    colorbar_label=probability_color_column,
+                    cmap="viridis",
+                    color_range=(0.0, 1.0),
+                )
+                condition_probability_plot_paths[condition_column][
+                    str(condition_entry["label"])
+                ] = str(probability_plot_path)
 
     return {
         "output_dir": str(resolved_output_dir),
@@ -581,6 +629,8 @@ def run_rnn_state_space_condition_analysis(
         "rnn_state_pca_variance": str(variance_plot_path),
         "rnn_state_pca_variance_csv": str(variance_csv_path),
         "rnn_state_condition_plots": condition_plot_paths,
+        "rnn_state_condition_probability_plots": condition_probability_plot_paths,
+        "condition_probability_column": probability_color_column,
         "condition_columns": selected_condition_columns,
         "pca_fit_n_trials": int(pca_result["fit_n_trials"]),
         "n_trials_projected": int(pca_result["n_trials_projected"]),
@@ -3152,41 +3202,76 @@ def _plot_rnn_state_condition_figure(
     condition_mask: Any,
     output_path: Path,
     n_plot_pcs: int,
+    color_column: str = "advantage",
+    colorbar_label: str | None = None,
+    cmap: str | None = None,
+    color_range: tuple[float, float] | None = None,
 ) -> None:
     plt = _import_pyplot()
     np = _import_numpy()
+    pd = _import_pandas()
 
     if int(n_plot_pcs) < 2:
         raise ValueError("n_plot_pcs must be >= 2.")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    df = pd.DataFrame(pca_result["trial_df"])
+    color_column = str(color_column)
+    if color_column not in df.columns:
+        raise ValueError(
+            f"trial_advantage_pickle must contain color_column={color_column!r}."
+        )
     scores = np.asarray(pca_result["scores"], dtype=float)
     finite_mask = np.asarray(pca_result["finite_mask"], dtype=bool)
-    advantages = np.asarray(pca_result["advantages"], dtype=float)
+    color_values = df[color_column].to_numpy(dtype=float)
     condition_mask = np.asarray(condition_mask, dtype=bool)
-    highlight_mask = finite_mask & condition_mask & np.isfinite(advantages)
+    highlight_mask = finite_mask & condition_mask & np.isfinite(color_values)
     highlight_count = int(np.sum(highlight_mask))
     background_scores = scores[finite_mask]
     highlight_scores = scores[highlight_mask]
-    highlight_advantages = advantages[highlight_mask]
-    highlight_mean_advantage = (
-        float(np.mean(highlight_advantages))
-        if highlight_advantages.size
+    highlight_values = color_values[highlight_mask]
+    highlight_mean_value = (
+        float(np.mean(highlight_values))
+        if highlight_values.size
         else math.nan
     )
-    highlight_sem_advantage = (
-        float(np.std(highlight_advantages, ddof=1) / math.sqrt(highlight_advantages.size))
-        if highlight_advantages.size > 1
-        else 0.0 if highlight_advantages.size == 1 else math.nan
+    highlight_sem_value = (
+        float(np.std(highlight_values, ddof=1) / math.sqrt(highlight_values.size))
+        if highlight_values.size > 1
+        else 0.0 if highlight_values.size == 1 else math.nan
     )
-    finite_advantages = advantages[finite_mask]
-    max_abs_advantage = (
-        float(np.nanmax(np.abs(finite_advantages)))
-        if finite_advantages.size
-        else 1.0
-    )
-    if not np.isfinite(max_abs_advantage) or max_abs_advantage <= 0.0:
-        max_abs_advantage = 1.0
+    finite_color_values = color_values[finite_mask]
+    if cmap is None:
+        cmap = "coolwarm" if color_column == "advantage" else "viridis"
+    if colorbar_label is None:
+        colorbar_label = (
+            "Log-likelihood advantage"
+            if color_column == "advantage"
+            else color_column
+        )
+    if color_range is None:
+        finite_color_values = finite_color_values[np.isfinite(finite_color_values)]
+        if color_column == "advantage":
+            max_abs_value = (
+                float(np.nanmax(np.abs(finite_color_values)))
+                if finite_color_values.size
+                else 1.0
+            )
+            if not np.isfinite(max_abs_value) or max_abs_value <= 0.0:
+                max_abs_value = 1.0
+            vmin = -max_abs_value
+            vmax = max_abs_value
+        elif finite_color_values.size:
+            vmin = float(np.nanmin(finite_color_values))
+            vmax = float(np.nanmax(finite_color_values))
+            if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin == vmax:
+                vmin = 0.0
+                vmax = 1.0
+        else:
+            vmin = 0.0
+            vmax = 1.0
+    else:
+        vmin, vmax = (float(color_range[0]), float(color_range[1]))
 
     pc_pairs = list(combinations(range(int(n_plot_pcs)), 2))
     n_panels = max(1, len(pc_pairs))
@@ -3225,10 +3310,10 @@ def _plot_rnn_state_condition_figure(
             last_scatter = axis.scatter(
                 highlight_scores[:, pc_x],
                 highlight_scores[:, pc_y],
-                c=highlight_advantages,
-                cmap="coolwarm",
-                vmin=-max_abs_advantage,
-                vmax=max_abs_advantage,
+                c=highlight_values,
+                cmap=cmap,
+                vmin=vmin,
+                vmax=vmax,
                 s=8,
                 alpha=0.9,
                 linewidths=0,
@@ -3251,22 +3336,22 @@ def _plot_rnn_state_condition_figure(
     for axis in axes_flat[len(pc_pairs) :]:
         axis.axis("off")
 
-    if math.isfinite(highlight_mean_advantage) and math.isfinite(highlight_sem_advantage):
-        advantage_summary = (
-            f"advantage={highlight_mean_advantage:.4g} +/- "
-            f"{highlight_sem_advantage:.4g}"
+    if math.isfinite(highlight_mean_value) and math.isfinite(highlight_sem_value):
+        value_summary = (
+            f"{color_column}={highlight_mean_value:.4g} +/- "
+            f"{highlight_sem_value:.4g}"
         )
     else:
-        advantage_summary = "advantage=nan +/- nan"
+        value_summary = f"{color_column}=nan +/- nan"
     fig.suptitle(
         f"{condition_column} = {condition_label} "
-        f"(n={highlight_count}, {advantage_summary})"
+        f"(n={highlight_count}, {value_summary})"
     )
     fig.tight_layout(rect=(0, 0, 0.88, 0.94))
     if last_scatter is not None:
         colorbar_axis = fig.add_axes((0.91, 0.14, 0.018, 0.74))
         colorbar = fig.colorbar(last_scatter, cax=colorbar_axis)
-        colorbar.set_label("Log-likelihood advantage")
+        colorbar.set_label(colorbar_label)
     fig.savefig(output_path)
     plt.close(fig)
 

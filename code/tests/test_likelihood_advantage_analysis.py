@@ -901,6 +901,7 @@ class TestLikelihoodAdvantageAnalysis(unittest.TestCase):
         trial_df = pd.DataFrame(
             {
                 "advantage": np.linspace(-0.5, 0.5, 12),
+                "p_model1_right": np.linspace(0.1, 0.9, 12),
                 "trial_position": np.linspace(0.0, 1.0, 12),
                 "switch": [0, 1] * 6,
                 "rnn_state_0": np.linspace(0.0, 1.0, 12),
@@ -939,6 +940,12 @@ class TestLikelihoodAdvantageAnalysis(unittest.TestCase):
             self.assertEqual(result["condition_columns"], ["switch", "trial_position"])
             self.assertIn("switch", result["rnn_state_condition_plots"])
             self.assertIn("trial_position", result["rnn_state_condition_plots"])
+            self.assertEqual(result["condition_probability_column"], "p_model1_right")
+            self.assertIn("switch", result["rnn_state_condition_probability_plots"])
+            self.assertIn(
+                "trial_position",
+                result["rnn_state_condition_probability_plots"],
+            )
 
     def test_run_rnn_state_space_subject_analysis_from_pickle(self):
         trial_df = pd.DataFrame(
@@ -1386,6 +1393,7 @@ class TestLikelihoodAdvantageAnalysis(unittest.TestCase):
                 "rnn_state_pca_variance",
                 "rnn_state_pca_variance_csv",
                 "rnn_state_condition_plots",
+                "rnn_state_condition_probability_plots",
                 "baseline_q_space_summary",
                 "baseline_q_condition_plots",
             }
@@ -1396,6 +1404,11 @@ class TestLikelihoodAdvantageAnalysis(unittest.TestCase):
                 elif key == "subject_embeddings_path":
                     self.assertIsNone(path)
                 elif key == "rnn_state_condition_plots":
+                    self.assertEqual(
+                        set(path.keys()),
+                        {spec.name for spec in likelihood_advantage_analysis._VARIABLE_SPECS},
+                    )
+                elif key == "rnn_state_condition_probability_plots":
                     self.assertEqual(
                         set(path.keys()),
                         {spec.name for spec in likelihood_advantage_analysis._VARIABLE_SPECS},
