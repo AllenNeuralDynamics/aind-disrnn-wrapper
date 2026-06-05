@@ -3619,7 +3619,7 @@ def _plot_rnn_state_space_overview_figure(
                 vmin=color_config["vmin"],
                 vmax=color_config["vmax"],
                 s=8,
-                alpha=0.9,
+                alpha=0.6,
                 linewidths=0,
             )
         else:
