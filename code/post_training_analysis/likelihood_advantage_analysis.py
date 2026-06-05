@@ -4709,7 +4709,7 @@ def _plot_subject_embedding_baseline_parameter_figure(
     right_margin = 0.79 if n_subject_legend_columns <= 1 else 0.76
     fig.tight_layout(rect=(0.03, 0.07, right_margin, 0.92))
     if last_scatter is not None:
-        colorbar_axis = fig.add_axes((right_margin + 0.015, 0.14, 0.018, 0.70))
+        colorbar_axis = fig.add_axes((0.965, 0.14, 0.016, 0.70))
         colorbar = fig.colorbar(last_scatter, cax=colorbar_axis)
         colorbar.set_label(parameter_column)
     fig.savefig(output_path, bbox_inches="tight")
