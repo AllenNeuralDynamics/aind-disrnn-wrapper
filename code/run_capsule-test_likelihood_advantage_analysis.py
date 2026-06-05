@@ -67,26 +67,26 @@ from post_training_analysis import (
 #     )
 #     print(right_baseline_q_subject_result)
 
-# # standalone_state_space_result = run_rnn_state_space_condition_analysis(
-# #     "/data/trial_advantage.pkl",
-# #     # condition_columns=["switch_x_prev_outcome", "trial_position"],
-# #     output_dir="/results/figures/rnn_state_space_standalone",
-# #     pca_seed=0,
-# # )
-
-# # print(standalone_state_space_result)
-
-
-
-result = run_rnn_state_space_subject_analysis(
-    trial_advantage_pickle="/data/trial_advantage.pkl",
-    subject_embeddings_path="/data/mice_multisubject_train10_all_stages-gru_session_conditioning-260505-14-H64_lr5e_06-b97c06b79f07/outputs/subject_embeddings.pkl",
-    probability_column="p_model1_right",  # or "p_model1_left"
-    output_dir="/results/figures/rnn_state_space_subjects_right",
+standalone_state_space_result = run_rnn_state_space_condition_analysis(
+    "/data/trial_advantage.pkl",
+    # condition_columns=["switch_x_prev_outcome", "trial_position"],
+    output_dir="/results/figures/rnn_state_space_standalone",
     pca_seed=0,
-    pca_fit_fraction=0.5,
 )
 
-print(result["subject_probability_plots"])
-print(result["subject_embedding_task_space"])
-print(result["subject_embedding_distances"])
+print(standalone_state_space_result)
+
+
+
+# result = run_rnn_state_space_subject_analysis(
+#     trial_advantage_pickle="/data/trial_advantage.pkl",
+#     subject_embeddings_path="/data/mice_multisubject_train10_all_stages-gru_session_conditioning-260505-14-H64_lr5e_06-b97c06b79f07/outputs/subject_embeddings.pkl",
+#     probability_column="p_model1_right",  # or "p_model1_left"
+#     output_dir="/results/figures/rnn_state_space_subjects_right",
+#     pca_seed=0,
+#     pca_fit_fraction=0.5,
+# )
+
+# print(result["subject_probability_plots"])
+# print(result["subject_embedding_task_space"])
+# print(result["subject_embedding_distances"])
