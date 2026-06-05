@@ -74,6 +74,7 @@ from post_training_analysis.likelihood_advantage_analysis import (
 
 overview_state_space_result = run_rnn_state_space_overview_analysis(
     "/data/trial_advantage.pkl",
+    output_dir="/results/figures/rnn_state_space_overview",
     pca_seed=0,
     pca_fit_fraction=0.5,
     n_plot_pcs=4,
