@@ -16,6 +16,7 @@ from post_training_analysis import (
 )
 from post_training_analysis.likelihood_advantage_analysis import (
     run_rnn_state_space_overview_analysis,
+    run_subject_embedding_baseline_parameter_analysis,
 )
 
 
@@ -47,6 +48,8 @@ from post_training_analysis.likelihood_advantage_analysis import (
 # # )
 # # print(left_subject_state_result)
 
+
+
 # right_subject_state_result = run_rnn_state_space_subject_analysis(
 #     result["trial_advantage_pickle"],
 #     probability_column="p_model1_right",
@@ -72,15 +75,17 @@ from post_training_analysis.likelihood_advantage_analysis import (
 #     print(right_baseline_q_subject_result)
 
 
-overview_state_space_result = run_rnn_state_space_overview_analysis(
-    "/data/trial_advantage.pkl",
-    output_dir="/results/figures/rnn_state_space_overview",
-    pca_seed=0,
-    pca_fit_fraction=0.5,
-    n_plot_pcs=4,
-)
 
-print(overview_state_space_result)
+# overview_state_space_result = run_rnn_state_space_overview_analysis(
+#     "/data/trial_advantage.pkl",
+#     output_dir="/results/figures/rnn_state_space_overview",
+#     pca_seed=0,
+#     pca_fit_fraction=0.5,
+#     n_plot_pcs=4,
+# )
+# print(overview_state_space_result)
+
+
 
 # standalone_state_space_result = run_rnn_state_space_condition_analysis(
 #     "/data/trial_advantage.pkl",
@@ -88,8 +93,8 @@ print(overview_state_space_result)
 #     output_dir="/results/figures/rnn_state_space_standalone",
 #     pca_seed=0,
 # )
-
 # print(standalone_state_space_result)
+
 
 
 # result = run_rnn_state_space_subject_analysis(
@@ -100,7 +105,15 @@ print(overview_state_space_result)
 #     pca_seed=0,
 #     pca_fit_fraction=0.5,
 # )
-
 # print(result["subject_probability_plots"])
 # print(result["subject_embedding_task_space"])
 # print(result["subject_embedding_distances"])
+
+
+
+subject_embedding_baseline_parameter_result = run_subject_embedding_baseline_parameter_analysis(
+    model1_dir="/data/mice_multisubject_train10_all_stages-gru_session_conditioning-260505-14-H64_lr5e_06-b97c06b79f07",
+    model2_dir="/data/mice_multisubject_train10_all_stages-baseline_rl_Bari-260520/1",
+    output_dir="/results/figures/my_embedding_qparam_plots",
+)
+print(subject_embedding_baseline_parameter_result)
