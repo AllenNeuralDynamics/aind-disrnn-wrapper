@@ -948,6 +948,7 @@ def run_rnn_state_space_subject_analysis(
         )
 
     subject_embedding_task_space_path: str | None = None
+    subject_embedding_neighbor_plot_paths: dict[str, str] = {}
     if subject_embeddings_df is not None:
         embedding_plot_df = _prepare_subject_embedding_task_dataframe(
             subject_embeddings_df,
@@ -960,9 +961,26 @@ def run_rnn_state_space_subject_analysis(
                 output_path=embedding_plot_path,
             )
             subject_embedding_task_space_path = str(embedding_plot_path)
+            subject_embedding_neighbor_plot_dir = (
+                resolved_output_dir / "subject_embedding_neighbors"
+            )
+            for subject_id in selected_subject_ids:
+                plot_path = (
+                    subject_embedding_neighbor_plot_dir
+                    / f"{_safe_filename_component(subject_id)}.png"
+                )
+                _plot_subject_embedding_neighbor_figure(
+                    embedding_plot_df,
+                    subject_id=str(subject_id),
+                    embedding_neighbors=subject_embedding_distance_summaries.get(
+                        str(subject_id),
+                    ),
+                    output_path=plot_path,
+                )
+                subject_embedding_neighbor_plot_paths[str(subject_id)] = str(plot_path)
         else:
             subject_embedding_skip_reason = (
-                "Skipped subject embedding task-space plot because fewer than two "
+                "Skipped subject embedding plots because fewer than two "
                 "embedding dimensions were available."
             )
 
@@ -1012,6 +1030,7 @@ def run_rnn_state_space_subject_analysis(
             "rnn_state_pca_variance_csv": str(variance_csv_path),
             "subject_probability_plots": subject_plot_paths,
             "subject_embedding_task_space": subject_embedding_task_space_path,
+            "subject_embedding_neighbor_plots": subject_embedding_neighbor_plot_paths,
         },
     }
     summary_path = resolved_output_dir / "summary.json"
@@ -1025,6 +1044,7 @@ def run_rnn_state_space_subject_analysis(
         "rnn_state_pca_variance_csv": str(variance_csv_path),
         "subject_probability_plots": subject_plot_paths,
         "subject_embedding_task_space": subject_embedding_task_space_path,
+        "subject_embedding_neighbor_plots": subject_embedding_neighbor_plot_paths,
         "subject_embeddings_path": (
             None
             if resolved_subject_embeddings_path is None
@@ -4579,6 +4599,239 @@ def _plot_subject_embedding_task_space_figure(
         family="monospace",
     )
     fig.suptitle("Subject Embedding Space by Task", fontsize=14)
+    right_margin = 0.79 if n_subject_legend_columns <= 1 else 0.76
+    fig.tight_layout(rect=(0.03, 0.07, right_margin, 0.92))
+    fig.savefig(output_path, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _plot_subject_embedding_neighbor_figure(
+    subject_embeddings_df: Any,
+    *,
+    subject_id: str,
+    embedding_neighbors: Mapping[str, Any] | None,
+    output_path: Path,
+) -> None:
+    plt = _import_pyplot()
+    pd = _import_pandas()
+    np = _import_numpy()
+    from matplotlib.lines import Line2D
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    plot_df = pd.DataFrame(subject_embeddings_df).copy()
+    embedding_columns = _subject_embedding_columns(plot_df)
+    if len(embedding_columns) < 2:
+        raise ValueError("subject embedding neighbor plotting requires >= 2 dimensions.")
+    if "subject_index" not in plot_df.columns:
+        plot_df["subject_index"] = list(range(len(plot_df)))
+    if "_subject_key" not in plot_df.columns:
+        plot_df["_subject_key"] = plot_df["subject_id"].map(_normalize_subject_key)
+    if "_dot_id" not in plot_df.columns:
+        plot_df["_dot_id"] = [
+            _format_dot_id(row.get("subject_index"), fallback=index)
+            for index, row in enumerate(plot_df.to_dict(orient="records"))
+        ]
+
+    selected_key = _normalize_subject_key(subject_id)
+    closest_neighbor = (
+        embedding_neighbors.get("closest")
+        if isinstance(embedding_neighbors, Mapping)
+        else None
+    )
+    farthest_neighbor = (
+        embedding_neighbors.get("farthest")
+        if isinstance(embedding_neighbors, Mapping)
+        else None
+    )
+    closest_key = (
+        _normalize_subject_key(closest_neighbor.get("subject_id"))
+        if isinstance(closest_neighbor, Mapping)
+        else ""
+    )
+    farthest_key = (
+        _normalize_subject_key(farthest_neighbor.get("subject_id"))
+        if isinstance(farthest_neighbor, Mapping)
+        else ""
+    )
+
+    role_by_subject_key: dict[str, str] = {}
+    if closest_key and closest_key == farthest_key:
+        role_by_subject_key[closest_key] = "closest_farthest"
+    else:
+        if farthest_key:
+            role_by_subject_key[farthest_key] = "farthest"
+        if closest_key:
+            role_by_subject_key[closest_key] = "closest"
+    if selected_key:
+        role_by_subject_key[selected_key] = "subject"
+
+    role_specs = {
+        "farthest": {
+            "label": "Farthest subject",
+            "facecolor": "#d62728",
+            "edgecolor": "black",
+            "size": 96,
+            "zorder": 4,
+        },
+        "closest": {
+            "label": "Closest subject",
+            "facecolor": "#2ca02c",
+            "edgecolor": "black",
+            "size": 96,
+            "zorder": 5,
+        },
+        "closest_farthest": {
+            "label": "Closest and farthest subject",
+            "facecolor": "#2ca02c",
+            "edgecolor": "#d62728",
+            "size": 116,
+            "zorder": 5,
+        },
+        "subject": {
+            "label": "Selected subject",
+            "facecolor": "black",
+            "edgecolor": "black",
+            "size": 112,
+            "zorder": 6,
+        },
+    }
+
+    dim_pairs = list(combinations(embedding_columns, 2))
+    n_panels = max(1, len(dim_pairs))
+    n_cols = min(3, n_panels)
+    n_rows = int(math.ceil(n_panels / n_cols))
+    fig, axes = plt.subplots(
+        n_rows,
+        n_cols,
+        figsize=(5.2 * n_cols + 3.8, 4.7 * n_rows),
+        dpi=120,
+    )
+    axes_flat = axes.flatten() if hasattr(axes, "flatten") else [axes]
+
+    subject_keys = plot_df["_subject_key"].astype(str)
+    highlighted_keys = set(role_by_subject_key)
+    plotted_roles: set[str] = set()
+    for axis, (x_column, y_column) in zip(axes_flat, dim_pairs, strict=False):
+        x_values = plot_df[x_column].to_numpy(dtype=float)
+        y_values = plot_df[y_column].to_numpy(dtype=float)
+        finite_mask = np.isfinite(x_values) & np.isfinite(y_values)
+        background_mask = finite_mask & ~subject_keys.isin(highlighted_keys).to_numpy()
+        if np.any(background_mask):
+            axis.scatter(
+                x_values[background_mask],
+                y_values[background_mask],
+                color="#a6a6a6",
+                s=54,
+                alpha=0.45,
+                edgecolors="white",
+                linewidths=0.3,
+                zorder=2,
+            )
+
+        for role in ("farthest", "closest", "closest_farthest", "subject"):
+            role_keys = [
+                subject_key
+                for subject_key, subject_role in role_by_subject_key.items()
+                if subject_role == role
+            ]
+            if not role_keys:
+                continue
+            role_mask = finite_mask & subject_keys.isin(role_keys).to_numpy()
+            if not np.any(role_mask):
+                continue
+            role_spec = role_specs[role]
+            axis.scatter(
+                x_values[role_mask],
+                y_values[role_mask],
+                color=role_spec["facecolor"],
+                s=role_spec["size"],
+                alpha=0.95,
+                edgecolors=role_spec["edgecolor"],
+                linewidths=1.0,
+                zorder=role_spec["zorder"],
+            )
+            plotted_roles.add(role)
+
+        for row in plot_df.to_dict(orient="records"):
+            x_value = row.get(x_column)
+            y_value = row.get(y_column)
+            try:
+                x_float = float(x_value)
+                y_float = float(y_value)
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(x_float) or not math.isfinite(y_float):
+                continue
+            axis.text(
+                x_float,
+                y_float,
+                str(row.get("_dot_id", "")),
+                fontsize=8,
+                alpha=0.85,
+                ha="left",
+                va="bottom",
+                zorder=7,
+            )
+        axis.axhline(0.0, color="#d0d0d0", linewidth=0.8, zorder=0)
+        axis.axvline(0.0, color="#d0d0d0", linewidth=0.8, zorder=0)
+        axis.set_xlabel(x_column.replace("_", " ").title())
+        axis.set_ylabel(y_column.replace("_", " ").title())
+        axis.set_title(f"{x_column} vs {y_column}")
+
+    for axis in axes_flat[len(dim_pairs) :]:
+        axis.axis("off")
+
+    handles = [
+        Line2D(
+            [0],
+            [0],
+            marker="o",
+            linestyle="",
+            markerfacecolor="#a6a6a6",
+            markeredgecolor="white",
+            label="Unchosen subjects",
+        )
+    ]
+    handles.extend(
+        Line2D(
+            [0],
+            [0],
+            marker="o",
+            linestyle="",
+            markerfacecolor=role_specs[role]["facecolor"],
+            markeredgecolor=role_specs[role]["edgecolor"],
+            label=role_specs[role]["label"],
+        )
+        for role in ("subject", "closest", "farthest", "closest_farthest")
+        if role in plotted_roles
+    )
+    fig.legend(
+        handles=handles,
+        loc="lower center",
+        bbox_to_anchor=(0.39, -0.01),
+        ncol=min(4, len(handles)),
+        frameon=False,
+    )
+
+    subject_entries = [
+        (str(row["_dot_id"]), str(row["subject_id"]))
+        for row in plot_df.sort_values("subject_index").to_dict(orient="records")
+    ]
+    subject_legend, n_subject_legend_columns = _format_subject_id_legend(subject_entries)
+    subject_legend_fontsize = max(5.0, 8.0 - 0.03 * len(subject_entries))
+    fig.text(
+        0.80,
+        0.92,
+        subject_legend,
+        ha="left",
+        va="top",
+        fontsize=subject_legend_fontsize,
+        family="monospace",
+    )
+    fig.suptitle(
+        f"Subject Embedding Neighbors: {subject_id}",
+        fontsize=14,
+    )
     right_margin = 0.79 if n_subject_legend_columns <= 1 else 0.76
     fig.tight_layout(rect=(0.03, 0.07, right_margin, 0.92))
     fig.savefig(output_path, bbox_inches="tight")

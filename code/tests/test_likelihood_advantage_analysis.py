@@ -1194,6 +1194,7 @@ class TestLikelihoodAdvantageAnalysis(unittest.TestCase):
             self.assertEqual(result["probability_column"], "p_model1_right")
             self.assertEqual(result["subject_ids"], ["m2"])
             self.assertEqual(set(result["subject_probability_plots"].keys()), {"m2"})
+            self.assertEqual(result["subject_embedding_neighbor_plots"], {})
             self.assertTrue(Path(result["rnn_state_pca_variance"]).exists())
             self.assertTrue(Path(result["rnn_state_pca_variance_csv"]).exists())
             self.assertTrue(Path(result["subject_probability_plots"]["m2"]).exists())
@@ -1221,6 +1222,7 @@ class TestLikelihoodAdvantageAnalysis(unittest.TestCase):
         )
         captured_subject_kwargs = {}
         captured_embedding_plot = {}
+        captured_embedding_neighbor_plot = {}
 
         def _write_placeholder_plot(*args, output_path: Path, **kwargs):
             del args
@@ -1234,6 +1236,12 @@ class TestLikelihoodAdvantageAnalysis(unittest.TestCase):
             output_path.parent.mkdir(parents=True, exist_ok=True)
             output_path.write_text("embedding plot")
 
+        def _write_embedding_neighbor_plot(plot_df, *, output_path: Path, **kwargs):
+            captured_embedding_neighbor_plot["plot_df"] = pd.DataFrame(plot_df).copy()
+            captured_embedding_neighbor_plot.update(kwargs)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text("embedding neighbor plot")
+
         with tempfile.TemporaryDirectory(prefix="rnn_state_subjects_embedding_") as tmpdir, mock.patch.object(
             likelihood_advantage_analysis,
             "_plot_rnn_state_pca_variance",
@@ -1246,6 +1254,10 @@ class TestLikelihoodAdvantageAnalysis(unittest.TestCase):
             likelihood_advantage_analysis,
             "_plot_subject_embedding_task_space_figure",
             side_effect=_write_embedding_plot,
+        ), mock.patch.object(
+            likelihood_advantage_analysis,
+            "_plot_subject_embedding_neighbor_figure",
+            side_effect=_write_embedding_neighbor_plot,
         ):
             pickle_path = Path(tmpdir) / "trial_advantage.pkl"
             embeddings_path = Path(tmpdir) / "subject_embeddings.pkl"
@@ -1279,6 +1291,16 @@ class TestLikelihoodAdvantageAnalysis(unittest.TestCase):
                 3.0,
             )
             self.assertTrue(Path(result["subject_embedding_task_space"]).exists())
+            self.assertTrue(
+                Path(result["subject_embedding_neighbor_plots"]["m2"]).exists()
+            )
+            self.assertEqual(captured_embedding_neighbor_plot["subject_id"], "m2")
+            self.assertEqual(
+                captured_embedding_neighbor_plot["embedding_neighbors"]["farthest"][
+                    "subject_id"
+                ],
+                "m3",
+            )
             self.assertEqual(result["subject_embeddings_path"], str(embeddings_path.resolve()))
             self.assertEqual(
                 result["subject_embedding_distances"]["m2"]["closest"]["subject_id"],
