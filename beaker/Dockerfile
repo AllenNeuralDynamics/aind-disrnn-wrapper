@@ -31,7 +31,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /workspace
 
-# Sibling layout (order: configs first — they change less often than wrapper code)
+# Sibling layout (order: configs first — they change less often than wrapper code).
+#
+# We COPY both repos from the LOCAL build context (your working tree) rather than
+# cloning from git. Chosen for dev velocity: rebuild/test uncommitted WIP without a
+# commit-push cycle. Trade-off: the image reflects whatever is on disk, so it is NOT
+# reproducible from a commit SHA.
+#
+# FUTURE IMPROVEMENT — for shareable / release images, switch to git-pinned clones to
+# match the house style (pyproject.toml and the CO Dockerfile already pin deps to exact
+# SHAs). Both repos must remain on-disk source checkouts in this sibling layout (run_hpc.py
+# resolves its Hydra config via a path relative to its own file, so pip-installing the
+# wrapper into site-packages would break it — clone, don't pip-install). Sketch:
+#     ARG SOURCE=local                      # local | git
+#     ARG WRAPPER_REF=main
+#     ARG DISPATCHER_REF=main
+#     # when SOURCE=git: git clone --depth 1 -b $REF <url> <dst> for each repo
+# A GitHub token is required at build time regardless (private deps below).
 COPY aind-disrnn-dispatcher /workspace/aind-disrnn-dispatcher
 COPY aind-disrnn-wrapper    /workspace/aind-disrnn-wrapper
 
