@@ -12,8 +12,12 @@ import aind_dynamic_foraging_multisession_analysis.multisession_load as ms_load
 import aind_disrnn_utils.data_loader as dl
 from disentangled_rnns.library import rnn_utils
 
-from base.interfaces import DatasetLoader
-from base.types import DatasetBundle
+try:
+    from ..base.interfaces import DatasetLoader
+    from ..base.types import DatasetBundle
+except ImportError:  # support Code Ocean script imports
+    from base.interfaces import DatasetLoader
+    from base.types import DatasetBundle
 
 logger = logging.getLogger(__name__)
 

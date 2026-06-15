@@ -1,0 +1,48 @@
+#!/bin/bash
+# SLURM array script that runs Hydra multirun (GPU) for deterministic config
+# enumeration without W&B sweep orchestration.
+#
+# See the "HPC run modes" section of README.md for usage and tradeoffs vs.
+# W&B sweeps. Typical use:
+#
+#     sbatch job/hydra_multirun_gpu.slurm
+#
+#SBATCH -J disrnn_hydra_gpu
+#SBATCH -p aind
+#SBATCH -t 05:00:00
+#SBATCH -c 2
+#SBATCH --mem=32G
+#SBATCH --gres=gpu:v100:1
+#SBATCH --array=0-5
+#SBATCH --mail-type=FAIL,END,BEGIN
+
+# Per-user settings (mail-user, output/error paths, CONDA_SH) come from
+# job/user.env; source it before sbatch. See README "Per-user setup".
+source "${CONDA_SH:?CONDA_SH not set; source job/user.env before sbatch}"
+conda activate disrnn-gpu
+
+WRAPPER_ROOT="$SLURM_SUBMIT_DIR"
+cd "$WRAPPER_ROOT/code"
+export PYTHONPATH="$WRAPPER_ROOT/code:$PYTHONPATH"
+export HYDRA_FULL_ERROR=1
+export DISRNN_OUTPUT_DIR="$HOME/outputs/disrnn"
+
+python -m run_hpc -m \
+  wandb.project=hpc_test \
+  data=synthetic \
+  data.num_trials=500 \
+  data/task=random_walk \
+  data.task.reward_baiting=true \
+  'data.agent.agent_params_session_var.biasL={type:uniform,min:-3.0,max:3.0}' \
+  data.batch_size=512 \
+  model.architecture.update_net_n_units_per_layer=5 \
+  model.architecture.update_net_n_layers=3 \
+  model.architecture.choice_net_n_units_per_layer=4 \
+  model.architecture.choice_net_n_layers=0 \
+  model.training.lr=0.005 \
+  model.training.n_warmup_steps=500 \
+  model.training.n_steps=5000 \
+  model.training.max_grad_norm=1 \
+  data.num_sessions=50,100 \
+  model.penalties.beta=0.001,0.003,0.01 \
+  'seed=range(0,10)'

@@ -16,8 +16,12 @@ from aind_dynamic_foraging_models import generative_model
 import aind_disrnn_utils.data_loader as dl
 from disentangled_rnns.library import rnn_utils
 
-from base.interfaces import DatasetLoader
-from base.types import DatasetBundle
+try:
+    from ..base.interfaces import DatasetLoader
+    from ..base.types import DatasetBundle
+except ImportError:  # support Code Ocean script imports
+    from base.interfaces import DatasetLoader
+    from base.types import DatasetBundle
 import logging
 
 logger = logging.getLogger(__name__)
@@ -158,8 +162,8 @@ class SyntheticCognitiveAgents(DatasetLoader):
             batch_mode=self.batch_mode,
         )
 
-        xs, _ = dataset.get_all()
-        n_sessions = xs.shape[1]
+        all_data = dataset.get_all()
+        n_sessions = all_data["xs"].shape[1]
         if self.eval_every_n <= 0:
             raise ValueError("eval_every_n must be a positive integer.")
         eval_indices = np.arange(self.eval_every_n - 1, n_sessions, self.eval_every_n)

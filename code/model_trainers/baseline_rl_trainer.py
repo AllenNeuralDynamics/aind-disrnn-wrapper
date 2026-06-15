@@ -19,8 +19,12 @@ from aind_dynamic_foraging_models import generative_model
 from aind_dynamic_foraging_models.generative_model.params import ParamsSymbols
 from disentangled_rnns.library import rnn_utils
 
-from base.interfaces import ModelTrainer
-from base.types import DatasetBundle
+try:
+    from ..base.interfaces import ModelTrainer
+    from ..base.types import DatasetBundle
+except ImportError:  # support Code Ocean script imports
+    from base.interfaces import ModelTrainer
+    from base.types import DatasetBundle
 
 logger = logging.getLogger(__name__)
 
@@ -522,7 +526,8 @@ class BaselineRLTrainer(ModelTrainer):
         self, dataset: Any, label: str
     ) -> tuple[List[np.ndarray], List[np.ndarray]]:
         """Extract per-session choices and rewards from a DatasetRNN split."""
-        xs, ys = dataset.get_all()
+        all_data = dataset.get_all()
+        xs, ys = all_data["xs"], all_data["ys"]
         x_names = list(dataset.x_names)
         if ys.ndim != 3 or ys.shape[2] != 1:
             raise ValueError(f"{label} ys has unexpected shape: {ys.shape}")
