@@ -49,9 +49,18 @@ run as a 1-point W&B sweep on one L40s GPU. Artifacts in `beaker/`:
 ## State (as of this handoff)
 
 - ✅ Migration plan + MVP scaffold written and committed on branch `ai_hub`.
-- ⏳ Image not yet built/pushed — the HPC dev box has **no Docker and no Beaker
-  CLI**. Build on a Docker-capable host (or in CO) per the runbook.
-- We **have** an AI Hub workspace + Beaker token.
+- ✅ **MVP code path validated locally** on an HPC compute node (CPU,
+  `disrnn-cpu`): synthetic-RL → disRNN trains and logs (W&B offline). This is the
+  exact command a Beaker sweep agent runs.
+- ✅ **Fixed a default-config bug** found during validation: `data.batch_size`
+  was `null` but `batch_mode: random` requires it → defaulted to `512` in the
+  dispatcher's `base.yaml` (committed). `data=synthetic model=disrnn` now runs
+  out of the box.
+- 🧭 **Build decision: Code Ocean.** HPC compute nodes have no Docker (only
+  Apptainer; userns + fakeroot + egress all work, but no OCI builder), so we
+  build in CO (Docker + creds) and push to **Beaker's own registry** via
+  `beaker image create`. ghcr.io `docker:` ref is the documented fallback.
+- ⏳ Image not yet built. We **have** an AI Hub workspace + Beaker token.
 
 ## Placeholders to fill before submitting
 

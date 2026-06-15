@@ -21,7 +21,21 @@ combos. So **Beaker tasks only need SWEEP_ID + a run count** — no config JSON 
 shipped from the dispatcher. Each agent invokes `python -m run_hpc <overrides>`,
 which re-composes the Hydra config from the dispatcher configs baked into the image.
 
-## Runbook (needs Docker + Beaker CLI + tokens — not available on the HPC box)
+## Image source
+
+Beaker accepts two image sources:
+- **Beaker's own registry (used here):** `beaker image create` uploads from a
+  local Docker daemon; referenced as `image: { beaker: <username>/disrnn-wrapper }`.
+  Simplest — no external registry or pull credentials.
+- **External registry** (ghcr.io / Docker Hub): `image: { docker: ghcr.io/... }`,
+  Beaker pulls it (private needs pull creds in the workspace). Documented in
+  `experiment_mvp.yaml` as a fallback for builds done without the beaker CLI.
+
+## Runbook — build in Code Ocean (has Docker + creds; the HPC box has neither)
+
+> The Dockerfile COPYs **both** repos, so the build context must have
+> `aind-disrnn-wrapper/` and `aind-disrnn-dispatcher/` checked out as **siblings**.
+> In CO, make sure both are cloned next to each other before building.
 
 ```bash
 # 0. Prereqs: beaker CLI configured (`beaker config`), GITHUB_TOKEN for private
