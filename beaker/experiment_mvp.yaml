@@ -1,0 +1,36 @@
+## Beaker experiment spec — disRNN MVP (one W&B sweep agent on one GPU).
+##
+## Fill the three <PLACEHOLDERS> before submitting:
+##   <username>/disrnn-wrapper   image ref printed by `beaker image get` (NOT the ai1/<ws> path)
+##   <SWEEP_ID>                  e.g. AIND-disRNN/beaker_mvp/abc123 (from `wandb sweep`)
+##   <prefix>-wandb-api-key      Beaker secret name holding your W&B key
+##
+## Submit:
+##   beaker experiment create -w ai1/<workspace> beaker/experiment_mvp.yaml
+##
+## Scale up later by bumping `replicas` (N agents across N GPUs) and/or running
+## beaker/pack_gpu.sh as the command (M agents packed on each GPU).
+
+version: v2
+description: disRNN MVP — synthetic-RL -> disRNN (default), one W&B sweep agent
+tasks:
+  - name: disrnn-mvp
+    image:
+      beaker: <username>/disrnn-wrapper
+    command: [wandb, agent, --count, "1", "<SWEEP_ID>"]
+    replicas: 1
+    context:
+      priority: low
+      preemptible: true
+    constraints:
+      cluster:
+        - ai1/ai-hub-aws-uswest-l40s      # smallest GPU class; confirm name is live
+    resources:
+      gpuCount: 1
+    envVars:
+      - name: WANDB_API_KEY
+        secret: <prefix>-wandb-api-key
+      - name: DISRNN_OUTPUT_DIR
+        value: /results
+    result:
+      path: /results

@@ -1,0 +1,36 @@
+# MVP W&B sweep: simulate an RL agent, then fit a disRNN with DEFAULT settings.
+#
+# This is the simplest end-to-end pipeline, wrapped as a (trivial, 1-point)
+# W&B sweep so the Beaker mechanism is sweep-based from day one. Each Beaker
+# task runs `wandb agent <SWEEP_ID>`, which invokes the command below with the
+# swept params appended as Hydra overrides.
+#
+#   data=synthetic   -> synthetic.yaml defaults to agent=rl, task=random_walk
+#   model=disrnn     -> disRNN with the default architecture/penalties/training
+#
+# Create the sweep (returns a SWEEP_ID), then put that ID in experiment_mvp.yaml:
+#   wandb sweep beaker/sweep_mvp.yaml
+#
+# For a fast smoke test, append e.g. model.training.n_steps=200 to `command`.
+
+entity: AIND-disRNN
+project: beaker_mvp
+name: mvp-synthetic-rl-disrnn
+
+method: grid
+metric:
+  name: final/val_loss
+  goal: minimize
+
+command:
+  - python
+  - -m
+  - run_hpc
+  - data=synthetic
+  - model=disrnn
+  - "wandb.tags=[beaker,mvp]"
+  - ${args_no_hyphens}
+
+parameters:
+  seed:
+    values: [42]
