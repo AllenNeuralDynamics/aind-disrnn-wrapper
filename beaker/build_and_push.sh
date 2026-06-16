@@ -34,7 +34,14 @@ docker build \
     -t "$IMAGE_NAME" \
     "$SCRIPT_DIR"
 
-# Push to Beaker's own registry.
+# Push to Beaker's own registry. Image names are unique per workspace, so delete
+# any previous image of the same name first — this keeps the ref <user>/<name>
+# stable across rebuilds (no spec edits, no renaming; only the internal ID changes).
+ME="$(beaker account whoami --format json | sed -n 's/.*"name": *"\([^"]*\)".*/\1/p' | head -1)"
+if [ -n "$ME" ]; then
+    beaker image delete "$ME/$IMAGE_NAME" >/dev/null 2>&1 \
+        && echo "replaced previous image $ME/$IMAGE_NAME" || true
+fi
 beaker image create --name "$IMAGE_NAME" -w "$WORKSPACE" "$IMAGE_NAME"
 
 echo
