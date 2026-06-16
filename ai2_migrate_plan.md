@@ -28,7 +28,7 @@ come from the internal docs in `allenOCTO/aihub` (`docs/`):
 |---|---|---|
 | `octo.hub-aws-p5en` | NVIDIA H200 | Large training |
 | `ai-hub-gcp-uswest-h200`, `cit-gpu-onprem-h200` | H200 | (rolling out 2026) |
-| `ai-hub-aws-uswest-l40s` | NVIDIA L40s | Interactive debugging |
+| `octo-hub-aws-l40s` | NVIDIA L40s | Interactive debugging (our live L40s cluster) |
 
 > Cluster names change as nodes come up — re-check if you get an error.
 
@@ -215,7 +215,7 @@ tasks:
       autoResume: true
     constraints:
       cluster:
-        - ai1/ai-hub-aws-uswest-l40s         # smallest GPU class
+        - ai1/octo-hub-aws-l40s         # smallest GPU class
     resources:
       gpuCount: 1
     envVars:

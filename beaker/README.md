@@ -33,40 +33,34 @@ Beaker accepts two image sources:
 
 ## Runbook — build in Code Ocean (has Docker + creds; the HPC box has neither)
 
-> The Dockerfile COPYs **both** repos, so the build context must have
-> `aind-disrnn-wrapper/` and `aind-disrnn-dispatcher/` checked out as **siblings**.
-> In CO, make sure both are cloned next to each other before building.
+> The Dockerfile **git-clones** both repos (`aind-disrnn-dispatcher` +
+> `aind-disrnn-wrapper`, default branch `ai_hub`) into a sibling layout inside
+> the image. All repos/deps are public, so there's no token and no build context
+> to arrange — you can build from anywhere.
 
 ```bash
-# 0. Prereqs: beaker CLI configured (`beaker config`), GITHUB_TOKEN for private
-#    git deps, WANDB key. Replace <workspace>, <username>, <prefix>, <SWEEP_ID>.
+# 0. Prereqs: beaker CLI configured (`beaker config` — check `beaker account whoami`)
+#    and your W&B key. No GitHub token needed (public repos).
 
-# 1. Build the image from the PARENT dir holding both repos as siblings.
-cd /path/to/code        # contains aind-disrnn-wrapper/ and aind-disrnn-dispatcher/
-DOCKER_BUILDKIT=1 docker build \
-  --platform linux/amd64 \
-  --secret id=gh_token,env=GITHUB_TOKEN \
-  -f aind-disrnn-wrapper/beaker/Dockerfile \
-  -t disrnn-wrapper .
+# 1. Build + push in one step (builds x86, `beaker image create`).
+WS=ai1/aind-dynamic-foraging-foundation-model   # our AI Hub workspace (build_and_push.sh defaults to it)
+bash beaker/build_and_push.sh
+beaker image get disrnn-wrapper      # note the <username>/disrnn-wrapper ref it prints
 
-# 2. Push to Beaker.
-beaker image create --name disrnn-wrapper -w ai1/<workspace> disrnn-wrapper
-beaker image get <image-id>      # note the <username>/disrnn-wrapper ref
+# 2. Store the W&B key as a Beaker secret.
+beaker secret write <prefix>-wandb-api-key -w "$WS" "$WANDB_API_KEY"
 
-# 3. Store the W&B key as a Beaker secret.
-beaker secret write <prefix>-wandb-api-key -w ai1/<workspace> "$WANDB_API_KEY"
-
-# 4. Create the W&B sweep -> SWEEP_ID.
+# 3. Create the W&B sweep -> SWEEP_ID.
 wandb sweep beaker/sweep_mvp.yaml
 
-# 5. Fill <username>/<SWEEP_ID>/<prefix> in experiment_mvp.yaml, then submit.
-beaker experiment create -w ai1/<workspace> beaker/experiment_mvp.yaml
+# 4. Fill <username>/<SWEEP_ID>/<prefix> in experiment_mvp.yaml, then submit.
+beaker experiment create -w "$WS" beaker/experiment_mvp.yaml
 ```
 
 ## Placeholders to fill
 
-- `ai1/<workspace>` — our AI Hub workspace.
-- `ai1/ai-hub-aws-uswest-l40s` — confirm the live L40s cluster name.
+- ~~`ai1/<workspace>`~~ — resolved: **`ai1/aind-dynamic-foraging-foundation-model`**.
+- ~~`ai1/ai-hub-aws-uswest-l40s`~~ — resolved: **`ai1/octo-hub-aws-l40s`** (L40s).
 - `<username>/disrnn-wrapper` — image ref from `beaker image get`.
 - `<prefix>-wandb-api-key` — Beaker secret name.
 - `<SWEEP_ID>` — from `wandb sweep`.

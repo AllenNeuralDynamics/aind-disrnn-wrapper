@@ -64,9 +64,9 @@ run as a 1-point W&B sweep on one L40s GPU. Artifacts in `beaker/`:
 
 ## Placeholders to fill before submitting
 
-- `ai1/<workspace>` — our AI Hub workspace name.
+- ~~`ai1/<workspace>`~~ — resolved: **`ai1/aind-dynamic-foraging-foundation-model`**.
 - L40s **cluster name** — confirm the live name (`clusters.md` lists
-  `ai-hub-aws-uswest-l40s`).
+  resolved to the live `ai1/octo-hub-aws-l40s`).
 - `<username>/disrnn-wrapper` — image ref from `beaker image get`.
 - `<prefix>-wandb-api-key` — Beaker secret name for the W&B key.
 

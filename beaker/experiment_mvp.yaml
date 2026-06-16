@@ -6,7 +6,7 @@
 ##   <prefix>-wandb-api-key      Beaker secret name holding your W&B key
 ##
 ## Submit:
-##   beaker experiment create -w ai1/<workspace> beaker/experiment_mvp.yaml
+##   beaker experiment create -w ai1/aind-dynamic-foraging-foundation-model beaker/experiment_mvp.yaml
 ##
 ## Scale up later by bumping `replicas` (N agents across N GPUs) and/or running
 ## beaker/pack_gpu.sh as the command (M agents packed on each GPU).
@@ -28,7 +28,7 @@ tasks:
       preemptible: true
     constraints:
       cluster:
-        - ai1/ai-hub-aws-uswest-l40s      # smallest GPU class; confirm name is live
+        - ai1/octo-hub-aws-l40s      # smallest GPU class (L40s)
     resources:
       gpuCount: 1
     envVars:
