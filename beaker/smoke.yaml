@@ -17,7 +17,7 @@ description: disRNN image smoke test (GPU + imports + Hydra config, no W&B)
 tasks:
   - name: smoke
     image:
-      beaker: <username>/disrnn-wrapper
+      beaker: han-hou/disrnn-wrapper
     command:
       - bash
       - /workspace/aind-disrnn-wrapper/beaker/entrypoint.sh
