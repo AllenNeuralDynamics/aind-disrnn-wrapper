@@ -39,11 +39,11 @@ ARG WRAPPER_REF=ai_hub
 # and the wrapper's git deps (disentangled-rnns, aind-disrnn-utils) are public,
 # so no credentials are needed.
 #
-# The baked code is only a STARTING POINT: at job startup beaker/postInstall
+# The baked code is only a STARTING POINT: at job startup beaker/entrypoint.sh
 # re-pulls both repos to the latest ref (default ai_hub), so the image rarely
 # needs rebuilding — only when DEPENDENCIES change. The build-time clone exists
-# mainly to (a) install deps from pyproject and (b) seed the repos so postInstall
-# can `git fetch` them. See beaker/postInstall and the README.
+# mainly to (a) install deps from pyproject and (b) seed the repos so entrypoint.sh
+# can `git fetch` them. See beaker/entrypoint.sh and the README.
 #
 # Trade-off: pinned to branch tips (ai_hub), so the image is reproducible only as
 # far as "whatever ai_hub pointed at when built" — not a commit SHA. For release

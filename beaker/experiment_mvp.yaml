@@ -21,11 +21,11 @@ tasks:
       # Alternative — external registry (only if built without the beaker CLI):
       #   docker: ghcr.io/AllenNeuralDynamics/disrnn-wrapper:latest
       #   (private ghcr images need pull credentials configured in the workspace)
-    # postInstall pulls the latest code from GitHub at container startup, THEN
+    # entrypoint.sh pulls the latest code from GitHub at container startup, THEN
     # runs `wandb agent` — so code/config edits need no image rebuild (see
-    # beaker/postInstall and the README "Active development" note). Refs are set
+    # beaker/entrypoint.sh and the README "Active development" note). Refs are set
     # via WRAPPER_REF / DISPATCHER_REF below.
-    command: [bash, /workspace/aind-disrnn-wrapper/beaker/postInstall, wandb, agent, --count, "1", "<SWEEP_ID>"]
+    command: [bash, /workspace/aind-disrnn-wrapper/beaker/entrypoint.sh, wandb, agent, --count, "1", "<SWEEP_ID>"]
     replicas: 1
     context:
       priority: low

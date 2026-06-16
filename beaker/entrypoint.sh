@@ -1,14 +1,12 @@
 #!/usr/bin/env bash
-# Runtime bootstrap for the disRNN Beaker image.
+# Runtime entrypoint for the disRNN Beaker image.
 #
-# NOTE ON THE NAME: this mirrors Code Ocean's environment/postInstall, but it
-# runs at a DIFFERENT time. CO's postInstall runs once at image BUILD time; this
-# one runs at CONTAINER STARTUP on every Beaker job. It refreshes both repos to
-# the latest code on GitHub *before* running the job, so code/config edits take
-# effect by just launching a new run — no image rebuild.
+# Runs at CONTAINER STARTUP on every Beaker job (NOT at image build time): it
+# refreshes both repos to the latest code on GitHub *before* running the job, so
+# code/config edits take effect by just launching a new run — no image rebuild.
 #
 # Invoked from the Beaker spec's `command`, e.g.:
-#   command: [bash, /workspace/aind-disrnn-wrapper/beaker/postInstall,
+#   command: [bash, /workspace/aind-disrnn-wrapper/beaker/entrypoint.sh,
 #             wandb, agent, --count, "1", "<SWEEP_ID>"]
 # Everything after the script path is the real work, exec'd once code is fresh.
 #
@@ -29,18 +27,18 @@ refresh() {  # <repo dir> <ref>
     # (GitHub allows) a specific commit SHA. Detach at the fetched commit.
     git -C "$dir" fetch --depth 1 origin "$ref"
     git -C "$dir" checkout -f --detach FETCH_HEAD
-    echo "[postInstall]   $(basename "$dir") @ ${ref} -> $(git -C "$dir" rev-parse --short HEAD)"
+    echo "[entrypoint]   $(basename "$dir") @ ${ref} -> $(git -C "$dir" rev-parse --short HEAD)"
 }
 
-echo "[postInstall] refreshing source from GitHub before the run..."
+echo "[entrypoint] refreshing source from GitHub before the run..."
 refresh /workspace/aind-disrnn-dispatcher "$DISPATCHER_REF"
 refresh /workspace/aind-disrnn-wrapper    "$WRAPPER_REF"
 
 if [ "$#" -eq 0 ]; then
-    echo "[postInstall] no command given; nothing to run." >&2
+    echo "[entrypoint] no command given; nothing to run." >&2
     exit 1
 fi
 
 cd /workspace/aind-disrnn-wrapper/code
-echo "[postInstall] launching: $*"
+echo "[entrypoint] launching: $*"
 exec "$@"

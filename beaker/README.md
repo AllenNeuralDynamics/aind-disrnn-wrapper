@@ -96,18 +96,18 @@ beaker experiment create -w "$WS" beaker/experiment_mvp.yaml
 ## Active development — no rebuild on code changes
 
 The image bakes only the **environment** (Python + JAX + pinned deps). The actual
-code is **pulled fresh at container startup** by `beaker/postInstall`, which the
+code is **pulled fresh at container startup** by `beaker/entrypoint.sh`, which the
 experiment spec invokes before `wandb agent`:
 
 ```
-command: [bash, /workspace/aind-disrnn-wrapper/beaker/postInstall, wandb, agent, ...]
+command: [bash, /workspace/aind-disrnn-wrapper/beaker/entrypoint.sh, wandb, agent, ...]
 ```
 
 So the loop while iterating is just:
 
 > **edit → push to `ai_hub` → trigger a new run.** No Mac, no rebuild.
 
-`postInstall` `git fetch`es both repos to `WRAPPER_REF` / `DISPATCHER_REF`
+`entrypoint.sh` `git fetch`es both repos to `WRAPPER_REF` / `DISPATCHER_REF`
 (default `ai_hub`) and logs the resolved commit SHAs at the top of the job log.
 
 **Rebuild the image only when dependencies change** (`pyproject.toml` or the
@@ -118,7 +118,7 @@ pinned git deps). Symptom of a needed rebuild: a run fails with
 set `WRAPPER_REF` / `DISPATCHER_REF` to the SHA in `experiment_mvp.yaml` (same
 image, exact code).
 
-> One-time: this only works once an image containing `beaker/postInstall` exists,
+> One-time: this only works once an image containing `beaker/entrypoint.sh` exists,
 > so build once after this change lands on `ai_hub`. After that, code edits never
 > need a rebuild.
 
