@@ -49,7 +49,14 @@ ARG WRAPPER_REF=ai_hub
 # far as "whatever ai_hub pointed at when built" — not a commit SHA. For release
 # images, point the *_REF args at tags/SHAs (a tag works with `-b`; a bare SHA
 # needs a fetch+checkout instead of --depth 1 -b).
-RUN git clone --depth 1 -b "$DISPATCHER_REF" \
+#
+# CACHEBUST: the clone instruction text is identical across builds, so Docker
+# would otherwise reuse a stale cached clone and silently bake old code. Pass a
+# changing value (build_and_push.sh sends a timestamp) to force a fresh clone +
+# reinstall whenever you intentionally rebuild.
+ARG CACHEBUST=0
+RUN echo "cachebust=$CACHEBUST" && \
+    git clone --depth 1 -b "$DISPATCHER_REF" \
       "$GH_ORG/aind-disrnn-dispatcher.git" /workspace/aind-disrnn-dispatcher && \
     git clone --depth 1 -b "$WRAPPER_REF" \
       "$GH_ORG/aind-disrnn-wrapper.git" /workspace/aind-disrnn-wrapper && \

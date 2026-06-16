@@ -22,9 +22,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "image: $IMAGE_NAME   workspace: $WORKSPACE   refs: ${DISPATCHER_REF:-ai_hub}/${WRAPPER_REF:-ai_hub}"
 
-# Build (x86 for Beaker GPU nodes).
+# Build (x86 for Beaker GPU nodes). CACHEBUST forces a fresh git clone + reinstall
+# each build (the clone instruction is otherwise byte-identical and Docker would
+# reuse a stale cached clone, baking old code).
 docker build \
     --platform linux/amd64 \
+    --build-arg CACHEBUST="$(date +%s)" \
     ${DISPATCHER_REF:+--build-arg DISPATCHER_REF="$DISPATCHER_REF"} \
     ${WRAPPER_REF:+--build-arg WRAPPER_REF="$WRAPPER_REF"} \
     -f "$SCRIPT_DIR/Dockerfile" \
