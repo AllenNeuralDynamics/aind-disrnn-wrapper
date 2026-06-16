@@ -112,7 +112,9 @@ So the loop while iterating is just:
 
 **Rebuild the image only when dependencies change** (`pyproject.toml` or the
 pinned git deps). Symptom of a needed rebuild: a run fails with
-`ImportError` / `ModuleNotFoundError` after a pull.
+`ImportError` / `ModuleNotFoundError` after a pull. To rebuild over the existing
+image, re-run the build with `--force-rebuild` (it replaces the old image only
+after the new build succeeds); otherwise the script stops rather than touch it.
 
 **Pin a run for reproducibility** by passing a commit SHA instead of the branch:
 set `WRAPPER_REF` / `DISPATCHER_REF` to the SHA in `experiment_mvp.yaml` (same
