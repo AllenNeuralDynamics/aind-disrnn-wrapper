@@ -1,149 +1,154 @@
-# Beaker (AI Hub) MVP
+# Running disRNN on AI Hub / Beaker
 
-Run the disRNN wrapper on the Allen AI Hub / Beaker platform. This MVP proves
-the **compute plane**: a single default *synthetic-RL → disRNN* run, executed as
-a W&B sweep agent on one GPU. See [`../ai2_migrate_plan.md`](../ai2_migrate_plan.md)
-for the full migration design and [`HANDOFF.md`](HANDOFF.md) for the decision log.
+Run the disRNN training stack on the Allen **AI Hub / Beaker** GPU platform.
+
+**Architecture (two planes):**
+- **Build plane — a Mac (or any box with Docker).** Builds the GPU image and
+  pushes it to Beaker's registry. Needed rarely (only when dependencies change).
+  *Code Ocean can't build* — its capsules are unprivileged Docker containers whose
+  seccomp profile blocks the namespace creation every image builder needs.
+- **Control plane — Code Ocean (or any box with the `beaker` CLI).** Creates the
+  W&B sweep and submits the Beaker experiment. No GPU, no Docker.
+
+**Key idea — code is *not* frozen in the image.** The image bakes only the
+environment (Python + JAX + pinned deps). The actual code is pulled fresh from
+GitHub at job startup by `entrypoint.sh`, so day-to-day you just **edit → push →
+re-run**, never rebuild. See [Controlling the code version](#3-controlling-the-code-version).
 
 ## Files
 
-| File | What it is |
+| File | What it is | Rebuild image to change? |
+|---|---|---|
+| `Dockerfile` | GPU image: clones both repos (sibling layout) + installs deps | **Yes** |
+| `entrypoint.sh` | Runtime bootstrap: pulls latest code, then `exec`s the job | **Yes** (baked, runs before the pull) |
+| `build_and_push.sh` | Builds (`linux/amd64`) and pushes via `beaker image create` | n/a |
+| `smoke.yaml` | Beaker spec: image sanity check (GPU + config, no W&B) | No |
+| `sweep_mvp.yaml` | W&B sweep: `data=synthetic model=disrnn` + the `run_hpc` command | No |
+| `experiment_mvp.yaml` | Beaker spec: one `wandb agent` on one L40s GPU | No |
+
+## Resolved settings
+
+| | |
 |---|---|
-| `Dockerfile` | GPU image: wrapper + dispatcher configs in sibling layout (so sweep agents re-run Hydra). |
-| `sweep_mvp.yaml` | Trivial W&B sweep: `data=synthetic model=disrnn` (default settings). |
-| `experiment_mvp.yaml` | Beaker spec: one `wandb agent` on one L40s GPU. |
+| Workspace | `ai1/aind-dynamic-foraging-foundation-model` |
+| Cluster (L40s) | `ai1/octo-hub-aws-l40s` |
+| Image ref | `han-hou/disrnn-wrapper` (from `beaker image get disrnn-wrapper`) |
+| W&B secret | `han-wandb-api-key` (a Beaker secret holding `WANDB_API_KEY`) |
 
-## Mechanism
+---
 
-W&B sweep is the orchestrator. The sweep controller (W&B cloud) holds the
-hyperparameter space; each Beaker task runs `wandb agent <SWEEP_ID>` and pulls
-combos. So **Beaker tasks only need SWEEP_ID + a run count** — no config JSON is
-shipped from the dispatcher. Each agent invokes `python -m run_hpc <overrides>`,
-which re-composes the Hydra config from the dispatcher configs baked into the image.
+## 1. Build & push the image (on a Mac / any Docker box)
 
-## Image source
-
-Beaker accepts two image sources:
-- **Beaker's own registry (used here):** `beaker image create` uploads from a
-  local Docker daemon; referenced as `image: { beaker: <username>/disrnn-wrapper }`.
-  Simplest — no external registry or pull credentials.
-- **External registry** (ghcr.io / Docker Hub): `image: { docker: ghcr.io/... }`,
-  Beaker pulls it (private needs pull creds in the workspace). Documented in
-  `experiment_mvp.yaml` as a fallback for builds done without the beaker CLI.
-
-## Runbook
-
-The image is **built on a machine with Docker** (a MacBook, in our setup) and
-pushed to Beaker's registry. Everything after that — secret, sweep, submit —
-runs from the **Code Ocean control plane**, or any box with the `beaker` CLI.
-
-> **Why not build in Code Ocean?** CO capsules run as unprivileged Docker
-> containers whose seccomp profile blocks creating user/mount namespaces, so no
-> container builder (Docker, rootless Docker, Podman, buildah) can run there. CO
-> drives Beaker fine — it just can't build images.
->
-> The Dockerfile **git-clones** both repos (`aind-disrnn-dispatcher` +
-> `aind-disrnn-wrapper`, default branch `ai_hub`) into a sibling layout inside
-> the image. All repos/deps are public, so there's no token and no build context
-> to arrange — you can build from anywhere with Docker.
-
-### 1. Build + push the image (on a Mac / any Docker box)
-
-Needs only Docker + the Beaker CLI — **no W&B** (that's runtime only) and **no
-GitHub token** (public repos).
+Needs only Docker + the Beaker CLI — **no W&B** (runtime only) and **no GitHub
+token** (all repos/deps are public; the Dockerfile clones them itself, so there's
+no build context to arrange).
 
 ```bash
-# Docker Desktop running (whale icon steady):
-docker --version
-
-# Beaker CLI + login (once):
+# Docker Desktop running (whale icon steady):  docker --version
+# Beaker CLI (once):
 curl -fsSL https://beaker.org/install | sh
-beaker account login             # browser login with AI1 creds
-beaker account whoami            # expect: han-hou
+beaker account login              # browser login with AI1 creds
+beaker account whoami             # expect: han-hou
 
-# Get the Dockerfile + build script, then build (linux/amd64) + push:
 git clone https://github.com/AllenNeuralDynamics/aind-disrnn-wrapper.git
 cd aind-disrnn-wrapper && git checkout ai_hub
-bash beaker/build_and_push.sh    # builds linux/amd64, then `beaker image create`
-beaker image get disrnn-wrapper  # note the ref: han-hou/disrnn-wrapper
+bash beaker/build_and_push.sh
+beaker image get disrnn-wrapper   # note the ref: han-hou/disrnn-wrapper
 ```
 
-> **Apple Silicon (M-series):** `build_and_push.sh` already passes
-> `--platform linux/amd64` (Beaker nodes are x86); the build runs under emulation,
-> so it's slower but correct. Plain equivalent without the script:
-> ```bash
-> docker build --platform linux/amd64 -f beaker/Dockerfile -t disrnn-wrapper beaker/
-> beaker image create --name disrnn-wrapper \
->   --workspace ai1/aind-dynamic-foraging-foundation-model disrnn-wrapper
-> ```
-> Rebuild only when code/deps change — otherwise reuse the same image ref.
+`build_and_push.sh` options (config is via flags, not env vars):
 
-### 2. Submit a run (from Code Ocean, or any box with the beaker CLI)
+| Flag | Meaning | Default |
+|---|---|---|
+| `--name NAME` | Beaker image name | `disrnn-wrapper` |
+| `--workspace WS` | Beaker workspace | `ai1/aind-dynamic-foraging-foundation-model` |
+| `--ref REF` | Branch/tag/SHA baked into **both** repos | `ai_hub` |
+| `--wrapper-ref` / `--dispatcher-ref` | Override one repo's baked ref | `ai_hub` |
+| `--force-rebuild` | Bust Docker's cache → fresh clone + reinstall | off |
+| `--force-override-beaker` | Replace an existing Beaker image (delete only after a successful build) | off |
+
+By default the script **won't touch an existing image** — it warns and stops. A
+real dependency-change rebuild is therefore:
+
+```bash
+bash beaker/build_and_push.sh --force-rebuild --force-override-beaker
+```
+
+> Apple Silicon builds `linux/amd64` under emulation (Beaker nodes are x86) — slower
+> but correct; the flag is already set. The image name/ref stays stable across
+> rebuilds, so nothing downstream needs editing.
+
+## 2. Run a job (from Code Ocean)
+
+**First, a smoke test** — proves the image works on a node with no W&B/sweep/training
+(image pull, runtime code pull, GPU, Hydra config). Fills in `han-hou/disrnn-wrapper`,
+then:
 
 ```bash
 WS=ai1/aind-dynamic-foraging-foundation-model
+beaker experiment create -w "$WS" beaker/smoke.yaml
+# watch https://beaker.org/ex/<id> for "JAX devices: [Cuda…]" and "SMOKE OK"
+```
 
+**Then the real MVP** — a W&B sweep, where each Beaker task runs `wandb agent` and
+pulls hyperparameter combos from the W&B controller:
+
+```bash
 # W&B key as a Beaker secret (once per workspace):
 beaker secret write han-wandb-api-key -w "$WS" "$WANDB_API_KEY"
 
-# Create the W&B sweep -> SWEEP_ID:
+# Create the sweep -> prints SWEEP_ID (e.g. AIND-disRNN/beaker_mvp/abc123):
 wandb sweep beaker/sweep_mvp.yaml
 
-# Fill the image ref + SWEEP_ID + secret name into experiment_mvp.yaml, then submit:
+# In experiment_mvp.yaml set the image ref + <SWEEP_ID> + secret name, then submit:
 beaker experiment create -w "$WS" beaker/experiment_mvp.yaml
 ```
 
-## Active development — no rebuild on code changes
+Monitor: `beaker experiment get <id>`, the UI at `https://beaker.org/ex/<id>`, or
+`beaker experiment tasks <id>` → `beaker job logs <job-id>`. Runs also show in W&B
+under `AIND-disRNN/beaker_mvp`.
 
-The image bakes only the **environment** (Python + JAX + pinned deps). The actual
-code is **pulled fresh at container startup** by `beaker/entrypoint.sh`, which the
-experiment spec invokes before `wandb agent`:
+## 3. Controlling the code version
 
-```
+At container startup `entrypoint.sh` `git fetch`es **both** repos to
+`WRAPPER_REF` / `DISPATCHER_REF` (default `ai_hub`), logs the resolved commit
+SHAs, then `exec`s the job. The Beaker spec invokes it as:
+
+```yaml
 command: [bash, /workspace/aind-disrnn-wrapper/beaker/entrypoint.sh, wandb, agent, ...]
 ```
 
-So the loop while iterating is just:
+Consequences:
 
-> **edit → push to `ai_hub` → trigger a new run.** No Mac, no rebuild.
+- **Iterate without rebuilding:** edit → push to `ai_hub` → submit a new run.
+- **Run a different branch / commit:** set the refs in the spec you submit — this
+  is the *only* knob that affects what runs:
+  ```yaml
+  envVars:
+    - { name: WRAPPER_REF,    value: my-feature-branch }   # branch, tag, or SHA
+    - { name: DISPATCHER_REF, value: my-feature-branch }
+  ```
+  Omit them and it defaults to `ai_hub`. Use a **SHA** to pin a run for
+  reproducibility.
+- **Build-time refs don't matter for what runs.** The Dockerfile/`build_and_push.sh`
+  refs only seed the baked clone; the runtime pull overwrites it.
+- **Rebuild only on dependency changes** (`pyproject.toml` / pinned git deps).
+  Symptom: a run fails with `ImportError` / `ModuleNotFoundError` after a pull.
 
-`entrypoint.sh` `git fetch`es both repos to `WRAPPER_REF` / `DISPATCHER_REF`
-(default `ai_hub`) and logs the resolved commit SHAs at the top of the job log.
+## 4. Where to change what
 
-**Rebuild the image only when dependencies change** (`pyproject.toml` or the
-pinned git deps). Symptom of a needed rebuild: a run fails with
-`ImportError` / `ModuleNotFoundError` after a pull. Both build behaviors are
-opt-in (default: neither):
+| Want to change… | Edit | Rebuild image? |
+|---|---|---|
+| **Dependencies / base environment** | `Dockerfile` (then `pyproject.toml` for the actual deps) | **Yes** — `--force-rebuild --force-override-beaker` |
+| **The command, cluster, GPU count, replicas, secret, refs** | the spec YAML (`experiment_mvp.yaml` / `smoke.yaml`) | No |
+| **The hyperparameter grid / `run_hpc` overrides** | `sweep_mvp.yaml` (read by `wandb sweep` at submit) | No |
+| **The startup/bootstrap logic** (how code is pulled) | `entrypoint.sh` | **Yes** (it's baked and runs before the pull) |
+| **Application code / Hydra configs** | the wrapper / dispatcher repos directly | No — push to the ref the job uses |
 
-- `--force-rebuild` — bust Docker's cache so the build does a fresh clone +
-  reinstall (without it, a rebuild may reuse cached layers and stay stale).
-- `--force-override-beaker` — replace the existing Beaker image (delete happens
-  only after the new build succeeds); without it the script stops if one exists.
+> Rule of thumb: anything **inside the image** (Dockerfile, entrypoint.sh) needs a
+> rebuild; anything in a **spec, sweep, or the app repos** does not.
 
-So a real dependency-change rebuild is typically:
-`bash beaker/build_and_push.sh --force-rebuild --force-override-beaker`.
+---
 
-**Pin a run for reproducibility** by passing a commit SHA instead of the branch:
-set `WRAPPER_REF` / `DISPATCHER_REF` to the SHA in `experiment_mvp.yaml` (same
-image, exact code).
-
-> One-time: this only works once an image containing `beaker/entrypoint.sh` exists,
-> so build once after this change lands on `ai_hub`. After that, code edits never
-> need a rebuild.
-
-## Placeholders to fill
-
-- ~~`ai1/<workspace>`~~ — resolved: **`ai1/aind-dynamic-foraging-foundation-model`**.
-- ~~`ai1/ai-hub-aws-uswest-l40s`~~ — resolved: **`ai1/octo-hub-aws-l40s`** (L40s).
-- `<username>/disrnn-wrapper` — image ref from `beaker image get`.
-- `<prefix>-wandb-api-key` — Beaker secret name.
-- `<SWEEP_ID>` — from `wandb sweep`.
-
-## Next (after the MVP runs)
-
-- **Scale**: bump `replicas` (agents across GPUs) and/or pack agents per GPU
-  (time-slicing) — see the parallelism section of `../ai2_migrate_plan.md`.
-- **Control plane**: add a "submit to Beaker" launcher to the dispatcher capsule
-  so CO creates the sweep and submits the experiment. CO→Beaker egress + the
-  `beaker` CLI/token are **confirmed working in CO** (the launcher is the
-  remaining piece).
+For the broader migration design (HPC/SLURM path, GPU packing, `jax.vmap`
+scaling), see [`../ai2_migrate_plan.md`](../ai2_migrate_plan.md).
