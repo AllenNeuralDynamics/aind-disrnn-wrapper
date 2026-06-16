@@ -23,8 +23,11 @@ re-run**, never rebuild. See [Controlling the code version](#3-controlling-the-c
 | `entrypoint.sh` | Runtime bootstrap: pulls latest code, then `exec`s the job | **Yes** (baked, runs before the pull) |
 | `build_and_push.sh` | Builds (`linux/amd64`) and pushes via `beaker image create` | n/a |
 | `smoke.yaml` | Beaker spec: image sanity check (GPU + config, no W&B) | No |
-| `sweep_mvp.yaml` | W&B sweep: `data=synthetic model=disrnn` + the `run_hpc` command | No |
-| `experiment_mvp.yaml` | Beaker spec: one `wandb agent` on one L40s GPU | No |
+
+> The sweep definition and the production Beaker job spec live in the **dispatcher**
+> (control plane), not here — `aind-disrnn-dispatcher/code/beaker/`
+> (`sweep_mvp.yaml`, `experiment_mvp.yaml`). This repo only builds the image and
+> ships `smoke.yaml` to test it.
 
 ## Resolved settings
 
@@ -78,11 +81,10 @@ bash beaker/build_and_push.sh --force-rebuild --force-override-beaker
 > but correct; the flag is already set. The image name/ref stays stable across
 > rebuilds, so nothing downstream needs editing.
 
-## 2. Run a job (from Code Ocean)
+## 2. Test the image (smoke test)
 
-**First, a smoke test** — proves the image works on a node with no W&B/sweep/training
-(image pull, runtime code pull, GPU, Hydra config). Fills in `han-hou/disrnn-wrapper`,
-then:
+After building, prove the image works on a node — no W&B/sweep/training, just
+image pull, runtime code pull, GPU, and Hydra config composition:
 
 ```bash
 WS=ai1/aind-dynamic-foraging-foundation-model
@@ -90,23 +92,9 @@ beaker experiment create -w "$WS" beaker/smoke.yaml
 # watch https://beaker.org/ex/<id> for "JAX devices: [Cuda…]" and "SMOKE OK"
 ```
 
-**Then the real MVP** — a W&B sweep, where each Beaker task runs `wandb agent` and
-pulls hyperparameter combos from the W&B controller:
-
-```bash
-# W&B key as a Beaker secret (once per workspace):
-beaker secret write han-wandb-api-key -w "$WS" "$WANDB_API_KEY"
-
-# Create the sweep -> prints SWEEP_ID (e.g. AIND-disRNN/beaker_mvp/abc123):
-wandb sweep beaker/sweep_mvp.yaml
-
-# In experiment_mvp.yaml set the image ref + <SWEEP_ID> + secret name, then submit:
-beaker experiment create -w "$WS" beaker/experiment_mvp.yaml
-```
-
-Monitor: `beaker experiment get <id>`, the UI at `https://beaker.org/ex/<id>`, or
-`beaker experiment tasks <id>` → `beaker job logs <job-id>`. Runs also show in W&B
-under `AIND-disRNN/beaker_mvp`.
+**To actually run training** (the W&B-sweep MVP), use the **dispatcher** control
+plane — `wandb sweep` → submit `experiment_mvp.yaml` — documented in
+`aind-disrnn-dispatcher/code/beaker/README.md`.
 
 ## 3. Controlling the code version
 
@@ -140,8 +128,8 @@ Consequences:
 | Want to change… | Edit | Rebuild image? |
 |---|---|---|
 | **Dependencies / base environment** | `Dockerfile` (then `pyproject.toml` for the actual deps) | **Yes** — `--force-rebuild --force-override-beaker` |
-| **The command, cluster, GPU count, replicas, secret, refs** | the spec YAML (`experiment_mvp.yaml` / `smoke.yaml`) | No |
-| **The hyperparameter grid / `run_hpc` overrides** | `sweep_mvp.yaml` (read by `wandb sweep` at submit) | No |
+| **The command, cluster, GPU count, replicas, secret, refs** | the spec YAML — `smoke.yaml` (here) or `experiment_mvp.yaml` (dispatcher) | No |
+| **The hyperparameter grid / `run_hpc` overrides** | `sweep_mvp.yaml` in the dispatcher (read by `wandb sweep` at submit) | No |
 | **The startup/bootstrap logic** (how code is pulled) | `entrypoint.sh` | **Yes** (it's baked and runs before the pull) |
 | **Application code / Hydra configs** | the wrapper / dispatcher repos directly | No — push to the ref the job uses |
 
