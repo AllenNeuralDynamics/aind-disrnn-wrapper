@@ -1,0 +1,45 @@
+## Beaker smoke test for the disRNN image — proves the image works on a node
+## WITHOUT W&B, a sweep, or any real training.
+##
+## It checks, in one short job:
+##   1. image pulls + beaker/entrypoint.sh runs its runtime git-pull
+##   2. JAX sees the GPU (jax.devices())
+##   3. Hydra composes the config across BOTH repos (the sibling-layout dependency)
+##      via `run_hpc --cfg job`, which prints the resolved config and exits — no
+##      training, no W&B.
+##
+## Fill <username> (from `beaker image get disrnn-wrapper`), then submit:
+##   beaker experiment create -w ai1/aind-dynamic-foraging-foundation-model beaker/smoke.yaml
+## Watch it:  https://beaker.org/ex/<experiment-id>   (look for "SMOKE OK")
+
+version: v2
+description: disRNN image smoke test (GPU + imports + Hydra config, no W&B)
+tasks:
+  - name: smoke
+    image:
+      beaker: <username>/disrnn-wrapper
+    command:
+      - bash
+      - /workspace/aind-disrnn-wrapper/beaker/entrypoint.sh
+      - bash
+      - -lc
+      - |
+        set -e
+        python -c "import jax; print('JAX devices:', jax.devices())"
+        python -m run_hpc --cfg job data=synthetic model=disrnn
+        echo "SMOKE OK"
+    context:
+      priority: low
+      preemptible: true
+    constraints:
+      cluster:
+        - ai1/octo-hub-aws-l40s
+    resources:
+      gpuCount: 1
+    envVars:
+      - name: WRAPPER_REF
+        value: ai_hub
+      - name: DISPATCHER_REF
+        value: ai_hub
+    result:
+      path: /results
