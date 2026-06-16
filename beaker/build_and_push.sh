@@ -22,6 +22,21 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "image: $IMAGE_NAME   workspace: $WORKSPACE   refs: ${DISPATCHER_REF:-ai_hub}/${WRAPPER_REF:-ai_hub}"
 
+# Pre-flight: Beaker image names are unique per workspace. If one already exists,
+# stop BEFORE building and let the user decide — never auto-delete (a delete could
+# pull the rug from under a running experiment that uses that image).
+ME="$(beaker account whoami --format json | sed -n 's/.*"name": *"\([^"]*\)".*/\1/p' | head -1)"
+if [ -n "$ME" ] && beaker image get "$ME/$IMAGE_NAME" >/dev/null 2>&1; then
+    cat >&2 <<MSG
+ERROR: image "$ME/$IMAGE_NAME" already exists in Beaker — not building.
+Choose one and re-run:
+  - replace it:        beaker image delete "$ME/$IMAGE_NAME"   then re-run this script
+  - use another name:  IMAGE_NAME=disrnn-wrapper-2 bash beaker/build_and_push.sh
+                       (then update the image ref in experiment_mvp.yaml)
+MSG
+    exit 1
+fi
+
 # Build (x86 for Beaker GPU nodes). CACHEBUST forces a fresh git clone + reinstall
 # each build (the clone instruction is otherwise byte-identical and Docker would
 # reuse a stale cached clone, baking old code).
@@ -34,14 +49,7 @@ docker build \
     -t "$IMAGE_NAME" \
     "$SCRIPT_DIR"
 
-# Push to Beaker's own registry. Image names are unique per workspace, so delete
-# any previous image of the same name first — this keeps the ref <user>/<name>
-# stable across rebuilds (no spec edits, no renaming; only the internal ID changes).
-ME="$(beaker account whoami --format json | sed -n 's/.*"name": *"\([^"]*\)".*/\1/p' | head -1)"
-if [ -n "$ME" ]; then
-    beaker image delete "$ME/$IMAGE_NAME" >/dev/null 2>&1 \
-        && echo "replaced previous image $ME/$IMAGE_NAME" || true
-fi
+# Push to Beaker's own registry.
 beaker image create --name "$IMAGE_NAME" -w "$WORKSPACE" "$IMAGE_NAME"
 
 echo
