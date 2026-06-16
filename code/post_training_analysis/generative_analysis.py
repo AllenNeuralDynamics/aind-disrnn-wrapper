@@ -409,7 +409,7 @@ def load_animal_session_history(
     resolved_run = _coerce_resolved_run(model_dir, split=split)
     _validate_multisubject_analysis_split(resolved_run)
 
-    load_mice_snapshot_mod = importlib.import_module("utils.load_mice_snapshot")
+    load_mice_database_mod = importlib.import_module("utils.load_mice_database")
 
     snapshot_cols = [
         "trial",
@@ -431,16 +431,15 @@ def load_animal_session_history(
         if resolved_run.multisubject
         else resolved_run.selection.get("subject_ids")
     )
-    snapshot_df, selected_subject_ids = load_mice_snapshot_mod.load_mice_snapshot(
+    snapshot_df, selected_subject_ids = load_mice_database_mod.load_mice_from_database(
+        split=resolved_run.split,
         subject_ids=selection_subject_ids,
-        subject_start=(
-            None if resolved_run.multisubject else resolved_run.selection.get("subject_start")
-        ),
-        subject_end=(
-            None if resolved_run.multisubject else resolved_run.selection.get("subject_end")
-        ),
-        mature_only=resolved_run.mature_only,
         curricula=resolved_run.curricula or None,
+        subject_ratio=resolved_run.selection.get("subject_ratio"),
+        min_sessions=int(resolved_run.selection.get("min_sessions", 10)),
+        heldout_every_n=int(resolved_run.selection.get("heldout_every_n", 5)),
+        seed=resolved_run.selection.get("subject_sample_seed"),
+        mature_only=resolved_run.mature_only,
         cols_to_retain=snapshot_cols,
     )
     logger.info(
@@ -472,9 +471,10 @@ def load_animal_session_history(
     snapshot_df["subject_id"] = snapshot_df["subject_id"].map(_normalize_identifier)
     snapshot_df["ses_idx"] = snapshot_df["ses_idx"].map(str)
 
-    # The snapshot already contains trial-level choice/reward history and the
-    # session annotations added by load_mice_snapshot(). Building the canonical
-    # session dataframe from this result avoids the heavier raw-data/NWB path.
+    # The database selection already contains trial-level choice/reward history
+    # and the session annotations added by load_mice_from_database(). Building the
+    # canonical session dataframe from this result avoids the heavier raw-data/NWB
+    # path.
     build_started_at = time.perf_counter()
     session_history = _build_session_history_dataframe(snapshot_df)
     if resolved_run.multisubject and resolved_run.session_context_map_path:
@@ -1361,18 +1361,17 @@ def _ensure_session_split_manifest(
     )
     mice_loader_mod = importlib.import_module("data_loaders.mice")
     split_manifest = mice_loader_mod.resolve_mice_snapshot_session_split_manifest(
+        split=resolved_run.split,
         subject_ids=selection_subject_ids,
-        subject_start=(
-            None if resolved_run.multisubject else resolved_run.selection.get("subject_start")
-        ),
-        subject_end=(
-            None if resolved_run.multisubject else resolved_run.selection.get("subject_end")
-        ),
+        curricula=list(resolved_run.curricula or []),
+        subject_ratio=resolved_run.selection.get("subject_ratio"),
+        min_sessions=int(resolved_run.selection.get("min_sessions", 10)),
+        heldout_every_n=int(resolved_run.selection.get("heldout_every_n", 5)),
+        subject_sample_seed=resolved_run.selection.get("subject_sample_seed"),
         ignore_policy=resolved_run.ignore_policy,
         eval_every_n=eval_every_n,
         multisubject=bool(resolved_run.multisubject),
         mature_only=bool(resolved_run.mature_only),
-        curricula=list(resolved_run.curricula or []),
         cols_to_retain=[
             "trial",
             "subject_id",
@@ -4640,16 +4639,21 @@ def _resolve_split_selection(
     data_cfg: Mapping[str, Any],
     split: str,
 ) -> dict[str, Any]:
-    if split == _TRAIN_SPLIT:
-        return {
-            "subject_ids": data_cfg.get("subject_ids"),
-            "subject_start": data_cfg.get("subject_start"),
-            "subject_end": data_cfg.get("subject_end"),
-        }
+    # The selection pipeline params (curricula / ratio / min_sessions /
+    # heldout_every_n / seed) are shared by both splits; only the direct-override
+    # subject id list differs (subject_ids for train, test_subject_ids for heldout).
+    direct_ids = (
+        data_cfg.get("subject_ids")
+        if split == _TRAIN_SPLIT
+        else data_cfg.get("test_subject_ids")
+    )
     return {
-        "subject_ids": data_cfg.get("test_subject_ids"),
-        "subject_start": data_cfg.get("test_subject_start"),
-        "subject_end": data_cfg.get("test_subject_end"),
+        "subject_ids": direct_ids,
+        "curricula": data_cfg.get("curricula"),
+        "subject_ratio": data_cfg.get("subject_ratio"),
+        "min_sessions": data_cfg.get("min_sessions", 10),
+        "heldout_every_n": data_cfg.get("heldout_every_n", 5),
+        "subject_sample_seed": data_cfg.get("subject_sample_seed", data_cfg.get("seed")),
     }
 
 

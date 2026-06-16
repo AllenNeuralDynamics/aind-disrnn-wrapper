@@ -14,7 +14,7 @@ import pandas as pd
 
 from aind_dynamic_foraging_models import generative_model
 
-from utils.load_mice_snapshot import load_mice_snapshot
+from utils.load_mice_database import load_mice_from_database
 from utils.multisubject import build_subject_index_maps, normalize_subject_id, save_subject_index_map
 
 logger = logging.getLogger(__name__)
@@ -812,18 +812,21 @@ def evaluate_baseline_rl_on_heldout_subjects(
         raise ValueError("baseline_rl_output.json missing fitted_params for held-out evaluation")
 
     logger.info(
-        "Loading held-out baseline RL test subjects with selectors: ids=%s, start=%s, end=%s",
+        "Loading held-out baseline RL test subjects (split=heldout): ids=%s, curricula=%s, "
+        "min_sessions=%s, heldout_every_n=%s",
         getattr(data_cfg, "test_subject_ids", None),
-        getattr(data_cfg, "test_subject_start", None),
-        getattr(data_cfg, "test_subject_end", None),
+        getattr(data_cfg, "curricula", None),
+        getattr(data_cfg, "min_sessions", 10),
+        getattr(data_cfg, "heldout_every_n", 5),
     )
 
-    df_test, test_subject_ids = load_mice_snapshot(
+    df_test, test_subject_ids = load_mice_from_database(
+        split="heldout",
         subject_ids=getattr(data_cfg, "test_subject_ids", None),
-        subject_start=getattr(data_cfg, "test_subject_start", None),
-        subject_end=getattr(data_cfg, "test_subject_end", None),
-        mature_only=bool(getattr(data_cfg, "mature_only", True)),
         curricula=getattr(data_cfg, "curricula", None),
+        min_sessions=int(getattr(data_cfg, "min_sessions", 10)),
+        heldout_every_n=int(getattr(data_cfg, "heldout_every_n", 5)),
+        mature_only=bool(getattr(data_cfg, "mature_only", True)),
         cols_to_retain=_ensure_curriculum_column(
             getattr(data_cfg, "cols_to_retain", None)
         ),

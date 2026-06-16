@@ -19,7 +19,7 @@ from utils.disrnn_plotting import (
     plot_latents_over_trials,
     save_figure,
 )
-from utils.load_mice_snapshot import load_mice_snapshot
+from utils.load_mice_database import MICE_DATABASE_DATA_TYPES, load_mice_from_database
 
 logger = logging.getLogger(__name__)
 
@@ -29,8 +29,10 @@ OPEN_LATENT_THRESHOLD = 0.03
 @dataclass(frozen=True)
 class HeldoutEvalConfig:
     test_subject_ids: list[Any] | None = None
-    test_subject_start: int | None = None
-    test_subject_end: int | None = None
+    min_sessions: int = 10
+    heldout_every_n: int = 5
+    heldout_eval: bool | None = None  # None -> auto (enabled for mice-database runs)
+    data_type: str | None = None
     mature_only: bool = True
     curricula: list[str] | None = None
     cols_to_retain: list[str] | None = None
@@ -69,8 +71,16 @@ class HeldoutEvalConfig:
 
         return cls(
             test_subject_ids=test_subject_ids,
-            test_subject_start=_cfg_get(data_cfg, "test_subject_start", None),
-            test_subject_end=_cfg_get(data_cfg, "test_subject_end", None),
+            min_sessions=int(_cfg_get(data_cfg, "min_sessions", 10)),
+            heldout_every_n=int(_cfg_get(data_cfg, "heldout_every_n", 5)),
+            heldout_eval=(
+                None
+                if _cfg_get(data_cfg, "heldout_eval", None) is None
+                else bool(_cfg_get(data_cfg, "heldout_eval", None))
+            ),
+            # Read ``type`` from a raw config; fall back to the field name when the
+            # config was round-tripped through ``asdict(HeldoutEvalConfig)``.
+            data_type=_cfg_get(data_cfg, "type", _cfg_get(data_cfg, "data_type", None)),
             mature_only=bool(_cfg_get(data_cfg, "mature_only", True)),
             curricula=curricula,
             cols_to_retain=cols_to_retain,
@@ -88,18 +98,12 @@ class HeldoutEvalConfig:
 
     @property
     def enabled(self) -> bool:
-        return any(
-            v is not None
-            for v in (self.test_subject_ids, self.test_subject_start, self.test_subject_end)
-        )
+        # Explicit data.heldout_eval wins; otherwise auto-enable for database runs.
+        if self.heldout_eval is not None:
+            return bool(self.heldout_eval)
+        return self.data_type in MICE_DATABASE_DATA_TYPES
 
     def validate(self) -> None:
-        if self.test_subject_ids is not None and (
-            self.test_subject_start is not None or self.test_subject_end is not None
-        ):
-            raise ValueError(
-                "Specify either data.test_subject_ids or data.test_subject_start/end, not both."
-            )
         if self.heldout_example_sessions_per_subject < 0:
             raise ValueError(
                 "data.heldout_example_sessions_per_subject must be >= 0 for held-out plotting."
@@ -901,22 +905,25 @@ def load_disrnn_heldout_subject_data(config_source: Any) -> dict[str, Any]:
     heldout_cfg = _resolve_heldout_eval_config(config_source)
 
     if not heldout_cfg.enabled:
-        raise ValueError("Held-out evaluation disabled (no test subject selectors configured).")
+        raise ValueError("Held-out evaluation disabled (data.heldout_eval is false).")
     heldout_cfg.validate()
 
     logger.info(
-        "Loading held-out test subjects with selectors: ids=%s, start=%s, end=%s",
+        "Loading held-out test subjects (split=heldout): ids=%s, curricula=%s, "
+        "min_sessions=%s, heldout_every_n=%s",
         heldout_cfg.test_subject_ids,
-        heldout_cfg.test_subject_start,
-        heldout_cfg.test_subject_end,
+        heldout_cfg.curricula,
+        heldout_cfg.min_sessions,
+        heldout_cfg.heldout_every_n,
     )
 
-    df_test, test_subject_ids = load_mice_snapshot(
+    df_test, test_subject_ids = load_mice_from_database(
+        split="heldout",
         subject_ids=heldout_cfg.test_subject_ids,
-        subject_start=heldout_cfg.test_subject_start,
-        subject_end=heldout_cfg.test_subject_end,
-        mature_only=heldout_cfg.mature_only,
         curricula=heldout_cfg.curricula,
+        min_sessions=heldout_cfg.min_sessions,
+        heldout_every_n=heldout_cfg.heldout_every_n,
+        mature_only=heldout_cfg.mature_only,
         cols_to_retain=heldout_cfg.cols_to_retain,
     )
     if len(df_test) == 0:

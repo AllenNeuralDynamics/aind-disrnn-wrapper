@@ -1170,15 +1170,16 @@ def _evaluate_baseline_heldout_split(
             ),
         )
 
-    from utils.load_mice_snapshot import load_mice_snapshot
+    from utils.load_mice_database import load_mice_from_database
 
     data_cfg = _as_dict(_as_dict(run.run_config).get("data", {}))
-    df_test, _ = load_mice_snapshot(
+    df_test, _ = load_mice_from_database(
+        split="heldout",
         subject_ids=data_cfg.get("test_subject_ids"),
-        subject_start=data_cfg.get("test_subject_start"),
-        subject_end=data_cfg.get("test_subject_end"),
-        mature_only=bool(data_cfg.get("mature_only", True)),
         curricula=data_cfg.get("curricula"),
+        min_sessions=int(data_cfg.get("min_sessions", 10)),
+        heldout_every_n=int(data_cfg.get("heldout_every_n", 5)),
+        mature_only=bool(data_cfg.get("mature_only", True)),
         cols_to_retain=_heldout_cols_to_retain(data_cfg),
     )
     raw_df = _normalize_raw_dataframe(df_test)
@@ -2649,15 +2650,23 @@ def _metadata_for_heldout_eval(
 
 
 def _heldout_selector_status(run_config: Mapping[str, Any]) -> tuple[bool, str | None]:
+    from utils.load_mice_database import MICE_DATABASE_DATA_TYPES
+
     data_cfg = _as_dict(run_config.get("data", {}))
-    selector_values = (
-        data_cfg.get("test_subject_ids"),
-        data_cfg.get("test_subject_start"),
-        data_cfg.get("test_subject_end"),
-    )
-    if any(value is not None for value in selector_values):
-        return True, None
-    return False, "Held-out selectors are not configured for this run."
+    heldout_eval = data_cfg.get("heldout_eval")
+    if heldout_eval is not None:
+        enabled = bool(heldout_eval)
+    else:
+        # Auto-enable for database runs (where a heldout set is derived); read
+        # ``type`` or, for round-tripped configs, ``data_type``.
+        data_type = data_cfg.get("type", data_cfg.get("data_type"))
+        enabled = data_type in MICE_DATABASE_DATA_TYPES
+    if not enabled:
+        return False, (
+            "Held-out evaluation is not enabled for this run "
+            "(data.type is not a database run; set data.heldout_eval=true to force)."
+        )
+    return True, None
 
 
 def _heldout_cols_to_retain(data_cfg: Mapping[str, Any]) -> list[str] | None:

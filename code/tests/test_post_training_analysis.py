@@ -596,8 +596,8 @@ model:
         self.assertEqual(resolved.model_type, "disrnn")
         self.assertEqual(resolved.split, "train")
         self.assertEqual(resolved.checkpoint_step, 24000)
-        self.assertEqual(resolved.selection["subject_start"], 0)
-        self.assertEqual(resolved.selection["subject_end"], 10)
+        self.assertEqual(resolved.selection["min_sessions"], 10)
+        self.assertEqual(resolved.selection["heldout_every_n"], 5)
         self.assertTrue(resolved.params_path.endswith("step_24000/params.json"))
         self.assertIsNone(resolved.fallback_reason)
 
@@ -838,10 +838,10 @@ model:
         built_history = _FakeSessionHistory()
 
         fake_snapshot_module = mock.Mock()
-        fake_snapshot_module.load_mice_snapshot.return_value = (snapshot_df, ["m1"])
+        fake_snapshot_module.load_mice_from_database.return_value = (snapshot_df, ["m1"])
 
         def _fake_import_module(name):
-            if name == "utils.load_mice_snapshot":
+            if name == "utils.load_mice_database":
                 return fake_snapshot_module
             if name == "load_mice_data":
                 raise AssertionError("load_mice_data should not be imported")
@@ -860,7 +860,7 @@ model:
         ):
             session_history = load_animal_session_history(resolved)
 
-        fake_snapshot_module.load_mice_snapshot.assert_called_once()
+        fake_snapshot_module.load_mice_from_database.assert_called_once()
         build_history_mock.assert_called_once()
         snapshot_arg = build_history_mock.call_args.args[0]
         self.assertIsInstance(snapshot_arg, _FakeSnapshotFrame)
@@ -950,10 +950,10 @@ model:
         )
         built_history = _FakeSessionHistory()
         fake_snapshot_module = mock.Mock()
-        fake_snapshot_module.load_mice_snapshot.return_value = (snapshot_df, ["m1", "m2"])
+        fake_snapshot_module.load_mice_from_database.return_value = (snapshot_df, ["m1", "m2"])
 
         def _fake_import_module(name):
-            if name == "utils.load_mice_snapshot":
+            if name == "utils.load_mice_database":
                 return fake_snapshot_module
             return __import__(name)
 
@@ -970,12 +970,15 @@ model:
             importlib_mock.import_module.side_effect = _fake_import_module
             session_history = load_animal_session_history(resolved)
 
-        fake_snapshot_module.load_mice_snapshot.assert_called_once_with(
+        fake_snapshot_module.load_mice_from_database.assert_called_once_with(
+            split="train",
             subject_ids=["m1", "m2"],
-            subject_start=None,
-            subject_end=None,
-            mature_only=True,
             curricula=["Uncoupled Baiting"],
+            subject_ratio=None,
+            min_sessions=10,
+            heldout_every_n=5,
+            seed=None,
+            mature_only=True,
             cols_to_retain=[
                 "trial",
                 "subject_id",
@@ -1068,7 +1071,7 @@ model:
             },
         ]
         fake_snapshot_module = mock.Mock()
-        fake_snapshot_module.load_mice_snapshot.return_value = (snapshot_df, ["m1", "m2"])
+        fake_snapshot_module.load_mice_from_database.return_value = (snapshot_df, ["m1", "m2"])
 
         fake_multisubject_module = mock.Mock()
         fake_multisubject_module.load_session_context_map.return_value = {
@@ -1104,7 +1107,7 @@ model:
         ]
 
         def _fake_import_module(name):
-            if name == "utils.load_mice_snapshot":
+            if name == "utils.load_mice_database":
                 return fake_snapshot_module
             if name == "utils.multisubject":
                 return fake_multisubject_module

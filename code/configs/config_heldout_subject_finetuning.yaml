@@ -2,12 +2,14 @@ source_run:
   model_dir: /path/to/trained/model_run
   checkpoint_policy: best_eval
 
+# Held-out subject selection. Leave fields null to inherit the reserved heldout
+# set from the source training run's config (the every-Nth subjects per curriculum).
 heldout_subjects:
-  test_subject_ids: null
-  test_subject_start: null
-  test_subject_end: null
-  mature_only: null
-  curricula: null
+  test_subject_ids: null    # optional explicit heldout subjects (overrides reserved set)
+  curricula: null           # null → inherit from source run
+  min_sessions: null        # null → inherit from source run (default 10)
+  heldout_every_n: null     # null → inherit from source run (default 5)
+  mature_only: null         # null → inherit from source run
   cols_to_retain: null
 
 heldout_finetuning:

@@ -1191,7 +1191,7 @@ class TestBaselineRLTrainer(unittest.TestCase):
             )
 
             with mock.patch(
-                "utils.baseline_rl_evaluation.load_mice_snapshot",
+                "utils.baseline_rl_evaluation.load_mice_from_database",
                 return_value=(df_test, [123]),
             ), mock.patch.object(
                 generative_model,
@@ -1284,7 +1284,7 @@ class TestBaselineRLTrainer(unittest.TestCase):
             )
 
             with mock.patch(
-                "utils.baseline_rl_evaluation.load_mice_snapshot",
+                "utils.baseline_rl_evaluation.load_mice_from_database",
                 return_value=(df_test, [123, 456]),
             ) as mock_loader, mock.patch.object(
                 generative_model,

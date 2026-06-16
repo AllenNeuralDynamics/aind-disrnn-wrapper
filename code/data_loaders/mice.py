@@ -77,22 +77,28 @@ def _normalize_snapshot_cols_to_retain(
 
 def _load_snapshot_selection(
     *,
-    subject_ids: Optional[List],
-    subject_start: Optional[int],
-    subject_end: Optional[int],
-    mature_only: bool,
-    curricula: Optional[List[str]],
-    cols_to_retain: Optional[List[str]],
+    split: str = "train",
+    subject_ids: Optional[List] = None,
+    curricula: Optional[List[str]] = None,
+    subject_ratio: Optional[object] = None,
+    min_sessions: int = 10,
+    heldout_every_n: int = 5,
+    subject_sample_seed: Optional[int] = None,
+    mature_only: bool = True,
+    cols_to_retain: Optional[List[str]] = None,
 ) -> tuple[pd.DataFrame, list]:
-    from utils.load_mice_snapshot import load_mice_snapshot  # noqa: PLC0415
+    from utils.load_mice_database import load_mice_from_database  # noqa: PLC0415
 
-    logger.info("Loading train dataset (mature_only=%s) …", mature_only)
-    return load_mice_snapshot(
+    logger.info("Loading %s dataset (mature_only=%s) …", split, mature_only)
+    return load_mice_from_database(
+        split=split,
         subject_ids=subject_ids,
-        subject_start=subject_start,
-        subject_end=subject_end,
-        mature_only=mature_only,
         curricula=curricula,
+        subject_ratio=subject_ratio,
+        min_sessions=min_sessions,
+        heldout_every_n=heldout_every_n,
+        seed=subject_sample_seed,
+        mature_only=mature_only,
         cols_to_retain=_normalize_snapshot_cols_to_retain(cols_to_retain),
     )
 
@@ -265,24 +271,30 @@ def _build_multisubject_session_split_manifest(
 
 def resolve_mice_snapshot_session_split_manifest(
     *,
+    split: str = "train",
     subject_ids: Optional[List] = None,
-    subject_start: Optional[int] = None,
-    subject_end: Optional[int] = None,
+    curricula: Optional[List[str]] = None,
+    subject_ratio: Optional[object] = None,
+    min_sessions: int = 10,
+    heldout_every_n: int = 5,
+    subject_sample_seed: Optional[int] = None,
     ignore_policy: str = "exclude",
     eval_every_n: int = 2,
     multisubject: bool = False,
     mature_only: bool = True,
-    curricula: Optional[List[str]] = None,
     cols_to_retain: Optional[List[str]] = None,
 ) -> dict[str, object]:
     """Rebuild the exact train/eval session membership used during training."""
 
     df, selected_subject_ids = _load_snapshot_selection(
+        split=split,
         subject_ids=subject_ids,
-        subject_start=subject_start,
-        subject_end=subject_end,
-        mature_only=mature_only,
         curricula=curricula,
+        subject_ratio=subject_ratio,
+        min_sessions=min_sessions,
+        heldout_every_n=heldout_every_n,
+        subject_sample_seed=subject_sample_seed,
+        mature_only=mature_only,
         cols_to_retain=cols_to_retain,
     )
 
@@ -304,6 +316,7 @@ def resolve_mice_snapshot_session_split_manifest(
 
     return {
         "source": "snapshot_reconstruction",
+        "split": split,
         "multisubject": bool(multisubject),
         "eval_every_n": int(eval_every_n),
         "selected_subject_ids": [
@@ -850,32 +863,45 @@ class MiceDatasetLoaderFromFile(DatasetLoader):
 
 
 class MiceSnapshotDatasetLoader(DatasetLoader):
-    """Load mice behavioral data from pre-saved snapshot pickle files.
+    """Load mice behavioral data from the foraging database.
 
     Subjects are selected in one of two ways:
 
-    * **Direct selection** – pass an explicit list via ``subject_ids``.
-    * **Rank-based slice** – subjects are ranked per curriculum by session
-      count (or mature-session count) and a contiguous slice
-      ``[subject_start, subject_end)`` is taken.  Either bound can be
-      ``None`` (meaning "start from beginning" or "go to end").
+    * **Direct selection** – pass an explicit list via ``subject_ids`` (bypasses
+      the selection pipeline entirely).
+    * **Ratio-based pipeline** – subjects are filtered to those with at least
+      ``min_sessions`` sessions, assigned their most-common ``task`` as a
+      curriculum, ranked per curriculum by session count, a fixed ~20% heldout is
+      reserved (every ``heldout_every_n``-th in rank order), and ``split="train"``
+      then draws a seeded ``subject_ratio`` sample of the remaining pool.
+      ``split="heldout"`` returns the reserved heldout set instead. See
+      :func:`utils.load_mice_database.load_mice_from_database`.
 
-    The two mechanisms are mutually exclusive.
-
-    Train/eval splitting is done by session order. In single-subject mode this
-    follows ``rnn_utils.split_dataset`` directly; in multisubject mode the same
-    every-``eval_every_n`` rule is applied independently within each subject
-    before merging.
+    Train/eval splitting (within the selected subjects) is done by session order.
+    In single-subject mode this follows ``rnn_utils.split_dataset`` directly; in
+    multisubject mode the same every-``eval_every_n`` rule is applied independently
+    within each subject before merging.
 
     Parameters
     ----------
+    split:
+        ``"train"`` (default) or ``"heldout"`` — which selection partition to load.
     subject_ids:
-        Explicit list of subject IDs to use. When provided,
-        ``subject_start`` and ``subject_end`` are ignored.
-    subject_start:
-        Start index (inclusive, 0-based) of the ranked slice per curriculum.
-    subject_end:
-        End index (exclusive) of the ranked slice per curriculum.
+        Explicit list of subject IDs to use. When provided, the selection pipeline
+        is bypassed.
+    curricula:
+        Chosen ``task`` names to include. Defaults to the three standard foraging
+        curricula (Coupled Baiting, Uncoupled Baiting, Uncoupled Without Baiting).
+    subject_ratio:
+        Per-curriculum fraction (``{task: float}``; scalar broadcasts) of the
+        post-heldout pool to sample for training. ``None`` -> 1.0 each.
+    min_sessions:
+        Minimum (all-stage) session count for a subject to be eligible.
+    heldout_every_n:
+        Reserve every ``heldout_every_n``-th ranked subject per curriculum as
+        heldout (default 5 -> ~20%).
+    subject_sample_seed:
+        Seed for the training-set subject sample (heldout is seed-independent).
     ignore_policy:
         Ignore-policy string passed to :func:`dl.create_disrnn_dataset`.
     features:
@@ -886,13 +912,8 @@ class MiceSnapshotDatasetLoader(DatasetLoader):
         If ``True``, build one dataset per subject, split sessions within each
         subject, and merge them with ``subject_index`` prepended as feature 0.
     mature_only:
-        If ``True`` *(default)*, restrict ranking and returned trials to
-        sessions in stage ``STAGE_FINAL`` or ``GRADUATED``.
-        If ``False``, use all sessions.
-    curricula:
-        Curricula to include. Defaults to the three standard foraging
-        curricula (Uncoupled Without Baiting, Uncoupled Baiting, Coupled
-        Baiting).
+        If ``True`` *(default)*, restrict the returned trials to sessions in stage
+        ``STAGE_FINAL`` or ``GRADUATED``. Does NOT affect subject selection.
     cols_to_retain:
         Trial-level columns to keep. Falls back to the module default when
         ``None``.
@@ -901,20 +922,23 @@ class MiceSnapshotDatasetLoader(DatasetLoader):
     batch_mode:
         One of ``"single"``, ``"rolling"``, or ``"random"``.
     seed:
-        Random seed forwarded to the base class and NumPy.
+        Random seed forwarded to the base class and NumPy (affects batch sampling).
     """
 
     def __init__(
         self,
+        split: str = "train",
         subject_ids: Optional[List] = None,
-        subject_start: Optional[int] = None,
-        subject_end: Optional[int] = None,
+        curricula: Optional[List[str]] = None,
+        subject_ratio: Optional[object] = None,
+        min_sessions: int = 10,
+        heldout_every_n: int = 5,
+        subject_sample_seed: Optional[int] = None,
         ignore_policy: str = "exclude",
         features: Optional[Mapping[str, str]] = None,
         eval_every_n: int = 2,
         multisubject: bool = False,
         mature_only: bool = True,
-        curricula: Optional[List[str]] = None,
         cols_to_retain: Optional[List[str]] = None,
         batch_size: Optional[int] = None,
         batch_mode: Literal["single", "rolling", "random"] = "random",
@@ -922,11 +946,14 @@ class MiceSnapshotDatasetLoader(DatasetLoader):
         **extras: object,
     ) -> None:
         super().__init__(seed=seed)
+        self.split = split
         self.subject_ids = list(subject_ids) if subject_ids is not None else None
-        self.subject_start = subject_start
-        self.subject_end = subject_end
-        self.mature_only = mature_only
         self.curricula = curricula
+        self.subject_ratio = subject_ratio
+        self.min_sessions = min_sessions
+        self.heldout_every_n = heldout_every_n
+        self.subject_sample_seed = subject_sample_seed
+        self.mature_only = mature_only
         self.cols_to_retain = cols_to_retain
         self.ignore_policy = ignore_policy
         self.features = dict(features) if features is not None else {}
@@ -941,19 +968,25 @@ class MiceSnapshotDatasetLoader(DatasetLoader):
             np.random.seed(self.seed)
 
         df, subject_ids = _load_snapshot_selection(
+            split=self.split,
             subject_ids=self.subject_ids,
-            subject_start=self.subject_start,
-            subject_end=self.subject_end,
-            mature_only=self.mature_only,
             curricula=self.curricula,
+            subject_ratio=self.subject_ratio,
+            min_sessions=self.min_sessions,
+            heldout_every_n=self.heldout_every_n,
+            subject_sample_seed=self.subject_sample_seed,
+            mature_only=self.mature_only,
             cols_to_retain=self.cols_to_retain,
         )
 
         if self.multisubject:
             metadata = {
                 "subject_ids": subject_ids,
-                "subject_start": self.subject_start,
-                "subject_end": self.subject_end,
+                "split": self.split,
+                "subject_ratio": self.subject_ratio,
+                "min_sessions": self.min_sessions,
+                "heldout_every_n": self.heldout_every_n,
+                "subject_sample_seed": self.subject_sample_seed,
                 "mature_only": self.mature_only,
                 "curricula": self.curricula,
                 "ignore_policy": self.ignore_policy,
@@ -990,8 +1023,11 @@ class MiceSnapshotDatasetLoader(DatasetLoader):
 
         metadata = {
             "subject_ids": subject_ids,
-            "subject_start": self.subject_start,
-            "subject_end": self.subject_end,
+            "split": self.split,
+            "subject_ratio": self.subject_ratio,
+            "min_sessions": self.min_sessions,
+            "heldout_every_n": self.heldout_every_n,
+            "subject_sample_seed": self.subject_sample_seed,
             "mature_only": self.mature_only,
             "curricula": self.curricula,
             "ignore_policy": self.ignore_policy,

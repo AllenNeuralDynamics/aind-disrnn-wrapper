@@ -119,29 +119,22 @@ def _normalize_optional_list(value: Any) -> list[Any] | None:
 def _selector_fields_present(selector_cfg: Mapping[str, Any]) -> bool:
     return any(
         selector_cfg.get(key) is not None
-        for key in ("test_subject_ids", "test_subject_start", "test_subject_end")
+        for key in ("test_subject_ids", "curricula", "min_sessions", "heldout_every_n")
     )
 
 
 def _heldout_selector_from_data_config(data_cfg: Mapping[str, Any]) -> dict[str, Any]:
-    selector = {
+    # The heldout set is derived from the same pipeline used for training (the
+    # reserved every-Nth subjects per curriculum), so it is always available — no
+    # explicit selector keys are required in the source config.
+    return {
         "test_subject_ids": _normalize_optional_list(data_cfg.get("test_subject_ids")),
-        "test_subject_start": _coerce_optional_int(data_cfg.get("test_subject_start")),
-        "test_subject_end": _coerce_optional_int(data_cfg.get("test_subject_end")),
+        "curricula": list(data_cfg.get("curricula") or []) or None,
+        "min_sessions": _coerce_optional_int(data_cfg.get("min_sessions")) or 10,
+        "heldout_every_n": _coerce_optional_int(data_cfg.get("heldout_every_n")) or 5,
         "mature_only": bool(data_cfg.get("mature_only", True)),
-        "curricula": list(data_cfg.get("curricula") or []),
         "cols_to_retain": data_cfg.get("cols_to_retain"),
     }
-    if (
-        selector["test_subject_ids"] is None
-        and selector["test_subject_start"] is None
-        and selector["test_subject_end"] is None
-    ):
-        raise ValueError(
-            "Source run does not define held-out subject selectors. Expected one of "
-            "data.test_subject_ids or data.test_subject_start/end in the source run config."
-        )
-    return selector
 
 
 def _resolve_heldout_selector(
@@ -153,50 +146,35 @@ def _resolve_heldout_selector(
     if not override_cfg or not _selector_fields_present(override_cfg):
         selector = _heldout_selector_from_data_config(source_data_cfg)
         logger.info(
-            "Using held-out subject selectors from the source training run: ids=%s start=%s end=%s",
+            "Using held-out subject selectors from the source training run: "
+            "test_subject_ids=%s curricula=%s min_sessions=%s heldout_every_n=%s",
             selector["test_subject_ids"],
-            selector["test_subject_start"],
-            selector["test_subject_end"],
+            selector["curricula"],
+            selector["min_sessions"],
+            selector["heldout_every_n"],
         )
         return selector
 
-    test_subject_ids = _normalize_optional_list(override_cfg.get("test_subject_ids"))
-    test_subject_start = _coerce_optional_int(override_cfg.get("test_subject_start"))
-    test_subject_end = _coerce_optional_int(override_cfg.get("test_subject_end"))
-    if test_subject_ids is not None and (
-        test_subject_start is not None or test_subject_end is not None
-    ):
-        raise ValueError(
-            "Specify either heldout_subjects.test_subject_ids or "
-            "heldout_subjects.test_subject_start/end, not both."
-        )
+    def _pick(key: str, default: Any) -> Any:
+        if key in override_cfg and override_cfg[key] is not None:
+            return override_cfg[key]
+        return source_data_cfg.get(key, default)
 
     selector = {
-        "test_subject_ids": test_subject_ids,
-        "test_subject_start": test_subject_start,
-        "test_subject_end": test_subject_end,
-        "mature_only": bool(
-            override_cfg["mature_only"]
-            if "mature_only" in override_cfg and override_cfg["mature_only"] is not None
-            else source_data_cfg.get("mature_only", True)
-        ),
-        "curricula": list(
-            override_cfg["curricula"]
-            if "curricula" in override_cfg and override_cfg["curricula"] is not None
-            else source_data_cfg.get("curricula") or []
-        ),
-        "cols_to_retain": (
-            override_cfg["cols_to_retain"]
-            if "cols_to_retain" in override_cfg
-            and override_cfg["cols_to_retain"] is not None
-            else source_data_cfg.get("cols_to_retain")
-        ),
+        "test_subject_ids": _normalize_optional_list(override_cfg.get("test_subject_ids")),
+        "curricula": list(_pick("curricula", []) or []) or None,
+        "min_sessions": _coerce_optional_int(_pick("min_sessions", 10)) or 10,
+        "heldout_every_n": _coerce_optional_int(_pick("heldout_every_n", 5)) or 5,
+        "mature_only": bool(_pick("mature_only", True)),
+        "cols_to_retain": _pick("cols_to_retain", None),
     }
     logger.info(
-        "Using held-out subject selectors from the fine-tuning config: ids=%s start=%s end=%s",
+        "Using held-out subject selectors from the fine-tuning config: "
+        "test_subject_ids=%s curricula=%s min_sessions=%s heldout_every_n=%s",
         selector["test_subject_ids"],
-        selector["test_subject_start"],
-        selector["test_subject_end"],
+        selector["curricula"],
+        selector["min_sessions"],
+        selector["heldout_every_n"],
     )
     return selector
 
@@ -210,9 +188,9 @@ def _heldout_selector_slug(selector: Mapping[str, Any]) -> str:
         if len(subject_ids) > 8:
             joined = f"{joined}_plus_{len(subject_ids) - 8}"
         return f"ids_{joined}"
-    start = selector.get("test_subject_start")
-    end = selector.get("test_subject_end")
-    return f"rank_{start}_{end}"
+    curricula = selector.get("curricula") or []
+    curricula_slug = "_".join(_safe_slug(curriculum) for curriculum in curricula[:4]) or "all"
+    return f"heldout_{curricula_slug}_every{selector.get('heldout_every_n', 5)}"
 
 
 def _resolved_output_root(
@@ -398,14 +376,15 @@ def _load_heldout_snapshot_selection(
     *,
     heldout_selector: Mapping[str, Any],
 ) -> tuple[pd.DataFrame, list[Any]]:
-    from utils.load_mice_snapshot import load_mice_snapshot
+    from utils.load_mice_database import load_mice_from_database
 
-    df, subject_ids = load_mice_snapshot(
+    df, subject_ids = load_mice_from_database(
+        split="heldout",
         subject_ids=heldout_selector.get("test_subject_ids"),
-        subject_start=heldout_selector.get("test_subject_start"),
-        subject_end=heldout_selector.get("test_subject_end"),
-        mature_only=bool(heldout_selector.get("mature_only", True)),
         curricula=heldout_selector.get("curricula"),
+        min_sessions=int(heldout_selector.get("min_sessions", 10)),
+        heldout_every_n=int(heldout_selector.get("heldout_every_n", 5)),
+        mature_only=bool(heldout_selector.get("mature_only", True)),
         cols_to_retain=heldout_selector.get("cols_to_retain"),
     )
     if len(df) == 0:
@@ -1159,13 +1138,13 @@ def run_heldout_subject_finetuning_from_config(
     )
     logger.info(
         "Starting held-out subject fine-tuning: source_model_dir=%s model_type=%s checkpoint=%s "
-        "heldout_ids=%s heldout_start=%s heldout_end=%s output_dir=%s",
+        "heldout_ids=%s curricula=%s heldout_every_n=%s output_dir=%s",
         resolved_source_run.model_dir,
         resolved_source_run.model_type,
         resolved_source_run.checkpoint_label,
         heldout_selector.get("test_subject_ids"),
-        heldout_selector.get("test_subject_start"),
-        heldout_selector.get("test_subject_end"),
+        heldout_selector.get("curricula"),
+        heldout_selector.get("heldout_every_n"),
         run_dir,
     )
 

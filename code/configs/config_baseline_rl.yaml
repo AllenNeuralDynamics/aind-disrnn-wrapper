@@ -56,27 +56,33 @@
 data:
   type: mice_snapshot
   _target_: data_loaders.mice.MiceSnapshotDatasetLoader
-  subject_ids: null
-  subject_start: 4
-  subject_end: 8
-  test_subject_ids: null        # e.g. [444, 555, 666]
-  test_subject_start: 8      # inclusive, 0-based rank index
-  test_subject_end: 10        # exclusive rank index
-  # ── Held-out test subject selection ─────────────────────────────────────
-  # Leave all null to disable post-training held-out test-subject evaluation.
-  # Selection follows the same rules as train subjects:
-  #   1) direct list via test_subject_ids, or
-  #   2) rank-based slice [test_subject_start, test_subject_end) per curriculum.
+  subject_ids: null             # direct override; bypasses the selection pipeline
+  # ── Subject selection pipeline ──────────────────────────────────────────
+  # Subjects with >= min_sessions sessions are assigned their most-common task
+  # as a curriculum, ranked per curriculum by session count; a fixed ~20% heldout
+  # test set is reserved (every heldout_every_n-th in rank order) and the training
+  # set is a seeded subject_ratio sample of the remaining ~80% pool per curriculum.
+  min_sessions: 10
+  heldout_every_n: 5            # reserve every 5th ranked subject (~20%) as heldout
+  subject_ratio:                # per-curriculum fraction of the ~80% train pool
+    Coupled Baiting: 1.0
+    Uncoupled Baiting: 1.0
+    Uncoupled Without Baiting: 1.0
+  subject_sample_seed: ${seed}  # reproducible training-set subject sample
+  # ── Held-out test subject evaluation ────────────────────────────────────
+  # Auto-enabled for mice_snapshot runs (gated on data.type); set
+  # `heldout_eval: false` to disable, or `true` to force on for other run types.
+  test_subject_ids: null        # optional explicit heldout subjects (overrides the reserved set)
   train_example_sessions_per_subject: 1    # >=0; 0 skips training example plotting
   heldout_example_sessions_per_subject: 1  # >=0; 0 skips held-out example plotting
   eval_example_sessions_per_subject: 1     # >=0; 0 skips eval example plotting
   example_max_subjects: 3                  # >=0; cap subjects used for train/eval/held-out examples
 
-  mature_only: true
+  mature_only: true             # return only mature-stage trials (does not affect selection)
   curricula:
-    - Uncoupled Without Baiting
-    - Uncoupled Baiting
     - Coupled Baiting
+    - Uncoupled Baiting
+    - Uncoupled Without Baiting
   multisubject: true
   ignore_policy: exclude
   features: null

@@ -499,16 +499,24 @@ class TestHeldoutSubjectFinetuning(unittest.TestCase):
         self.assertTrue(np.allclose(final_embeddings[:2], initial_embeddings[:2]))
         self.assertFalse(np.allclose(final_embeddings[2], initial_embeddings[2]))
 
-    def test_runner_requires_heldout_selectors(self) -> None:
-        model_dir, _, _ = self._create_gru_source_run(session_conditioning=False)
-        cfg_path = model_dir / "inputs.yaml"
-        cfg = OmegaConf.load(cfg_path)
-        cfg.data.test_subject_ids = None
-        OmegaConf.save(cfg, f=str(cfg_path))
+    def test_runner_falls_back_to_source_run_heldout_selectors(self) -> None:
+        # With no explicit selectors, the heldout selector is derived from the
+        # source run's pipeline params (the reserved every-Nth subjects) — no error.
+        from post_training_analysis.heldout_finetuning import _resolve_heldout_selector
 
-        config = self._make_runner_config(model_dir=model_dir)
-        with self.assertRaisesRegex(ValueError, "held-out subject selectors"):
-            run_heldout_subject_finetuning_from_config(config, output_root=self.output_root)
+        selector = _resolve_heldout_selector(
+            config={"heldout_subjects": {}},
+            source_data_cfg={
+                "curricula": ["Coupled Baiting"],
+                "min_sessions": 12,
+                "heldout_every_n": 4,
+                "mature_only": True,
+            },
+        )
+        self.assertIsNone(selector["test_subject_ids"])
+        self.assertEqual(selector["curricula"], ["Coupled Baiting"])
+        self.assertEqual(selector["min_sessions"], 12)
+        self.assertEqual(selector["heldout_every_n"], 4)
 
     def test_runner_allows_config_override_for_heldout_selectors(self) -> None:
         model_dir, _, _ = self._create_gru_source_run(session_conditioning=False)
