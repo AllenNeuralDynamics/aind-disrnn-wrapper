@@ -20,7 +20,9 @@ try:
     from model_trainers.disrnn_trainer import DisrnnTrainer
     from model_trainers.gru_trainer import GruTrainer
     from utils.disrnn_distillation import (
+        _distillation_kl_loss,
         _load_teacher_summary,
+        _normalize_teacher_probs,
         aggregate_teacher_probabilities,
         build_teacher_ensemble,
         remap_multisubject_teacher_inputs,
@@ -578,6 +580,31 @@ class TestDisrnnDistillation(unittest.TestCase):
         self.assertEqual(summary.multisubject, False)
         self.assertEqual(summary.model_dir, str(teacher_dir))
         self.assertEqual(architecture["hidden_size"], 8)
+
+    def test_distillation_kl_loss_applies_temperature_squared(self):
+        # T9: the KD loss divides logits by T and multiplies the KL by T**2
+        # (the standard temperature^2 gradient-magnitude correction).
+        import jax
+        import jax.numpy as jnp
+
+        teacher = jnp.asarray([[[0.7, 0.3], [0.4, 0.6]]], dtype=jnp.float32)
+        logits = jnp.asarray([[[1.0, -0.5], [0.2, 0.3]]], dtype=jnp.float32)
+        targets = jnp.asarray([[[0.0], [1.0]]], dtype=jnp.float32)  # both trials valid
+
+        for temperature in (1.0, 2.0, 3.5):
+            out = float(
+                _distillation_kl_loss(
+                    teacher_probs=teacher,
+                    student_logits=logits,
+                    targets=targets,
+                    temperature=temperature,
+                )
+            )
+            tp = np.asarray(_normalize_teacher_probs(teacher))
+            student_log = np.asarray(jax.nn.log_softmax(logits / temperature, axis=-1))
+            kl = np.sum(tp * (np.log(tp) - student_log), axis=-1)
+            reference = (temperature ** 2) * float(np.sum(kl)) / 2.0  # n_valid = 2
+            self.assertAlmostEqual(out, reference, places=3)
 
 
 if __name__ == "__main__":

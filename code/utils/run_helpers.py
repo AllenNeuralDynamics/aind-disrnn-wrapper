@@ -54,6 +54,22 @@ def resolve_disrnn_penalties(penalties_cfg: Any) -> dict[str, Any]:
     return resolved
 
 
+def resolve_heldout_test_likelihood(summary: Any) -> Optional[float]:
+    """Return the held-out test likelihood from an evaluation summary, or None.
+
+    Fresh evaluations (``evaluate_*_on_heldout_subjects``) report the value under
+    ``test_likelihood``; the dedup-hit path reuses a checkpoint summary keyed
+    ``heldout_test_likelihood``. Returns ``None`` for non-dict summaries or when
+    neither key is present (e.g. a failure-fallback summary).
+    """
+    if not isinstance(summary, dict):
+        return None
+    value = summary.get("test_likelihood")
+    if value is None:
+        value = summary.get("heldout_test_likelihood")
+    return value
+
+
 def _append_multisubject_suffix(component: Any, *, enabled: bool) -> Any:
     """Append a multisubject suffix to a run-name component when needed."""
     if not enabled or component is None:

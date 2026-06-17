@@ -8,6 +8,7 @@ import unittest
 import json
 import types
 from pathlib import Path
+from unittest.mock import patch
 
 try:
     import numpy as np
@@ -17,8 +18,13 @@ try:
 
     from base.types import DatasetBundle
     from data_loaders.synthetic import SyntheticCognitiveAgents
-    from model_trainers.disrnn_trainer import DisrnnTrainer
+    from model_trainers.disrnn_trainer import DisrnnTrainer, _require_n_action_logits
+    from model_trainers.base_multisubject_trainer import BaseMultisubjectTrainer
     from models import MultisubjectDisRnn, MultisubjectDisRnnConfig
+    from models.session_conditioning import compute_session_curriculum_lambda
+    from models.subject_embedding_initialization import (
+        make_subject_embedding_initializer,
+    )
     from utils.disrnn_evaluation import _aligned_action_probabilities_from_output_df
     from utils.multisubject import (
         build_subject_index_maps,
@@ -1002,6 +1008,190 @@ class TestDisrnnTrainer(unittest.TestCase):
             "Unsupported subject_embedding_init",
         ):
             MultisubjectDisRnn(config)
+
+    # --- Phase A regression guards (bug fixes) --------------------------------
+
+    def _minimal_trainer(self, training_overrides: dict) -> DisrnnTrainer:
+        """A small single-subject trainer for fail-fast validation tests."""
+        training = {
+            "lr": 1e-3,
+            "n_steps": 2,
+            "n_warmup_steps": 1,
+            "loss": "penalized_categorical",
+            "loss_param": 1.0,
+            "max_grad_norm": 1.0,
+            "checkpoint_every_n_steps": 0,
+            "initialization_eval_before_warmup": False,
+            "initialization_eval_after_warmup": False,
+            "save_output_df": False,
+        }
+        training.update(training_overrides)
+        return DisrnnTrainer(
+            architecture={
+                "latent_size": 4,
+                "update_net_n_units_per_layer": 8,
+                "update_net_n_layers": 2,
+                "choice_net_n_units_per_layer": 4,
+                "choice_net_n_layers": 1,
+                "activation": "leaky_relu",
+            },
+            penalties={
+                "latent_penalty": 1e-3,
+                "choice_net_latent_penalty": 1e-3,
+                "update_net_obs_penalty": 1e-3,
+                "update_net_latent_penalty": 1e-3,
+            },
+            training=training,
+            output_dir=str(self.output_dir),
+            seed=42,
+        )
+
+    def test_rejects_negative_n_steps(self):
+        """Bug #1: negative n_steps fails fast with a clear ValueError."""
+        trainer = self._minimal_trainer({"n_steps": -1})
+        with self.assertRaisesRegex(ValueError, "n_steps must be >= 0"):
+            trainer.fit(self.bundle)
+
+    def test_rejects_negative_n_warmup_steps(self):
+        """Bug #1: negative n_warmup_steps fails fast with a clear ValueError."""
+        trainer = self._minimal_trainer({"n_warmup_steps": -1})
+        with self.assertRaisesRegex(ValueError, "n_warmup_steps must be >= 0"):
+            trainer.fit(self.bundle)
+
+    def test_plot_losses_handles_empty_losses(self):
+        """Bug #2: _plot_losses must not IndexError on empty loss arrays."""
+        trainer = self._minimal_trainer({})
+        path = trainer._plot_losses(
+            {"training_loss": [], "validation_loss": []},
+            title="empty",
+            output_name="empty_losses.png",
+        )
+        self.assertTrue(Path(path).exists())
+
+    def test_require_n_action_logits_requires_positive_n_classes(self):
+        """Bug #5: missing/zero n_classes raises rather than silently inferring."""
+
+        class _Stub:
+            n_classes = 0
+
+        yhat = np.zeros((2, 5, 3))
+        with self.assertRaisesRegex(ValueError, "requires dataset.n_classes"):
+            _require_n_action_logits(_Stub(), yhat, context="unit test")
+
+    def test_require_n_action_logits_rejects_shape_mismatch(self):
+        """Bug #5: output width must be n_classes + 1 (trailing penalty channel)."""
+
+        class _Stub:
+            n_classes = 2
+
+        # width 4 != n_classes (2) + 1 -> mismatch
+        yhat_bad = np.zeros((2, 5, 4))
+        with self.assertRaisesRegex(ValueError, "logits shape mismatch"):
+            _require_n_action_logits(_Stub(), yhat_bad, context="unit test")
+
+        # width 3 == n_classes (2) + 1 -> accepted, returns n_classes
+        yhat_ok = np.zeros((2, 5, 3))
+        self.assertEqual(
+            _require_n_action_logits(_Stub(), yhat_ok, context="unit test"), 2
+        )
+
+    # --- Phase B/C/D refactor guards + correctness-gap tests ------------------
+
+    def test_inherits_base_and_sets_model_label(self):
+        # Pins the parameterization used by the shared base class (T6).
+        self.assertTrue(issubclass(DisrnnTrainer, BaseMultisubjectTrainer))
+        self.assertEqual(DisrnnTrainer._MODEL_LABEL, "disRNN")
+        self.assertEqual(DisrnnTrainer._TRAINER_CONTEXT_NAME, "DisrnnTrainer")
+
+    def test_plot_examples_for_split_dispatches_to_disrnn_and_forwards_params(self):
+        # T7: disRNN's split-example hook must call the disRNN plotter and forward params.
+        trainer = self._minimal_trainer({})
+        sentinel = {"plotting_skipped": True}
+        with patch(
+            "model_trainers.disrnn_trainer.plot_disrnn_examples_for_split",
+            return_value=sentinel,
+        ) as mock_plot:
+            result = trainer._plot_examples_for_split(
+                split_name="training",
+                output_dir=self.output_dir,
+                output_df=None,
+                network_states=None,
+                yhat_logits=None,
+                params={"p": 1},
+                sessions_per_subject=1,
+                max_subjects_to_plot=1,
+                n_action_logits=2,
+                wandb_run=None,
+                log_scope="Test",
+            )
+        self.assertIs(result, sentinel)
+        mock_plot.assert_called_once()
+        self.assertEqual(mock_plot.call_args.kwargs["params"], {"p": 1})
+
+    def test_warmup_uses_penalty_free_noiseless_network(self):
+        # T8: warmup trains on a noiseless config with every penalty zeroed, so the
+        # "penalty-free warmup" contract holds even with loss=penalized_categorical.
+        trainer = self._minimal_trainer({})
+        dataset = self.bundle.extras.get("dataset")
+        _config, noiseless = trainer._build_network_configs(
+            dataset=dataset,
+            ignore_policy="exclude",
+            metadata=dict(self.bundle.metadata),
+        )
+        self.assertEqual(noiseless.latent_penalty, 0)
+        self.assertEqual(noiseless.choice_net_latent_penalty, 0)
+        self.assertEqual(noiseless.update_net_obs_penalty, 0)
+        self.assertEqual(noiseless.update_net_latent_penalty, 0)
+        self.assertTrue(noiseless.noiseless_mode)
+
+    def test_session_curriculum_lambda_schedule(self):
+        # T10: lambda is 0 through pretrain, ramps linearly over warmup, then 1.0 —
+        # the same schedule is used for warmup, training, and eval-network builds.
+        def f(step):
+            return compute_session_curriculum_lambda(
+                current_step=step,
+                session_n_pretrain_steps=2,
+                session_n_warmup_steps=4,
+            )
+
+        self.assertEqual(f(0), 0.0)
+        self.assertEqual(f(2), 0.0)
+        self.assertAlmostEqual(f(3), 0.25)
+        self.assertAlmostEqual(f(4), 0.5)
+        self.assertEqual(f(6), 1.0)
+        self.assertEqual(f(100), 1.0)
+        values = [f(step) for step in range(12)]
+        self.assertEqual(values, sorted(values))  # monotonic non-decreasing
+
+    def test_subject_embedding_initializer_modes(self):
+        # T11: documents the differing stddev semantics of the init modes.
+        import haiku as hk
+
+        zeros = make_subject_embedding_initializer(
+            subject_embedding_init="zeros", max_n_subjects=10, subject_embedding_size=4
+        )
+        self.assertIsInstance(zeros, hk.initializers.Constant)
+
+        small = make_subject_embedding_initializer(
+            subject_embedding_init="small_random",
+            max_n_subjects=10,
+            subject_embedding_size=4,
+        )
+        self.assertAlmostEqual(float(small.stddev), 1.0 / (4 ** 0.5))
+
+        scaled = make_subject_embedding_initializer(
+            subject_embedding_init="subject_count_scaled_random",
+            max_n_subjects=16,
+            subject_embedding_size=4,
+        )
+        self.assertAlmostEqual(float(scaled.stddev), 1.0 / (16 ** 0.5))
+
+        with self.assertRaisesRegex(ValueError, "Unsupported subject_embedding_init"):
+            make_subject_embedding_initializer(
+                subject_embedding_init="nope",
+                max_n_subjects=10,
+                subject_embedding_size=4,
+            )
 
 
 if __name__ == "__main__":

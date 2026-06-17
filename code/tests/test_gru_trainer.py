@@ -7,6 +7,7 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 try:
     import aind_disrnn_utils.data_loader as dl
@@ -21,6 +22,7 @@ try:
         GruTrainer,
         _validate_multisubject_dataset_inputs,
     )
+    from model_trainers.base_multisubject_trainer import BaseMultisubjectTrainer
     from utils.gru_evaluation import evaluate_gru_on_heldout_subjects
     from utils.multisubject import (
         build_subject_index_maps,
@@ -733,6 +735,50 @@ class TestGruTrainer(unittest.TestCase):
             "not supported for multisubject GRU",
         ):
             evaluate_gru_on_heldout_subjects(hydra_config)
+
+    # --- Phase B/C/D refactor guards ------------------------------------------
+
+    def test_inherits_base_and_sets_model_label(self):
+        # Pins the parameterization used by the shared base class (T6).
+        self.assertTrue(issubclass(GruTrainer, BaseMultisubjectTrainer))
+        self.assertEqual(GruTrainer._MODEL_LABEL, "GRU")
+        self.assertEqual(GruTrainer._TRAINER_CONTEXT_NAME, "GruTrainer")
+
+    def test_plot_examples_for_split_dispatches_to_gru_without_params(self):
+        # T7: GRU's split-example hook calls the GRU plotter and does NOT forward params.
+        trainer = GruTrainer(
+            architecture={"hidden_size": 8, "num_layers": 1},
+            training={
+                "lr": 1e-3,
+                "n_steps": 1,
+                "loss": "categorical",
+                "loss_param": 1,
+                "max_grad_norm": 1.0,
+            },
+            output_dir=str(self.output_dir),
+            seed=42,
+        )
+        sentinel = {"plotting_skipped": True}
+        with patch(
+            "model_trainers.gru_trainer.plot_gru_examples_for_split",
+            return_value=sentinel,
+        ) as mock_plot:
+            result = trainer._plot_examples_for_split(
+                split_name="training",
+                output_dir=self.output_dir,
+                output_df=None,
+                network_states=None,
+                yhat_logits=None,
+                params={"p": 1},
+                sessions_per_subject=1,
+                max_subjects_to_plot=1,
+                n_action_logits=2,
+                wandb_run=None,
+                log_scope="Test",
+            )
+        self.assertIs(result, sentinel)
+        mock_plot.assert_called_once()
+        self.assertNotIn("params", mock_plot.call_args.kwargs)
 
 
 if __name__ == "__main__":

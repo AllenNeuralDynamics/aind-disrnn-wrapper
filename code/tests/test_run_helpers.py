@@ -11,6 +11,7 @@ try:
         apply_dynamic_run_name_components,
         apply_model_penalty_multipliers,
         resolve_disrnn_penalties,
+        resolve_heldout_test_likelihood,
     )
 
     RUN_HELPERS_DEPS_AVAILABLE = True
@@ -85,6 +86,35 @@ class TestRunHelpers(unittest.TestCase):
         self.assertEqual(
             cfg.model.run_name_component,
             "disrnn_beta0.001_lr0.001_multisubject",
+        )
+
+
+    # --- Phase A regression guards (bugs #3/#4) -------------------------------
+
+    def test_resolve_heldout_test_likelihood_reads_test_likelihood(self):
+        # Fresh-eval summaries use "test_likelihood".
+        self.assertEqual(
+            resolve_heldout_test_likelihood({"test_likelihood": 0.5}), 0.5
+        )
+
+    def test_resolve_heldout_test_likelihood_reads_dedup_key(self):
+        # The dedup-hit path reuses a checkpoint summary keyed differently.
+        self.assertEqual(
+            resolve_heldout_test_likelihood({"heldout_test_likelihood": 0.7}), 0.7
+        )
+
+    def test_resolve_heldout_test_likelihood_handles_missing_and_non_dict(self):
+        # Bug #3/#4: failure-fallback summaries and non-dicts must not blow up.
+        self.assertIsNone(
+            resolve_heldout_test_likelihood({"enabled": True, "evaluation_failed": True})
+        )
+        self.assertIsNone(resolve_heldout_test_likelihood(None))
+        self.assertIsNone(resolve_heldout_test_likelihood("not a dict"))
+
+    def test_resolve_heldout_test_likelihood_zero_is_preserved(self):
+        # 0.0 is a valid likelihood and must not be treated as "missing".
+        self.assertEqual(
+            resolve_heldout_test_likelihood({"test_likelihood": 0.0}), 0.0
         )
 
 
