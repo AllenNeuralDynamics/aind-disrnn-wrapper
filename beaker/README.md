@@ -96,6 +96,30 @@ The wasted capacity is **spatial** (idle SMs *inside* each kernel), not temporal
     batch, so it sits at 18% power (700 W card) and burns the most energy. (Bigger
     batches change this — item 12.)
 
+12. **Batch size = the real per-GPU lever (bs=2048 vs bs=512).** Re-ran the sweep at
+    `data.batch_size=2048` (all else fixed). On the big GPUs a 4× batch costs almost no
+    wall-clock — the spatial headroom (idle SMs) absorbs it:
+
+    | Metric (bs=2048) | CPU (4-core) | T4 | L40s | H200 |
+    |---|---|---|---|---|
+    | train s/step | 5.045 | 0.652 | **0.268** | 0.314 |
+    | total elapsed (5500) | 26066 s | 3602 s | **1494 s** | 1748 s |
+    | speedup vs CPU | 1.0× | 7.7× | **18.9×** | 16.1× |
+    | GPU util | — | 99% | 96% | 96% |
+    | GPU power | — | 63% (44 W) | 34% (117 W) | **19% (133 W)** |
+
+    Throughput gain going bs 512→2048 (4× samples/step ÷ time-ratio): CPU 1.28×, T4
+    2.82×, **L40s 3.62×, H200 3.68×** — i.e. the big GPUs take 4× the work for only
+    ~10% more time (CPU pays near-linearly: no idle compute to reclaim). **This is the
+    lever** — fatter kernels via batch, not a bigger card.
+
+    **But it does NOT flip the L40s-vs-H200 verdict:** even at bs=2048 the L40s is still
+    faster (0.268 vs 0.314 s/step) at ~half the power %. The H200 benefits only
+    marginally more from the bigger batch (gap 1.19×→1.17×). For this model size the H200
+    needs a bigger *model*, not just a bigger batch.
+    Runs: L40s `ai_hub_test/1wbc4tko`, H200 `ai_hub_test/w5ix4w78`; T4
+    `han_cpu_gpu_test/biflbgn5`, CPU `han_cpu_gpu_test/2bvl403t`.
+
 **Next (per-GPU efficiency lever, not packing):** the headroom is *spatial* (idle SMs
 within each tiny kernel), reclaimable only by **fatter kernels** — `jax.vmap` / bigger
 batch / `lax.scan` the step loop — or **MPS** (concurrent kernels). Packing (item 8) and
