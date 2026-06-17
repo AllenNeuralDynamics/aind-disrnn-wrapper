@@ -206,5 +206,37 @@ Consequences:
 
 ---
 
+## Performance notes (GPU efficiency)
+
+Why a big GPU is underused here, and what actually helps.
+
+- **Kernel** = one GPU op (matmul, activation, …) launched from the host; each launch
+  has fixed (~µs) overhead. A training step fires *many* kernels in sequence.
+- **SM (streaming multiprocessor)** = one of the GPU's parallel compute units (L40s ~142,
+  T4 ~40). **Util** = "is a kernel running?"; **power/occupancy** = "how many SMs are
+  actually working?" So 100% util + ~30% power = a kernel is always resident, but tiny.
+
+**Why disRNN underfills the GPU — narrow *and* deep:**
+- *Narrow* (`latent_size=5`, tiny nets) → each matmul is small → few SMs lit → low power.
+- *Deep / sequential* (recurrence over trials × steps) → a long chain of *dependent* tiny
+  kernels that can't overlap → dominated by launch overhead.
+
+Two kinds of wasted capacity — and each lever only reaches one:
+
+| Headroom | what's idle | reclaimed by |
+|---|---|---|
+| **Temporal** | idle *time* between kernels | packing / time-slicing |
+| **Spatial** | idle *SMs during* a kernel | bigger batch · `jax.vmap` · MPS |
+
+Our signature (100% util, ~30% power) = **no temporal headroom, lots of spatial** — which
+is why packing gave ~nothing (1.15×) and eval-throttling nothing (flat s/step). The levers
+that work make kernels **fatter or concurrent**:
+- **Bigger batch** — widens each matmul; nearly free while underutilized (T4: 16× batch →
+  ~2× s/step → ~8× throughput, power 54→63%). But batch size is a *training* hyperparameter.
+- **`jax.vmap`** across seeds/hparams — same SM-filling, but stacks independent *runs*
+  (each run keeps its own batch). Also needs `lax.scan`-ing the step loop, which on its own
+  cuts the deep-chain launch overhead.
+- **MPS** — lets separate processes' kernels share SMs (would rescue packing).
+
 For the broader migration design (HPC/SLURM path, GPU packing, `jax.vmap`
 scaling), see [`../ai2_migrate_plan.md`](../ai2_migrate_plan.md).
