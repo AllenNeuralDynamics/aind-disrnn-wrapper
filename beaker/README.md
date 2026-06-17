@@ -238,5 +238,13 @@ that work make kernels **fatter or concurrent**:
   cuts the deep-chain launch overhead.
 - **MPS** — lets separate processes' kernels share SMs (would rescue packing).
 
+**Decision (current): `vmap` is shelved.** `replicas` across GPUs (done) plus a bigger
+`batch_size`/`num_sessions` (free, science permitting) capture most of the per-GPU
+headroom; `vmap` is a costly, correctness-sensitive core rewrite (the loss is a closure
+inside `train_network`, batching isn't pure) worth it only under a real GPU-hours
+constraint. Next steps instead: ask AI Hub whether **MPS** is enabled (makes per-GPU
+packing work as-is), else just raise the batch size. Staged for if we revisit: a
+`vmap_scan` branch on all three repos + an editable checkout of the core in `src/`.
+
 For the broader migration design (HPC/SLURM path, GPU packing, `jax.vmap`
 scaling), see [`../ai2_migrate_plan.md`](../ai2_migrate_plan.md).
