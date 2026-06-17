@@ -120,6 +120,23 @@ The wasted capacity is **spatial** (idle SMs *inside* each kernel), not temporal
     Runs: L40s `ai_hub_test/1wbc4tko`, H200 `ai_hub_test/w5ix4w78`; T4
     `han_cpu_gpu_test/biflbgn5`, CPU `han_cpu_gpu_test/2bvl403t`.
 
+### Benchmark figure
+
+![Hardware × batch-size benchmark](benchmark/hw_batch_benchmark.png)
+
+Both panels: num_sessions=100, seed 0, post-warmup (eval during the warm-up phase
+is ignored — a penalty term is inactive then, so val loss is not meaningful).
+Reproduce with `python beaker/benchmark/plot_hw_batch.py`.
+
+- **Left — time per training step.** The *slope* is the marginal cost of batch:
+  L40s/H200 flat (≈free), T4 gentle, CPU steep (≈linear — no idle compute).
+- **Right — time to `valid_loss < 0.22`** (the fair cross-batch metric: folds in
+  sample efficiency). Same ordering L40s < H200 < T4 < CPU at every batch.
+
+Only the 0.22 threshold is a fair four-way comparison: CPU/T4 (Code Ocean, Feb
+code) floor at min val ≈0.210, while L40s/H200 (Beaker, Jun `ai_hub` code) reach
+≈0.204 — a code-version difference, not hardware.
+
 **Next (per-GPU efficiency lever, not packing):** the headroom is *spatial* (idle SMs
 within each tiny kernel), reclaimable only by **fatter kernels** — `jax.vmap` / bigger
 batch / `lax.scan` the step loop — or **MPS** (concurrent kernels). Packing (item 8) and
