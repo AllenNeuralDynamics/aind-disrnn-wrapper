@@ -40,14 +40,31 @@ Where the CO → Beaker migration stands (this section is the running log).
 7. **Scale-out (array of jobs)** — `replicas: 4` validated: 4 `wandb agent`s across 4
    GPUs sharing one sweep (`experiment_scaling.yaml`).
 
-**Observed (the open question):** a single run shows **100% GPU util but only ~30% power**
-on the L40s (vs ~55% on a T4 in CO) → the workload is **host/eval-bound, not
-compute-bound** (≈0.46 s/step for a tiny `latent_size=5` model with `eval_every_n=2`).
-The L40s is largely idle per run, so there's real headroom.
+**Observed:** a single run shows **100% GPU util but only ~30% power** on the L40s
+(vs ~55% on a T4 in CO). Per the W&B system metrics: util 96%, power ~30% (106/350 W),
+memory-bandwidth util ~1%, host CPU ~4%. So the workload is **low-occupancy /
+host-eval-bound, not compute- or CPU-bound** (≈0.46 s/step for a tiny `latent_size=5`
+model with `eval_every_n=2`).
 
-**Next: GPU packing (time-slicing).** Pack M `wandb agent`s onto one GPU to soak up that
-headroom; measure throughput (runs/GPU-hour) + power at M=1/4/8. (`jax.vmap` and reducing
-eval frequency are the deeper, structural levers if packing plateaus.)
+8. **GPU packing (time-slicing) — tested, no gain.** Packed M `wandb agent`s on one
+   L40s (`pack_gpu.sh`, `XLA_PYTHON_CLIENT_MEM_FRACTION≈0.9/M`) and measured throughput:
+
+   | M (agents/GPU) | per-run elapsed | aggregate throughput vs M=1 |
+   |---|---|---|
+   | 1 | 95 s | 1.00× |
+   | 4 | 335 s | 1.14× |
+   | 8 | 661 s | 1.15× |
+
+   Per-run latency scales ~linearly with M, so throughput **plateaus at ~1.15×**
+   (M-independent). Cause: **100% util means low-occupancy kernels are resident with no
+   idle gaps**, so without **MPS** the packed kernels just **serialize** on the one GPU
+   context (board power stays ~30%). Not CPU- or memory-bound. Conclusion: **no-MPS
+   packing is a dead end for this workload.**
+
+**Next (per-GPU efficiency lever, not packing):** the headroom is *intra-kernel*
+(occupancy), reclaimable only by **`jax.vmap`** (batch runs into one fatter kernel) or
+**MPS** (concurrent kernels) — plus cutting **`eval_every_n=2`**, a likely free win.
+For *scale*, use **`replicas`** across GPUs (validated, linear).
 
 ## Files
 
