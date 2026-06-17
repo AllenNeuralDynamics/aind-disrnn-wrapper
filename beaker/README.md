@@ -76,6 +76,26 @@ The wasted capacity is **spatial** (idle SMs *inside* each kernel), not temporal
     kernels**, confirming the low-occupancy diagnosis (and refuting the earlier guess
     that eval was to blame).
 
+11. **CPU / T4 / L40s / H200 hardware sweep (same seed-0 config).** A bigger GPU stops
+    helping past the L40s — the H200 is actually *slower* than the L40s, at the lowest
+    power %. Clean signature of a latency-bound, low-occupancy model: GPU beats CPU
+    (3.5–6.6×), but extra GPU capacity goes unused.
+
+    | Metric | CPU (4-core, CO) | T4 (CO) | L40s | H200 |
+    |---|---|---|---|---|
+    | train s/step | 1.612 | 0.460 | **0.243** | 0.289 |
+    | total elapsed (5500 steps) | 8322 s | 2549 s | **1352 s** | 1600 s |
+    | speedup vs CPU | 1.0× | 3.5× | **6.6×** | 5.6× |
+    | GPU util | — | 99% | 96% | 97% |
+    | GPU power | — | 57% (40 W) | 30% (105 W) | **18% (125 W)** |
+    | energy / run | — | 102 kJ | 142 kJ | **200 kJ** |
+
+    **Takeaway: L40s is the sweet spot** — fastest *and* less wasteful than the H200.
+    The H200's extra SMs/bandwidth can't be used by a narrow+deep tiny model, so it sits
+    at 18% power (700 W card) and burns the most energy. Reserve H200s for genuinely
+    throughput-bound jobs (large models / big batches); for disRNN, scale with
+    **`replicas`** on L40s, not a beefier card.
+
 **Next (per-GPU efficiency lever, not packing):** the headroom is *spatial* (idle SMs
 within each tiny kernel), reclaimable only by **fatter kernels** — `jax.vmap` / bigger
 batch / `lax.scan` the step loop — or **MPS** (concurrent kernels). Packing (item 8) and
