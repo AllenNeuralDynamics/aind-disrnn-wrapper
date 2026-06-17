@@ -4,12 +4,13 @@
 ## It checks, in one short job:
 ##   1. image pulls + beaker/entrypoint.sh runs its runtime git-pull
 ##   2. JAX sees the GPU (jax.devices())
-##   3. Hydra composes the config across BOTH repos (the sibling-layout dependency)
-##      via `run_hpc --cfg job`, which prints the resolved config and exits — no
-##      training, no W&B.
+##   3. Hydra composes the config across BOTH repos (the sibling-layout
+##      dependency) via `run_hpc --cfg job`, which prints the resolved config
+##      and exits — no training, no W&B.
 ##
 ## Fill <username> (from `beaker image get disrnn-wrapper`), then submit:
-##   beaker experiment create -w ai1/aind-dynamic-foraging-foundation-model beaker/smoke.yaml
+##   beaker experiment create \
+##     -w ai1/aind-dynamic-foraging-foundation-model beaker/smoke.yaml
 ## Watch it:  https://beaker.org/ex/<experiment-id>   (look for "SMOKE OK")
 
 version: v2
