@@ -1,90 +1,115 @@
+# =============================================================================
 # GRU model training configuration
+# =============================================================================
+# Read by run_capsule.py via Hydra/OmegaConf (utils/run_helpers.find_hydra_config
+# locates the active config.yaml under /data/jobs). Exactly one `data:` block and
+# one `model:` block may be active; the commented blocks are ready-to-use presets.
+#
+# `${...}` are OmegaConf interpolations resolved at load time:
+#   ${seed}                         -> the top-level `seed` below
+#   ${.architecture.hidden_size}    -> a sibling key within the same block
+#
+# Sections: data (dataset + splitting) · model (architecture + training) ·
+#           seed / wandb / job_id (run-level settings).
+# =============================================================================
 
 
-# # mice_snapshot
+####################################################################
+# DATA
+####################################################################
+#
+# --- Single-subject snapshot preset (uncomment to use) -----------------------
+# Loads one (or a few) explicitly named subjects from the foraging database.
+# NOTE: subject_start/subject_end/test_subject_* are NOT valid keys for this
+# loader (they are silently ignored). To pin specific subjects, list them in
+# `subject_ids`, which bypasses the ratio-based selection pipeline entirely.
+#
 # data:
 #   type: mice_snapshot
 #   _target_: data_loaders.mice.MiceSnapshotDatasetLoader
-#   subject_ids: null
-#   subject_start: 0
-#   subject_end: 2
-#   test_subject_ids: null        # e.g. [444, 555, 666]
-#   test_subject_start: 2      # inclusive, 0-based rank index
-#   test_subject_end: 3        # exclusive rank index
-#   # ── Held-out test subject selection ─────────────────────────────────────
-#   # Leave all null to disable post-training held-out test-subject evaluation.
-#   # Selection follows the same rules as train subjects:
-#   #   1) direct list via test_subject_ids, or
-#   #   2) rank-based slice [test_subject_start, test_subject_end) per curriculum.
-#   heldout_example_sessions_per_subject: 1  # >=0; 0 skips held-out example plotting
-#   train_example_sessions_per_subject: 1    # >=0; 0 skips training example plotting
-#   eval_example_sessions_per_subject: 1     # >=0; 0 skips eval example plotting
-#   example_max_subjects: 3                  # >=0; cap subjects used for train/eval/held-out examples
-
+#   subject_ids: [711041]         # explicit subject(s); bypasses the selection pipeline
+#   multisubject: false
 #   mature_only: true
 #   curricula:
-#     - Uncoupled Without Baiting
-#     - Uncoupled Baiting
 #     - Coupled Baiting
-#   multisubject: false
+#     - Uncoupled Baiting
+#     - Uncoupled Without Baiting
 #   ignore_policy: exclude
 #   features: null
 #   eval_every_n: 2
 #   batch_size: null
 #   batch_mode: random
+#   # Held-out eval auto-enables for mice_snapshot; example-plot knobs still apply.
+#   test_subject_ids: null
+#   heldout_example_sessions_per_subject: 1
+#   train_example_sessions_per_subject: 1
+#   eval_example_sessions_per_subject: 1
+#   example_max_subjects: 3
 #   run_name_component: mice_snapshot
 #   seed: ${seed}
 
 
-# mice_snapshot, multi-subject
+# --- Multi-subject snapshot (ACTIVE) -----------------------------------------
 data:
   type: mice_snapshot
   _target_: data_loaders.mice.MiceSnapshotDatasetLoader
-  subject_ids: null             # direct override; bypasses the selection pipeline
+  subject_ids: null             # direct override; a non-null list bypasses the selection pipeline below
+
   # ── Subject selection pipeline ──────────────────────────────────────────
   # Subjects with >= min_sessions sessions are assigned their most-common task
-  # as a curriculum, ranked per curriculum by session count; a fixed ~20% heldout
-  # test set is reserved (every heldout_every_n-th in rank order) and the training
-  # set is a seeded subject_ratio sample of the remaining ~80% pool per curriculum.
-  min_sessions: 10
-  heldout_every_n: 5            # reserve every 5th ranked subject (~20%) as heldout
-  subject_ratio:                # per-curriculum fraction of the ~80% train pool
+  # as a curriculum and ranked per curriculum by session count. A fixed ~20%
+  # held-out test set is reserved (every heldout_every_n-th in rank order) and
+  # the training set is a seeded subject_ratio sample of the remaining ~80% pool
+  # per curriculum. (See data_loaders.mice.MiceSnapshotDatasetLoader.)
+  min_sessions: 10              # int >= 0; minimum all-stage session count to be eligible
+  heldout_every_n: 5            # reserve every 5th ranked subject (~20%) as held-out
+  subject_ratio:                # per-curriculum fraction of the ~80% train pool; null -> 1.0 each
     Coupled Baiting: 1.0
     Uncoupled Baiting: 1.0
     Uncoupled Without Baiting: 1.0
-  subject_sample_seed: ${seed}  # reproducible training-set subject sample
-  # ── Held-out test subject evaluation ────────────────────────────────────
-  # Auto-enabled for mice_snapshot runs (gated on data.type); set
-  # `heldout_eval: false` to disable, or `true` to force on for other run types.
-  test_subject_ids: null        # optional explicit heldout subjects (overrides the reserved set)
-  heldout_example_sessions_per_subject: 1  # >=0; 0 skips held-out example plotting
-  train_example_sessions_per_subject: 1    # >=0; 0 skips training example plotting
-  eval_example_sessions_per_subject: 1     # >=0; 0 skips eval example plotting
-  example_max_subjects: 3                  # >=0; cap subjects used for train/eval/held-out examples
+  subject_sample_seed: ${seed}  # seed for the train-subject sample (held-out set is seed-independent)
 
-  mature_only: true             # return only mature-stage trials (does not affect selection)
-  curricula:
+  # ── Held-out test-subject evaluation ────────────────────────────────────
+  # Auto-enabled for mice_snapshot runs (gated on data.type). To override, add
+  # `heldout_eval: false` to disable, or `true` to force on for other run types.
+  test_subject_ids: null        # optional explicit held-out subjects (overrides the reserved set)
+  heldout_example_sessions_per_subject: 1  # >=0; sessions/subject to plot for held-out (0 skips)
+  train_example_sessions_per_subject: 1    # >=0; sessions/subject to plot for the train split (0 skips)
+  eval_example_sessions_per_subject: 1     # >=0; sessions/subject to plot for the eval split (0 skips)
+  example_max_subjects: 3                  # >=0; cap on subjects used for train/eval/held-out example plots
+
+  # ── Trial / feature processing ──────────────────────────────────────────
+  mature_only: true             # return only mature-stage trials (STAGE_FINAL/GRADUATED); does NOT affect selection
+  curricula:                    # task names to include in selection (and held-out eval)
     - Coupled Baiting
     - Uncoupled Baiting
     - Uncoupled Without Baiting
-  multisubject: true
-  ignore_policy: exclude
-  features: null
-  eval_every_n: 2
-  batch_size: null
-  batch_mode: random
-  run_name_component: mice_snapshot
+  ignore_policy: exclude        # exclude: drop no-response trials (2 classes) | include: keep them (3 classes)
+  features: null                # null -> library defaults (prev choice, prev reward); or {col: feature} mapping
+  # cols_to_retain: null        # optional list[str] of trial columns to keep; null -> module default
+
+  # ── Batching / splitting ────────────────────────────────────────────────
+  eval_every_n: 2               # every Nth session -> eval split (applied per-subject in multisubject mode)
+  batch_size: null              # null -> one batch of all episodes
+  batch_mode: random            # single | rolling | random
+  multisubject: true            # true -> per-subject datasets merged with subject_index prepended as feature 0
+
+  # ── Run identity ────────────────────────────────────────────────────────
+  run_name_component: mice_snapshot  # W&B name component; "_multisubject" is auto-appended when multisubject=true
   seed: ${seed}
 
 
 ####################################################################
-# # gru
+# MODEL
+####################################################################
+#
+# --- Single-subject GRU preset (uncomment to use) ----------------------------
 # model:
 #   type: gru
 #   _target_: model_trainers.gru_trainer.GruTrainer
 #   architecture:
-#     hidden_size: 8
-#     num_layers: 1
+#     hidden_size: 8            # GRU hidden state width
+#     num_layers: 1             # only 1 is supported (raises NotImplementedError otherwise)
 #   training:
 #     lr: 1e-3
 #     n_steps: 30
@@ -93,72 +118,128 @@ data:
 #     max_grad_norm: 1.0
 #     checkpoint_every_n_steps: 10
 #     checkpoint_eval_on_train_split: true
-#     checkpoint_eval_on_eval_split: true        # compute eval-split likelihood at each checkpoint
+#     checkpoint_eval_on_eval_split: true
 #     checkpoint_log_train_to_wandb: true
-#     checkpoint_log_eval_to_wandb: true         # log checkpoint eval likelihood to W&B
+#     checkpoint_log_eval_to_wandb: true
 #     checkpoint_plot_split_examples_every_n: 10
 #     checkpoint_save_output_df_every_n: 0
 #     checkpoint_log_split_examples_to_wandb: true
 #     checkpoint_run_heldout_eval: true
 #     checkpoint_include_final_in_heldout: true
 #     checkpoint_keep_media_files: false
-#     initialization_eval_before_training: true  # run/log checkpoint-style eval before training
+#     initialization_eval_before_training: true
 #     save_output_df: false
-
 #   run_name_component: gru_H${.architecture.hidden_size}
 
 
-# gru, multi-subject
+# --- Multi-subject GRU (ACTIVE) ----------------------------------------------
 model:
   type: gru
   _target_: model_trainers.gru_trainer.GruTrainer
+
   architecture:
-    multisubject: true
-    hidden_size: 16
-    num_layers: 1
-    subject_embedding_size: 4
+    # ── Core ──────────────────────────────────────────────────────────────
+    multisubject: true              # enable per-subject embeddings (requires multisubject data)
+    hidden_size: 16                 # int > 0; GRU hidden state width
+    num_layers: 1                   # only 1 supported (raises NotImplementedError otherwise)
+    # output_size is auto-derived from data.ignore_policy (exclude->2, include->3); do not set.
+
+    # ── Per-subject embedding (multisubject only) ───────────────────────────
+    subject_embedding_size: 4       # int > 0; dimensionality of the learned per-subject embedding
     subject_embedding_init: zeros   # zeros | small_random | subject_count_scaled_random
+
+    # ── Session conditioning (multisubject only) ────────────────────────────
+    # Adds a learned, session-indexed perturbation (a "session delta" MLP) on top
+    # of each subject embedding. Disabled when session_encoding_type == none.
     session_encoding_type: none      # none | scalar | fourier
-    session_integration_type: direct # direct | pre_mlp
-    session_fourier_k: 4             # used only for fourier
-    session_delta_n_layers: 3
-    session_delta_hidden_size: 16
-    session_n_pretrain_steps: null   # null => resolve to ~30% of total training steps
-    session_n_warmup_steps: null     # null => resolve to ~20% of total training steps
+    session_integration_type: direct # direct | pre_mlp (how the session feature meets the embedding)
+    session_fourier_k: 4             # int > 0; Fourier basis pairs (used only when encoding_type == fourier)
+    session_delta_n_layers: 3        # int > 0; depth of the session-delta MLP
+    session_delta_hidden_size: 16    # int > 0; width of the session-delta MLP
+
+    # ── Session-conditioning curriculum (steps; resolved against n_steps) ───
+    # lambda gates the session delta: 0 during pretrain, linear ramp over warmup, 1 after.
+    session_n_pretrain_steps: null   # int >=0 or null; null => ~30% of n_steps
+    session_n_warmup_steps: null     # int >=0 or null; null => ~20% of n_steps
+
   training:
-    lr: 1e-3
-    n_steps: 20
-    loss: categorical
-    loss_param: 1
-    lambda_reg_session: 0.0   # 0 disables zero-mean session-delta regularization; try 1.0
-    max_grad_norm: 1.0
-    checkpoint_every_n_steps: 10
-    checkpoint_eval_on_eval_split: true
-    checkpoint_eval_on_train_split: true
-    checkpoint_log_eval_to_wandb: true
-    checkpoint_log_train_to_wandb: true
-    checkpoint_plot_split_examples_every_n: 10
-    checkpoint_save_output_df_every_n: 0
-    checkpoint_log_split_examples_to_wandb: true
-    checkpoint_keep_media_files: true
-    checkpoint_run_heldout_eval: true
-    checkpoint_include_final_in_heldout: true
-    session_conditioning_verbose_logging: true
-    plot_session_context_state_space: true
-    session_context_plot_max_subjects: 3
-    session_context_plot_subject_indices: null
-    initialization_eval_before_training: true  # run/log checkpoint-style eval before training
-    save_output_df: false
+    # ── Optimization ────────────────────────────────────────────────────────
+    lr: 1e-3                  # Adam learning rate
+    n_steps: 20               # int >= 0; total training steps
+    loss: categorical         # categorical
+    loss_param: 1             # loss hyperparameter
+    max_grad_norm: 1.0        # gradient-norm clip threshold
+
+    # ── Session-delta regularization (multisubject + session conditioning) ──
+    lambda_reg_session: 0.0   # >=0; 0 disables zero-mean session-delta regularization; try 1.0
+
+    # ── Checkpoint cadence ──────────────────────────────────────────────────
+    checkpoint_every_n_steps: 10           # int >= 0; 0 disables intermediate checkpoints
+
+    # ── Per-checkpoint likelihood eval + W&B logging ────────────────────────
+    checkpoint_eval_on_train_split: true   # compute train-split likelihood at each checkpoint
+    checkpoint_eval_on_eval_split: true    # compute eval-split likelihood at each checkpoint
+    checkpoint_log_train_to_wandb: true    # log checkpoint train likelihood to W&B
+    checkpoint_log_eval_to_wandb: true     # log checkpoint eval likelihood to W&B
+
+    # ── Per-checkpoint plotting / media ─────────────────────────────────────
+    checkpoint_plot_split_examples_every_n: 10  # int >= 0; 0 disables checkpoint split-example plots
+    checkpoint_save_output_df_every_n: 0        # int >= 0; 0 disables per-checkpoint output_df.csv snapshots
+    checkpoint_log_split_examples_to_wandb: true # log checkpoint split-example images to W&B
+    checkpoint_keep_media_files: true           # false: log media to W&B only, then delete local files
+
+    # ── Per-checkpoint held-out eval (needs held-out eval enabled in data) ──
+    checkpoint_run_heldout_eval: true        # run held-out test eval at selected checkpoints
+    checkpoint_include_final_in_heldout: true # include the final-step checkpoint in the held-out loop
+
+    # ── Initialization eval ─────────────────────────────────────────────────
+    initialization_eval_before_training: true  # run/log a checkpoint-style eval before training begins
+
+    # ── Session-context logging / state-space plots (multisubject only) ─────
+    session_conditioning_verbose_logging: true  # log session-conditioning curriculum + counts
+    plot_session_context_state_space: true       # plot session-conditioned embedding trajectories
+    session_context_plot_max_subjects: 3          # >=0; cap subjects in session-context plots
+    session_context_plot_subject_indices: null    # list[int] or null (null -> random sample, seeded)
+
+    # ── Final outputs ────────────────────────────────────────────────────────
+    save_output_df: false     # save final per-trial predictions to output_df.csv
+
+    # ── Automatic held-out fine-tuning + evaluation (multisubject only) ──────
+    # After training, fine-tune a fresh embedding for each reserved held-out
+    # subject (rest of the model frozen) and log aggregate held-out train/eval
+    # split likelihood to the SAME W&B run under a `heldout/` namespace (mirrors
+    # checkpoint/train_likelihood & checkpoint/eval_likelihood for training
+    # subjects). Ignored for single-subject or non-gru/disrnn runs.
+    auto_heldout_finetune:
+      enabled: true                # set false to skip; ignored unless multisubject gru/disrnn
+      checkpoint_policy: final     # final | best_eval | best_heldout (source params to expand)
+      n_steps: 50                  # fine-tune steps for the new held-out embedding rows
+      lr: 1e-2                     # Adam lr for the held-out embedding fine-tune
+      checkpoint_every_n_steps: 0  # 0 -> evaluate at init + final only
+      batch_size: null             # null -> inherit the source run's data batch_size
+      batch_mode: single           # single | rolling | random
+      keep_media_files: true
+      checkpoint_plot_split_examples_every_n: 0  # 0 disables checkpoint split-example plots
+      checkpoint_save_output_df_every_n: 0       # 0 disables per-checkpoint output_df.csv
+      train_example_sessions_per_subject: 1
+      eval_example_sessions_per_subject: 1
+      example_max_subjects: 6
+      output_root: /results/heldout_subject_finetuning
+      run_name_suffix: null
+
   run_name_component: gru_H${.architecture.hidden_size}
 
 
 ####################################################################
-seed: 43
+# RUN-LEVEL SETTINGS
+####################################################################
+seed: 43                      # master seed; interpolated into data.seed / subject_sample_seed
 
 wandb:
-  entity: AIND-disRNN
-  dir: /results
-  project: test
+  entity: AIND-disRNN         # W&B team/entity
+  dir: /results               # local W&B log directory
+  project: test               # W&B project
   name: ${data.run_name_component}_${model.run_name_component}
+  # tags: []                  # optional extra W&B tags (data.type + model.type are always added)
 
-job_id: 0
+job_id: 0                     # informational job identifier for run tracking
