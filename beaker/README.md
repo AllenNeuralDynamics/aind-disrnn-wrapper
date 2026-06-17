@@ -57,6 +57,7 @@ eval frequency are the deeper, structural levers if packing plateaus.)
 | `entrypoint.sh` | Runtime bootstrap: pulls latest code, then `exec`s the job | **Yes** (baked, runs before the pull) |
 | `build_and_push.sh` | Builds (`linux/amd64`) and pushes via `beaker image create` | n/a |
 | `smoke.yaml` | Beaker spec: image sanity check (GPU + config, no W&B) | No |
+| `pack_gpu.sh` | Time-slicing: pack M `wandb agent`s onto one GPU | No (pulled at runtime, like the app code) |
 
 > The sweep definition and the production Beaker job spec live in the **dispatcher**
 > (control plane), not here — `aind-disrnn-dispatcher/code/beaker/`
