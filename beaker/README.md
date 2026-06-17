@@ -2,6 +2,12 @@
 
 Run the disRNN training stack on the Allen **AI Hub / Beaker** GPU platform.
 
+> **Two-repo layout.** This README is the **compute / image plane** — building the
+> image, the runtime code-pull, and the GPU benchmark results. The **control plane**
+> — defining W&B sweeps, experiment specs, clusters, and submitting jobs — lives in
+> the dispatcher:
+> [`aind-disrnn-dispatcher/code/beaker/README.md`](https://github.com/AllenNeuralDynamics/aind-disrnn-dispatcher/blob/ai_hub/code/beaker/README.md).
+
 **Architecture (two planes):**
 - **Build plane — a Mac (or any box with Docker).** Builds the GPU image and
   pushes it to Beaker's registry. Needed rarely (only when dependencies change).
@@ -154,7 +160,8 @@ eval-throttling (item 10) were both tested and gave nothing. For *scale*, use
 | `pack_gpu.sh` | Time-slicing: pack M `wandb agent`s onto one GPU | No (pulled at runtime, like the app code) |
 
 > The sweep definition and the production Beaker job spec live in the **dispatcher**
-> (control plane), not here — `aind-disrnn-dispatcher/code/beaker/`
+> (control plane), not here —
+> [`aind-disrnn-dispatcher/code/beaker/`](https://github.com/AllenNeuralDynamics/aind-disrnn-dispatcher/blob/ai_hub/code/beaker/README.md)
 > (`sweep_mvp.yaml`, `experiment_mvp.yaml`). This repo only builds the image and
 > ships `smoke.yaml` to test it.
 
@@ -223,7 +230,7 @@ beaker experiment create -w "$WS" beaker/smoke.yaml
 
 **To actually run training** (the W&B-sweep MVP), use the **dispatcher** control
 plane — `wandb sweep` → submit `experiment_mvp.yaml` — documented in
-`aind-disrnn-dispatcher/code/beaker/README.md`.
+[`aind-disrnn-dispatcher/code/beaker/README.md`](https://github.com/AllenNeuralDynamics/aind-disrnn-dispatcher/blob/ai_hub/code/beaker/README.md).
 
 ## 3. Controlling the code version
 
@@ -257,8 +264,8 @@ Consequences:
 | Want to change… | Edit | Rebuild image? |
 |---|---|---|
 | **Dependencies / base environment** | `Dockerfile` (then `pyproject.toml` for the actual deps) | **Yes** — `--force-rebuild --force-override-beaker` |
-| **The command, cluster, GPU count, replicas, secret, refs** | the spec YAML — `smoke.yaml` (here) or `experiment_mvp.yaml` (dispatcher) | No |
-| **The hyperparameter grid / `run_hpc` overrides** | `sweep_mvp.yaml` in the dispatcher (read by `wandb sweep` at submit) | No |
+| **The command, cluster, GPU count, replicas, secret, refs** | the spec YAML — `smoke.yaml` (here) or `experiment_mvp.yaml` ([dispatcher](https://github.com/AllenNeuralDynamics/aind-disrnn-dispatcher/blob/ai_hub/code/beaker/README.md)) | No |
+| **The hyperparameter grid / `run_hpc` overrides** | `sweep_mvp.yaml` in the [dispatcher](https://github.com/AllenNeuralDynamics/aind-disrnn-dispatcher/blob/ai_hub/code/beaker/README.md) (read by `wandb sweep` at submit) | No |
 | **The startup/bootstrap logic** (how code is pulled) | `entrypoint.sh` | **Yes** (it's baked and runs before the pull) |
 | **Application code / Hydra configs** | the wrapper / dispatcher repos directly | No — push to the ref the job uses |
 
