@@ -15,6 +15,40 @@ environment (Python + JAX + pinned deps). The actual code is pulled fresh from
 GitHub at job startup by `entrypoint.sh`, so day-to-day you just **edit → push →
 re-run**, never rebuild. See [Controlling the code version](#3-controlling-the-code-version).
 
+## Migration status
+
+Where the CO → Beaker migration stands (this section is the running log).
+
+**Done & validated on Beaker (cluster `ai1/octo-hub-aws-l40s`, workspace
+`ai1/aind-dynamic-foraging-foundation-model`):**
+
+1. **Beaker access** — CLI installed (via `environment/postInstall` in the dispatcher),
+   `BEAKER_TOKEN` auth confirmed; workspace + cluster reachable from Code Ocean.
+2. **Image build** — `Dockerfile` git-clones both repos + installs deps; built on a
+   Mac (`build_and_push.sh`, `--platform linux/amd64`) and pushed to Beaker's registry
+   as `han-hou/disrnn-wrapper`. CO can't build (seccomp), so the Mac is the build box.
+3. **Runtime code-pull** — `entrypoint.sh` git-fetches both repos to
+   `WRAPPER_REF`/`DISPATCHER_REF` at job start → **code edits need no rebuild**.
+4. **Smoke test** — `smoke.yaml` confirmed image pull + runtime pull + GPU visible +
+   Hydra config composition, no W&B.
+5. **Control plane** — the dispatcher's `launch_beaker.py` creates a W&B sweep, saves a
+   reproducibility record to `/results`, and submits the Beaker experiment (the
+   dispatcher → wrapper hand-off, mirroring CO). A 1-point MVP run succeeded.
+6. **Reproducibility** — each run stamps `wrapper_commit` / `dispatcher_commit` /
+   `CO_COMPUTATION_ID` into its W&B config; the dispatcher saves the sweep YAML + IDs +
+   commit to `/results`.
+7. **Scale-out (array of jobs)** — `replicas: 4` validated: 4 `wandb agent`s across 4
+   GPUs sharing one sweep (`experiment_scaling.yaml`).
+
+**Observed (the open question):** a single run shows **100% GPU util but only ~30% power**
+on the L40s (vs ~55% on a T4 in CO) → the workload is **host/eval-bound, not
+compute-bound** (≈0.46 s/step for a tiny `latent_size=5` model with `eval_every_n=2`).
+The L40s is largely idle per run, so there's real headroom.
+
+**Next: GPU packing (time-slicing).** Pack M `wandb agent`s onto one GPU to soak up that
+headroom; measure throughput (runs/GPU-hour) + power at M=1/4/8. (`jax.vmap` and reducing
+eval frequency are the deeper, structural levers if packing plateaus.)
+
 ## Files
 
 | File | What it is | Rebuild image to change? |
