@@ -41,10 +41,13 @@ Where the CO → Beaker migration stands (this section is the running log).
    GPUs sharing one sweep (`experiment_scaling.yaml`).
 
 **Observed:** a single run shows **100% GPU util but only ~30% power** on the L40s
-(vs ~55% on a T4 in CO). Per the W&B system metrics: util 96%, power ~30% (106/350 W),
-memory-bandwidth util ~1%, host CPU ~4%. So the workload is **low-occupancy /
-host-eval-bound, not compute- or CPU-bound** (≈0.46 s/step for a tiny `latent_size=5`
-model with `eval_every_n=2`).
+(vs ~57% on a T4 in CO). Per the W&B system metrics: util ~96%, power ~30% (106/350 W),
+memory-bandwidth util ~1%, host CPU ~4%. The bottleneck is **low occupancy / kernel
+overhead** — the disRNN is so small (`latent_size=5`) that each step is a long chain of
+*tiny* ops, each using a sliver of the SMs (so util pins at 100% while power stays ~30%).
+The wasted capacity is **spatial** (idle SMs *inside* each kernel), not temporal (idle
+*time*). Two follow-up tests rule out the alternatives — **not** host-idle (item 8),
+**not** eval (item 10), and not CPU / memory-BW / FLOP-saturation.
 
 8. **GPU packing (time-slicing) — tested, no gain.** Packed M `wandb agent`s on one
    L40s (`pack_gpu.sh`, `XLA_PYTHON_CLIENT_MEM_FRACTION≈0.9/M`) and measured throughput:
@@ -63,14 +66,21 @@ model with `eval_every_n=2`).
 
 9. **L40s vs CO-T4 (apples-to-apples, full config, seed 0).** L40s is **~1.9× faster
    per run** (train **0.243 vs 0.460 s/step**; 1352 vs 2549 s total). But it's only modest
-   for a ~4–5× bigger card — host/eval-bound on both (util ~pinned, power 30% L40s /
+   for a ~4–5× bigger card — low-occupancy on both (util ~pinned, power 30% L40s /
    57% T4, mem-BW ~1%) — and the L40s draws **~1.4× more energy/run** (105 W vs 40 W).
    So L40s wins on wall-clock, T4 on energy; neither is compute-bound.
 
-**Next (per-GPU efficiency lever, not packing):** the headroom is *intra-kernel*
-(occupancy), reclaimable only by **`jax.vmap`** (batch runs into one fatter kernel) or
-**MPS** (concurrent kernels) — plus cutting **`eval_every_n=2`**, a likely free win.
-For *scale*, use **`replicas`** across GPUs (validated, linear).
+10. **Eval-frequency test — no effect.** Swept `data.eval_every_n` ∈ {2, 10, 50} at a
+    fixed config: train **s/step held flat at ~0.28** (25× less eval → ~0% change). So
+    evaluation is *not* the cost — the bottleneck is the **training step's own tiny
+    kernels**, confirming the low-occupancy diagnosis (and refuting the earlier guess
+    that eval was to blame).
+
+**Next (per-GPU efficiency lever, not packing):** the headroom is *spatial* (idle SMs
+within each tiny kernel), reclaimable only by **fatter kernels** — `jax.vmap` / bigger
+batch / `lax.scan` the step loop — or **MPS** (concurrent kernels). Packing (item 8) and
+eval-throttling (item 10) were both tested and gave nothing. For *scale*, use
+**`replicas`** across GPUs (validated, linear).
 
 ## Files
 
