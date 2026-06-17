@@ -101,6 +101,39 @@ def _hardware_tags() -> list[str]:
     return ["cpu"]
 
 
+def _code_versions() -> dict[str, Optional[str]]:
+    """Resolved commit SHAs of the wrapper + dispatcher repos, for reproducibility.
+
+    Stamped into the W&B run config so every run is traceable to the exact code it
+    ran. Prefers the WRAPPER_COMMIT / DISPATCHER_COMMIT env vars (e.g. set by
+    beaker/entrypoint.sh) and falls back to `git rev-parse` on the on-disk repos;
+    None if neither is available (so it's harmless on any platform).
+    """
+
+    def sha(repo_dir: Path, env_var: str) -> Optional[str]:
+        if os.environ.get(env_var):
+            return os.environ[env_var]
+        try:
+            out = subprocess.run(
+                ["git", "-C", str(repo_dir), "rev-parse", "HEAD"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if out.returncode == 0 and out.stdout.strip():
+                return out.stdout.strip()
+        except Exception:
+            pass
+        return None
+
+    wrapper_dir = Path(__file__).resolve().parents[2]  # .../aind-disrnn-wrapper
+    dispatcher_dir = wrapper_dir.parent / "aind-disrnn-dispatcher"
+    return {
+        "wrapper_commit": sha(wrapper_dir, "WRAPPER_COMMIT"),
+        "dispatcher_commit": sha(dispatcher_dir, "DISPATCHER_COMMIT"),
+    }
+
+
 def start_wandb_run(
     hydra_config: DictConfig,
 ) -> Optional[wandb.sdk.wandb_run.Run]:
@@ -118,8 +151,11 @@ def start_wandb_run(
         tags=base_tags + extra_tags,
     )
     
-    # System environment variable for CO 
-    run.config.update({"CO_COMPUTATION_ID": os.environ.get("CO_COMPUTATION_ID")})
+    # Reproducibility / provenance metadata stamped into the W&B config.
+    run.config.update({
+        "CO_COMPUTATION_ID": os.environ.get("CO_COMPUTATION_ID"),
+        **_code_versions(),
+    })
     return run
 
 
