@@ -30,8 +30,12 @@ from utils.run_helpers import (
     configure_sys_logger,
     copy_input_folder,
     find_hydra_config,
+    resolve_heldout_test_likelihood,
     save_resolved_config,
     start_wandb_run,
+)
+from post_training_analysis.heldout_finetuning import (
+    run_heldout_subject_finetuning_from_config,
 )
 
 logger = logging.getLogger(__name__)
@@ -44,6 +48,88 @@ def _is_multisubject_personalized_run(hydra_config) -> bool:
         model_type in {"disrnn", "gru", "baseline_rl"}
         and architecture_cfg is not None
         and getattr(architecture_cfg, "multisubject", False)
+    )
+
+
+def _auto_heldout_finetune_enabled(hydra_config) -> bool:
+    """True when model.training.auto_heldout_finetune.enabled is set."""
+    training_cfg = getattr(getattr(hydra_config, "model", None), "training", None)
+    auto_cfg = getattr(training_cfg, "auto_heldout_finetune", None) if training_cfg else None
+    return bool(getattr(auto_cfg, "enabled", False)) if auto_cfg is not None else False
+
+
+def _run_auto_heldout_finetune(hydra_config, *, model_type, wandb_run):
+    """Auto-run held-out subject fine-tuning + eval after multisubject training.
+
+    Synthesizes an in-memory fine-tuning config pointing at the just-finished run
+    (``/results``) and logs aggregate held-out train/eval likelihood into the main
+    W&B run under a ``heldout/`` namespace. Returns the fine-tuning summary dict.
+    """
+    auto_cfg = getattr(hydra_config.model.training, "auto_heldout_finetune", None)
+    finetune_config = {
+        "source_run": {
+            "model_dir": "/results",
+            "checkpoint_policy": str(getattr(auto_cfg, "checkpoint_policy", "final")),
+        },
+        # All None -> inherit the reserved held-out set from /results/inputs.yaml.
+        "heldout_subjects": {
+            key: None
+            for key in (
+                "test_subject_ids",
+                "curricula",
+                "min_sessions",
+                "heldout_every_n",
+                "mature_only",
+                "cols_to_retain",
+            )
+        },
+        "heldout_finetuning": {
+            "n_steps": int(getattr(auto_cfg, "n_steps", 50)),
+            "lr": float(getattr(auto_cfg, "lr", 1e-2)),
+            "checkpoint_every_n_steps": int(
+                getattr(auto_cfg, "checkpoint_every_n_steps", 0)
+            ),
+            "batch_size": getattr(auto_cfg, "batch_size", None),
+            "batch_mode": str(getattr(auto_cfg, "batch_mode", "single")),
+            "keep_media_files": bool(getattr(auto_cfg, "keep_media_files", True)),
+            "checkpoint_plot_split_examples_every_n": int(
+                getattr(auto_cfg, "checkpoint_plot_split_examples_every_n", 0)
+            ),
+            "checkpoint_save_output_df_every_n": int(
+                getattr(auto_cfg, "checkpoint_save_output_df_every_n", 0)
+            ),
+            "train_example_sessions_per_subject": int(
+                getattr(auto_cfg, "train_example_sessions_per_subject", 1)
+            ),
+            "eval_example_sessions_per_subject": int(
+                getattr(auto_cfg, "eval_example_sessions_per_subject", 1)
+            ),
+            "example_max_subjects": int(getattr(auto_cfg, "example_max_subjects", 6)),
+        },
+        "output": {
+            "output_root": str(
+                getattr(auto_cfg, "output_root", "/results/heldout_subject_finetuning")
+            ),
+            "run_name_suffix": getattr(auto_cfg, "run_name_suffix", None),
+        },
+        "seed": getattr(hydra_config, "seed", None),
+        # No "wandb" key: held-out metrics are logged into the injected main run.
+    }
+    wandb_step_offset = (
+        int(getattr(wandb_run, "step", 0)) + 1 if wandb_run is not None else None
+    )
+    logger.info(
+        "Auto held-out fine-tuning for multisubject %s: n_steps=%s lr=%s checkpoint_policy=%s",
+        str(model_type).upper(),
+        finetune_config["heldout_finetuning"]["n_steps"],
+        finetune_config["heldout_finetuning"]["lr"],
+        finetune_config["source_run"]["checkpoint_policy"],
+    )
+    return run_heldout_subject_finetuning_from_config(
+        finetune_config,
+        wandb_run=wandb_run,
+        wandb_key_prefix="heldout",
+        wandb_step_offset=wandb_step_offset,
     )
 
 
@@ -350,15 +436,14 @@ def main() -> None:
             }
 
         if heldout_summary is not None:
-            heldout_test_likelihood = None
-            if isinstance(heldout_summary, dict):
-                heldout_test_likelihood = heldout_summary.get("heldout_test_likelihood")
+            heldout_test_likelihood = resolve_heldout_test_likelihood(heldout_summary)
             if heldout_test_likelihood is not None:
                 logger.info(
                     "Final held-out test likelihood: %.4f",
                     float(heldout_test_likelihood),
                 )
-            output["heldout_test"] = heldout_summary
+            if isinstance(output, dict):
+                output["heldout_test"] = heldout_summary
             if model_type == "baseline_rl":
                 output_path = save_baseline_rl_output(
                     getattr(hydra_config.model, "output_dir", "/results/outputs"),
@@ -370,11 +455,30 @@ def main() -> None:
                     output_path,
                 )
     elif is_multisubject_personalized_model and heldout_cfg.enabled:
-        logger.info(
-            "Skipping final held-out evaluation for multisubject %s; v1 supports "
-            "seen-subject personalization only.",
-            str(model_type).upper(),
-        )
+        if model_type in {"disrnn", "gru"} and _auto_heldout_finetune_enabled(hydra_config):
+            try:
+                auto_summary = _run_auto_heldout_finetune(
+                    hydra_config,
+                    model_type=model_type,
+                    wandb_run=wandb_run,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Auto held-out fine-tuning failed and will be skipped: %s", exc
+                )
+                auto_summary = {
+                    "enabled": True,
+                    "auto_finetune_failed": True,
+                    "error": str(exc),
+                }
+            if isinstance(output, dict):
+                output["heldout_finetune"] = auto_summary
+        else:
+            logger.info(
+                "Skipping final held-out evaluation for multisubject %s; v1 supports "
+                "seen-subject personalization only.",
+                str(model_type).upper(),
+            )
 
     if wandb_run is not None:
         wandb_run.finish()

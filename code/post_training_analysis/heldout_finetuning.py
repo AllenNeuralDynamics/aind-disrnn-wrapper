@@ -830,6 +830,7 @@ def _log_checkpoint_plot_paths_to_wandb(
     wandb_run: Any,
     plot_paths: Mapping[str, str | None],
     step: int,
+    key_prefix: str = "checkpoint",
 ) -> None:
     try:
         import wandb
@@ -840,12 +841,12 @@ def _log_checkpoint_plot_paths_to_wandb(
     payload: dict[str, Any] = {}
     subject_embedding_path = plot_paths.get("subject_embedding_state_space")
     if subject_embedding_path:
-        payload["checkpoint/fig/subject_embedding_state_space"] = wandb.Image(
+        payload[f"{key_prefix}/fig/subject_embedding_state_space"] = wandb.Image(
             str(subject_embedding_path)
         )
     subject_session_context_path = plot_paths.get("subject_session_context_state_space")
     if subject_session_context_path:
-        payload["checkpoint/fig/subject_session_context_state_space"] = wandb.Image(
+        payload[f"{key_prefix}/fig/subject_session_context_state_space"] = wandb.Image(
             str(subject_session_context_path)
         )
     if payload:
@@ -867,8 +868,11 @@ def _evaluate_checkpoint(
     loss_name: str,
     loss_param: Any,
     wandb_run: Any | None = None,
+    wandb_key_prefix: str = "checkpoint",
+    wandb_step: int | None = None,
 ) -> dict[str, Any]:
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    effective_wandb_step = int(wandb_step) if wandb_step is not None else int(step)
     _save_params(checkpoint_dir / "params.json", params)
 
     dataset_full = bundle.extras["dataset"]
@@ -968,7 +972,8 @@ def _evaluate_checkpoint(
         _log_checkpoint_plot_paths_to_wandb(
             wandb_run=wandb_run,
             plot_paths=record["plot_paths"],
-            step=int(step),
+            step=effective_wandb_step,
+            key_prefix=wandb_key_prefix,
         )
 
     plot_examples_every_n = int(fine_tune_cfg.get("checkpoint_plot_split_examples_every_n", 0))
@@ -1001,8 +1006,8 @@ def _evaluate_checkpoint(
             n_action_logits=n_action_logits_full,
             wandb_run=wandb_run,
             log_scope=f"Checkpoint step {step}",
-            wandb_step=int(step),
-            wandb_key_prefix="checkpoint",
+            wandb_step=effective_wandb_step,
+            wandb_key_prefix=wandb_key_prefix,
         )
         if not bool(fine_tune_cfg.get("keep_media_files", True)):
             trainer._cleanup_split_example_media(split_summaries)
@@ -1088,8 +1093,19 @@ def run_heldout_subject_finetuning_from_config(
     config_source: str | Path | Mapping[str, Any] | DictConfig,
     *,
     output_root: str | Path | None = None,
+    wandb_run: Any | None = None,
+    wandb_key_prefix: str | None = None,
+    wandb_step_offset: int | None = None,
 ) -> dict[str, Any]:
-    """Fine-tune held-out subject embeddings for a trained multisubject GRU/disRNN."""
+    """Fine-tune held-out subject embeddings for a trained multisubject GRU/disRNN.
+
+    When ``wandb_run`` is provided (e.g. the still-open training run in
+    ``run_capsule``), held-out metrics are logged into that run instead of a new
+    one: keys are namespaced with ``wandb_key_prefix`` (default ``"checkpoint"``)
+    and steps are shifted by ``wandb_step_offset`` so they don't collide with the
+    training run's step axis. The injected run is never renamed or finished here.
+    With all three left ``None`` the behavior is identical to the standalone tool.
+    """
     config = _load_config(config_source)
     source_cfg = _normalize_mapping(config.get("source_run"))
     source_model_dir = source_cfg.get("model_dir")
@@ -1131,11 +1147,15 @@ def run_heldout_subject_finetuning_from_config(
         resolve=True,
     )
     _save_json(run_dir / "resolved_source_run.json", resolved_source_run.to_dict())
-    wandb_run = _maybe_start_wandb_run(
-        resolved_config=resolved_config,
-        run_dir=run_dir,
-        source_run=resolved_source_run,
-    )
+    external_wandb_run = wandb_run is not None
+    if not external_wandb_run:
+        wandb_run = _maybe_start_wandb_run(
+            resolved_config=resolved_config,
+            run_dir=run_dir,
+            source_run=resolved_source_run,
+        )
+    wandb_log_key_prefix = wandb_key_prefix or "checkpoint"
+    wandb_log_step_offset = int(wandb_step_offset) if wandb_step_offset is not None else 0
     logger.info(
         "Starting held-out subject fine-tuning: source_model_dir=%s model_type=%s checkpoint=%s "
         "heldout_ids=%s curricula=%s heldout_every_n=%s output_dir=%s",
@@ -1170,7 +1190,7 @@ def run_heldout_subject_finetuning_from_config(
             fine_tune_cfg=resolved_config["heldout_finetuning"],
             architecture=architecture,
         )
-        if wandb_run is not None:
+        if wandb_run is not None and not external_wandb_run:
             _update_wandb_run_name_for_heldout_subjects(
                 wandb_run=wandb_run,
                 resolved_config=resolved_config,
@@ -1296,6 +1316,7 @@ def run_heldout_subject_finetuning_from_config(
                 optimization_history["validation_loss"].extend(
                     np.asarray(chunk_losses["validation_loss"], dtype=float).tolist()
                 )
+            checkpoint_wandb_step = wandb_log_step_offset + int(step)
             checkpoint_record = _evaluate_checkpoint(
                 model_type=resolved_source_run.model_type,
                 trainer=trainer,
@@ -1310,21 +1331,28 @@ def run_heldout_subject_finetuning_from_config(
                 loss_name=loss_name,
                 loss_param=loss_param,
                 wandb_run=wandb_run,
+                wandb_key_prefix=wandb_log_key_prefix,
+                wandb_step=checkpoint_wandb_step,
             )
             checkpoint_records.append(checkpoint_record)
             if wandb_run is not None:
                 wandb_run.log(
                     {
-                        "checkpoint/train_loss": float(checkpoint_record["train_loss"]),
-                        "checkpoint/eval_loss": float(checkpoint_record["eval_loss"]),
-                        "checkpoint/train_likelihood": float(
+                        f"{wandb_log_key_prefix}/train_loss": float(
+                            checkpoint_record["train_loss"]
+                        ),
+                        f"{wandb_log_key_prefix}/eval_loss": float(
+                            checkpoint_record["eval_loss"]
+                        ),
+                        f"{wandb_log_key_prefix}/train_likelihood": float(
                             checkpoint_record["train_likelihood"]
                         ),
-                        "checkpoint/eval_likelihood": float(
+                        f"{wandb_log_key_prefix}/eval_likelihood": float(
                             checkpoint_record["eval_likelihood"]
                         ),
+                        f"{wandb_log_key_prefix}/step": int(step),
                     },
-                    step=int(step),
+                    step=checkpoint_wandb_step,
                 )
             previous_step = step
 
@@ -1409,9 +1437,13 @@ def run_heldout_subject_finetuning_from_config(
             ]
         _save_json(outputs_dir / "output_summary.json", summary)
         if wandb_run is not None:
+            summary_prefix = (
+                f"{wandb_log_key_prefix}/final" if external_wandb_run else "final"
+            )
             for key, value in summary["metrics"].items():
-                wandb_run.summary[f"final/{key}"] = float(value)
-            wandb_run.summary["output_dir"] = str(run_dir)
+                wandb_run.summary[f"{summary_prefix}/{key}"] = float(value)
+            if not external_wandb_run:
+                wandb_run.summary["output_dir"] = str(run_dir)
         logger.info(
             "Completed held-out subject fine-tuning: output_dir=%s summary=%s "
             "checkpoint_metrics=%s final_train_likelihood=%s final_eval_likelihood=%s",
@@ -1435,5 +1467,5 @@ def run_heldout_subject_finetuning_from_config(
             "likelihood_curve_path": str(likelihood_curve_path),
         }
     finally:
-        if wandb_run is not None:
+        if wandb_run is not None and not external_wandb_run:
             wandb_run.finish()

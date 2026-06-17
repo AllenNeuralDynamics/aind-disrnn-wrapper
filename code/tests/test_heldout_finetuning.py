@@ -42,6 +42,25 @@ except ModuleNotFoundError as exc:
     HELDOUT_FINETUNE_IMPORT_ERROR = exc
 
 
+class _FakeWandbRun:
+    """Minimal W&B run double recording .log() calls and .summary writes."""
+
+    def __init__(self, start_step: int = 0):
+        self.step = int(start_step)
+        self.logged: list = []  # list of (payload_dict, step)
+        self.summary: dict = {}
+        self.name = "training-run"
+        self.finished = False
+
+    def log(self, payload, step=None):
+        self.logged.append((dict(payload), step))
+        if step is not None:
+            self.step = max(self.step, int(step))
+
+    def finish(self):
+        self.finished = True
+
+
 @unittest.skipUnless(
     HELDOUT_FINETUNE_DEPS_AVAILABLE,
     f"Held-out fine-tuning dependencies unavailable: {HELDOUT_FINETUNE_IMPORT_ERROR}",
@@ -551,3 +570,135 @@ class TestHeldoutSubjectFinetuning(unittest.TestCase):
             captured_selector["test_subject_ids"],
             list(self.heldout_subject_ids),
         )
+
+    # --- Auto held-out fine-tuning: injected W&B run + namespacing ------------
+
+    def test_injected_wandb_run_logs_heldout_namespace_with_step_offset(self):
+        # Test A: when a W&B run is injected, held-out train/eval likelihoods are
+        # logged into it under `heldout/`, at offset (non-colliding) steps, and the
+        # injected run is neither renamed nor finished.
+        model_dir, _, _ = self._create_gru_source_run(session_conditioning=False)
+        config = self._make_runner_config(model_dir=model_dir)
+        fake_run = _FakeWandbRun(start_step=42)
+
+        with mock.patch(
+            "post_training_analysis.heldout_finetuning._load_heldout_snapshot_selection",
+            return_value=(self.heldout_snapshot_df.copy(), list(self.heldout_subject_ids)),
+        ):
+            run_heldout_subject_finetuning_from_config(
+                config,
+                wandb_run=fake_run,
+                wandb_key_prefix="heldout",
+                wandb_step_offset=100,
+            )
+
+        scalar_logs = [
+            (payload, step)
+            for payload, step in fake_run.logged
+            if "heldout/train_likelihood" in payload
+        ]
+        self.assertTrue(scalar_logs, "expected heldout scalar likelihood logs")
+        for payload, _ in scalar_logs:
+            self.assertIn("heldout/eval_likelihood", payload)
+            self.assertIn("heldout/train_loss", payload)
+        # checkpoint_every_n_steps=1, n_steps=2 -> fine-tune steps 0,1,2 at offset 100.
+        self.assertEqual([step for _, step in scalar_logs], [100, 101, 102])
+        # All logged steps respect the offset and are non-decreasing.
+        all_steps = [step for _, step in fake_run.logged if step is not None]
+        self.assertTrue(all(step >= 100 for step in all_steps))
+        self.assertEqual(all_steps, sorted(all_steps))
+        # No training-namespace keys leaked from the held-out phase.
+        for payload, _ in fake_run.logged:
+            self.assertNotIn("checkpoint/train_likelihood", payload)
+        # Final aggregate likelihoods recorded under heldout/final/*.
+        self.assertIn("heldout/final/train_likelihood", fake_run.summary)
+        self.assertIn("heldout/final/eval_likelihood", fake_run.summary)
+        # The injected (training) run must not be renamed or finished here.
+        self.assertEqual(fake_run.name, "training-run")
+        self.assertFalse(fake_run.finished)
+        self.assertNotIn("output_dir", fake_run.summary)
+
+    def test_injected_run_defaults_preserve_checkpoint_namespace(self):
+        # Test B: defaults (no prefix/offset) reproduce the legacy `checkpoint/*`
+        # keys and un-offset steps even when an external run is injected.
+        model_dir, _, _ = self._create_gru_source_run(session_conditioning=False)
+        config = self._make_runner_config(model_dir=model_dir)
+        fake_run = _FakeWandbRun()
+
+        with mock.patch(
+            "post_training_analysis.heldout_finetuning._load_heldout_snapshot_selection",
+            return_value=(self.heldout_snapshot_df.copy(), list(self.heldout_subject_ids)),
+        ):
+            run_heldout_subject_finetuning_from_config(config, wandb_run=fake_run)
+
+        scalar_logs = [
+            (payload, step)
+            for payload, step in fake_run.logged
+            if "checkpoint/train_likelihood" in payload
+        ]
+        self.assertTrue(scalar_logs)
+        self.assertEqual([step for _, step in scalar_logs], [0, 1, 2])
+        self.assertIn("checkpoint/final/train_likelihood", fake_run.summary)
+        self.assertFalse(fake_run.finished)
+
+    # --- run_capsule auto-hook gating + config synthesis ---------------------
+
+    def test_run_capsule_auto_finetune_gating_and_synthesis(self):
+        # Test C: the run_capsule helpers gate on the config flag and synthesize a
+        # finetune config pointing at /results with the heldout namespace.
+        import run_capsule
+
+        def _cfg(enabled):
+            return OmegaConf.create(
+                {
+                    "seed": 7,
+                    "model": {
+                        "type": "gru",
+                        "training": {
+                            "auto_heldout_finetune": {
+                                "enabled": enabled,
+                                "n_steps": 33,
+                                "lr": 5e-3,
+                                "checkpoint_policy": "final",
+                            }
+                        },
+                    },
+                }
+            )
+
+        self.assertTrue(run_capsule._auto_heldout_finetune_enabled(_cfg(True)))
+        self.assertFalse(run_capsule._auto_heldout_finetune_enabled(_cfg(False)))
+        self.assertFalse(
+            run_capsule._auto_heldout_finetune_enabled(
+                OmegaConf.create({"model": {"type": "gru", "training": {}}})
+            )
+        )
+
+        captured = {}
+
+        def _fake_finetune(config, *, wandb_run=None, wandb_key_prefix=None, wandb_step_offset=None):
+            captured["config"] = config
+            captured["wandb_key_prefix"] = wandb_key_prefix
+            captured["wandb_step_offset"] = wandb_step_offset
+            return {"ok": True}
+
+        fake_run = _FakeWandbRun(start_step=200)
+        with mock.patch.object(
+            run_capsule, "run_heldout_subject_finetuning_from_config", _fake_finetune
+        ):
+            result = run_capsule._run_auto_heldout_finetune(
+                _cfg(True), model_type="gru", wandb_run=fake_run
+            )
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(captured["wandb_key_prefix"], "heldout")
+        self.assertEqual(captured["wandb_step_offset"], 201)  # wandb_run.step + 1
+        self.assertEqual(captured["config"]["source_run"]["model_dir"], "/results")
+        self.assertEqual(captured["config"]["source_run"]["checkpoint_policy"], "final")
+        self.assertEqual(captured["config"]["heldout_finetuning"]["n_steps"], 33)
+        self.assertEqual(captured["config"]["heldout_finetuning"]["lr"], 5e-3)
+        # heldout selectors all None -> inherit reserved set from the source run.
+        self.assertTrue(
+            all(value is None for value in captured["config"]["heldout_subjects"].values())
+        )
+        self.assertNotIn("wandb", captured["config"])
