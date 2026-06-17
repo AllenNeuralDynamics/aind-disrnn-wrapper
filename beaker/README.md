@@ -61,6 +61,12 @@ model with `eval_every_n=2`).
    context (board power stays ~30%). Not CPU- or memory-bound. Conclusion: **no-MPS
    packing is a dead end for this workload.**
 
+9. **L40s vs CO-T4 (apples-to-apples, full config, seed 0).** L40s is **~1.9× faster
+   per run** (train **0.243 vs 0.460 s/step**; 1352 vs 2549 s total). But it's only modest
+   for a ~4–5× bigger card — host/eval-bound on both (util ~pinned, power 30% L40s /
+   57% T4, mem-BW ~1%) — and the L40s draws **~1.4× more energy/run** (105 W vs 40 W).
+   So L40s wins on wall-clock, T4 on energy; neither is compute-bound.
+
 **Next (per-GPU efficiency lever, not packing):** the headroom is *intra-kernel*
 (occupancy), reclaimable only by **`jax.vmap`** (batch runs into one fatter kernel) or
 **MPS** (concurrent kernels) — plus cutting **`eval_every_n=2`**, a likely free win.
