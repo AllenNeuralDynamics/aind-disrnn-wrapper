@@ -4,6 +4,10 @@ The wrapper capsule in the AIND-disRNN MLOps stack:
 
 <img width="1380" height="875" alt="image" src="https://github.com/user-attachments/assets/e029c0e3-ce47-4f65-b61f-42c8bd5b053a" />
 
+📖 **[Training Codebase Guide](code/TRAINING.md)** — what the training codebase
+includes and how to use it (models, configs, data loaders, held-out evaluation,
+testing). A living document; keep it updated as features are added.
+
 ## Session-Conditioned Post-Training Analysis
 
 Session-conditioned multisubject GRU/disRNN runs are supported across the current
