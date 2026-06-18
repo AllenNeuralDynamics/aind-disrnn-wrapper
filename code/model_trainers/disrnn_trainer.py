@@ -395,11 +395,18 @@ class DisrnnTrainer(BaseMultisubjectTrainer):
                 session_delta_hidden_size=int(
                     session_conditioning_cfg["session_delta_hidden_size"]
                 ),
+                # `.get(key, 0)` only defaults on a *missing* key; the config
+                # ships these as explicit `null`, so a present-but-None value
+                # would reach int() and raise. The forward pass gates on
+                # session_curriculum_lambda (default 1.0), so 0 here is correct
+                # whenever these aren't pre-resolved (e.g. held-out fine-tuning,
+                # which calls _build_network_configs directly without the
+                # resolve_session_curriculum_steps write-back that train() does).
                 session_n_pretrain_steps=int(
-                    self.architecture.get("session_n_pretrain_steps", 0)
+                    self.architecture.get("session_n_pretrain_steps") or 0
                 ),
                 session_n_warmup_steps=int(
-                    self.architecture.get("session_n_warmup_steps", 0)
+                    self.architecture.get("session_n_warmup_steps") or 0
                 ),
                 session_max_index_by_subject_index=list(
                     session_conditioning_cfg["session_max_index_by_subject_index"]

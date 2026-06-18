@@ -632,6 +632,66 @@ class TestDisrnnTrainer(unittest.TestCase):
         self.assertEqual(config.session_n_pretrain_steps, 4)
         self.assertEqual(config.session_n_warmup_steps, 3)
 
+    def test_build_network_configs_tolerates_none_curriculum_steps(self):
+        # Held-out fine-tuning rebuilds the trainer from the saved source config,
+        # which ships session_n_pretrain_steps / session_n_warmup_steps as explicit
+        # null, and calls _build_network_configs directly (without the
+        # resolve_session_curriculum_steps write-back that fit() does). A None here
+        # must not reach int() and raise; it should fall back to 0 (lambda=1.0).
+        trainer = DisrnnTrainer(
+            architecture={
+                "multisubject": True,
+                "latent_size": 4,
+                "update_net_n_units_per_layer": 8,
+                "update_net_n_layers": 2,
+                "choice_net_n_units_per_layer": 4,
+                "choice_net_n_layers": 1,
+                "activation": "leaky_relu",
+                "subject_embedding_size": 3,
+                "session_encoding_type": "scalar",
+                "session_n_pretrain_steps": None,
+                "session_n_warmup_steps": None,
+            },
+            penalties={
+                "latent_penalty": 1e-3,
+                "choice_net_latent_penalty": 1e-3,
+                "update_net_obs_penalty": 1e-3,
+                "update_net_latent_penalty": 1e-3,
+                "subject_penalty": 1e-3,
+                "update_net_subject_penalty": 1e-3,
+                "choice_net_subject_penalty": 1e-3,
+            },
+            training={
+                "lr": 1e-3,
+                "n_steps": 0,
+                "n_warmup_steps": 0,
+                "loss": "penalized_categorical",
+                "loss_param": 1.0,
+                "max_grad_norm": 1.0,
+                "plot_subject_index": 0,
+            },
+            output_dir=str(self.output_dir),
+            seed=42,
+        )
+
+        dummy_dataset = types.SimpleNamespace(
+            _xs=np.zeros((5, 2, 4), dtype=float),
+            x_names=["Subject ID", "Session Index", "prev choice", "prev reward"],
+            y_names=["choice"],
+        )
+        config, _ = trainer._build_network_configs(
+            dataset=dummy_dataset,
+            ignore_policy="exclude",
+            metadata={
+                "multisubject": True,
+                "num_subjects": 2,
+                "session_max_index_by_subject_index": [3, 3],
+            },
+        )
+
+        self.assertEqual(config.session_n_pretrain_steps, 0)
+        self.assertEqual(config.session_n_warmup_steps, 0)
+
     def test_multisubject_session_conditioning_uses_trailing_observation_names(self):
         trainer = DisrnnTrainer(
             architecture={
