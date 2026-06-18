@@ -1,4 +1,10 @@
-"""Entry point for disRNN wrapper experiments on HPC/SLURM."""
+"""Entry point for disRNN wrapper experiments on HPC/SLURM (Beaker / AI Hub).
+
+Loads the dispatcher's Hydra config via the sibling-repo relative path, prepares
+it, starts a W&B run, then delegates the train + held-out evaluation/fine-tuning
+to the shared ``training_runner.run_training`` (the same body the Code Ocean
+entry point run_capsule.py uses), keeping the two paths in parity.
+"""
 
 import json
 import logging
@@ -6,12 +12,13 @@ from pathlib import Path
 
 import hydra
 from hydra.core.hydra_config import HydraConfig
-from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf
 
-from base.interfaces import DatasetLoader, ModelTrainer
+from training_runner import run_training
 from utils.json_helpers import dictconfig_to_json
 from utils.run_helpers import (
+    apply_dynamic_run_name_components,
+    apply_model_penalty_multipliers,
     configure_sys_logger,
     copy_inputs_for_run,
     copy_run_to_wandb,
@@ -29,6 +36,11 @@ logger = logging.getLogger(__name__)
 )
 def main(hydra_config: DictConfig) -> None:
     configure_sys_logger()
+
+    # Prepare config (resolve disRNN penalty multipliers, set dynamic run-name
+    # components) before saving inputs / starting W&B — same as run_capsule.py.
+    apply_model_penalty_multipliers(hydra_config)
+    apply_dynamic_run_name_components(hydra_config)
 
     hydra_runtime = HydraConfig.get().runtime
     run_dir = Path(hydra_runtime.output_dir).resolve()
@@ -59,15 +71,8 @@ def main(hydra_config: DictConfig) -> None:
     resolved_yaml = OmegaConf.to_yaml(hydra_config, resolve=True)
     logger.info("Hydra config (resolved):\n%s", resolved_yaml)
 
-    # --- Load data ---
-    dataset_loader: DatasetLoader = instantiate(hydra_config.data)
-    dataset_bundle = dataset_loader.load()
-    logger.info("Loaded dataset bundle with metadata: %s", dataset_bundle.metadata)
-
-    # --- Train model ---
-    model_trainer: ModelTrainer = instantiate(hydra_config.model)
-    loggers = {"wandb": wandb_run} if wandb_run is not None else None
-    model_trainer.fit(dataset_bundle, loggers=loggers)
+    # --- Train + held-out evaluation/fine-tuning (shared with run_capsule.py) ---
+    run_training(hydra_config, wandb_run)
     if wandb_run is not None:
         wandb_run.finish()
 
