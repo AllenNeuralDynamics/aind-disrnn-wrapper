@@ -686,6 +686,14 @@ def _build_global_heldout_bundle(
         dataset_bundle=global_bundle,
         architecture=architecture,
     )
+    logger.info(
+        "Held-out fine-tuning dataset shapes after session packing: full input %s, train %s, "
+        "eval %s, x_names=%s",
+        tuple(np.asarray(global_bundle.extras["dataset"].get_all()[0]).shape),
+        tuple(np.asarray(global_bundle.train_set.get_all()[0]).shape),
+        tuple(np.asarray(global_bundle.eval_set.get_all()[0]).shape),
+        list(getattr(global_bundle.extras["dataset"], "x_names", [])),
+    )
     return (
         global_bundle,
         retained_heldout_subject_ids,

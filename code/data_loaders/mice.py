@@ -126,7 +126,13 @@ def _resolve_multisubject_subject_order(
     ]
     if missing_subject_ids:
         logger.warning(
-            "Requested subject_ids were not found after filtering and will be skipped: %s",
+            "Requested subject_ids contributed no trials to the fetched dataframe and will be "
+            "skipped: %s. These subjects passed the >=min_sessions selection filter (which counts "
+            "ALL sessions regardless of training stage) but yielded zero rows after the trial "
+            "fetch. The usual cause is mature_only=True restricting the fetch to mature stages "
+            "(STAGE_FINAL/GRADUATED): a subject with enough total sessions but no mature sessions "
+            "fetches no trials. To keep such subjects, count mature sessions during selection or "
+            "set mature_only=False.",
             missing_subject_ids,
         )
     return ordered_subject_ids
