@@ -1,45 +1,30 @@
-import logging
+"""DEPRECATED scratch script — superseded by the unified run_eval.py CLI.
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+This previously passed an inline config dict to run_heldout_subject_finetuning_from_config.
+Move that dict into a YAML (see configs/config_heldout_subject_finetuning.yaml) and run:
+
+    python run_eval.py finetune --config configs/config_heldout_subject_finetuning.yaml \\
+        [--output-root /results/heldout_subject_finetuning]
+
+(The standalone run_heldout_subject_finetuning.py argparse wrapper is also still available.)
+"""
+
+import sys
+
+_EQUIVALENT = (
+    "python run_eval.py finetune --config configs/config_heldout_subject_finetuning.yaml "
+    "[--output-root /results/heldout_subject_finetuning]"
 )
 
 
-from post_training_analysis import run_heldout_subject_finetuning_from_config
+def main() -> None:
+    sys.stderr.write(
+        "DEPRECATED: superseded by the unified run_eval.py CLI.\n"
+        f"Equivalent:\n    {_EQUIVALENT}\n"
+        "See `python run_eval.py finetune --help`.\n"
+    )
+    raise SystemExit(2)
 
-config = {
-    "source_run": {
-        # "model_dir": "/data/result-gru-ffc255a1",
-        "model_dir": "/data/result-gru-16bc52a9",
-        "checkpoint_policy": "best_eval",
-    },
-    "heldout_subjects": {
-        "test_subject_start": 10,
-        "test_subject_end": 15
-    },
-    "heldout_finetuning": {
-        "n_steps": 1000,
-        "lr": 1e-3,
-        "checkpoint_every_n_steps": 100,
-        "batch_size": 1024,
-        "batch_mode": "random",
-        "checkpoint_plot_split_examples_every_n": 100,
-        "checkpoint_save_output_df_every_n": 0,
-        "train_example_sessions_per_subject": 1,
-        "eval_example_sessions_per_subject": 1,
-        "example_max_subjects": 1,
-        "keep_media_files": False,
-    },
-    "output": {
-        "output_root": "/results/heldout_subject_finetuning",
-        "run_name_suffix": None,
-    },
-    "wandb": {
-        "project": "fine_tuning"
-    },
-    "seed": 17,
-}
 
-result = run_heldout_subject_finetuning_from_config(config)
-print(result["output_dir"])
+if __name__ == "__main__":
+    main()

@@ -1,4 +1,22 @@
-"""Public entrypoints for standalone post-training analysis."""
+"""Public entrypoints for standalone post-training analysis.
+
+This package is import-independent of model training: importing it (or running an analysis
+via ``run_eval.py``) does not import ``model_trainers``. Shared evaluation primitives live
+in the ``evaluation`` package, and trained runs are loaded from saved artifacts via
+``resolve_model_run`` (``model_dir/inputs.yaml`` + ``outputs/``).
+
+Two functions are *deliberate, documented training-adjacent exceptions* that lazily import
+the trainers at call time (never at import time):
+
+* ``heldout_finetuning.run_heldout_subject_finetuning_from_config`` — genuinely *re-trains*
+  held-out subject embeddings, so it legitimately uses ``DisrnnTrainer``/``GruTrainer``.
+* ``likelihood_comparison._evaluate_disrnn_dataset`` — for the *multisubject* disRNN case
+  only, it borrows ``DisrnnTrainer``'s network-construction helpers (single-subject eval
+  uses ``evaluation.disrnn_evaluation``'s own builder). The clean fix is to extract disRNN
+  network construction into ``models/disrnn_network.py`` (symmetric with
+  ``models/gru_network.py``) and have both the trainer and eval call it; deferred to avoid
+  touching training code.
+"""
 
 from __future__ import annotations
 

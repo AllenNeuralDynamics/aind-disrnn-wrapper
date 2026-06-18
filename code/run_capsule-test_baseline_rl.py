@@ -1,26 +1,29 @@
-import logging
+"""DEPRECATED scratch script — superseded by the unified run_eval.py CLI.
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+Equivalent:
+    python run_eval.py baseline-rl \\
+        --resolved-run /data/resolved_run-....json \\
+        --fitting-df /data/df_baseline_rl_fitting_....pkl \\
+        --model-aliases QLearning_L1F1_CK1_softmax QLearning_L2F1_softmax ForagingCompareThreshold \\
+        --output-dir /results --n-rollouts-per-session 5
+"""
+
+import sys
+
+_EQUIVALENT = (
+    "python run_eval.py baseline-rl --resolved-run <JSON> --fitting-df <PKL> "
+    "--model-aliases <ALIAS> ... --output-dir /results"
 )
 
 
-from post_training_analysis import run_baseline_rl_post_training_analysis
+def main() -> None:
+    sys.stderr.write(
+        "DEPRECATED: superseded by the unified run_eval.py CLI.\n"
+        f"Equivalent:\n    {_EQUIVALENT}\n"
+        "See `python run_eval.py baseline-rl --help`.\n"
+    )
+    raise SystemExit(2)
 
-result = run_baseline_rl_post_training_analysis(
-    # resolved_run_path="/code/resolved_run.json",
-    resolved_run_path="/data/resolved_run-multisubject_train10_all_stages.json",
-    fitting_df_path="/data/df_baseline_rl_fitting_260408/df_baseline_rl_fitting_260408.pkl",
-    model_aliases=[
-        "QLearning_L1F1_CK1_softmax",
-        "QLearning_L2F1_softmax",
-        "ForagingCompareThreshold",
-    ],
-    output_dir="/results",
-    n_rollouts_per_session=5,
-    session_id_policy="auto",
-    fit_gap_policy="per_model_skip",
-)
 
-print(result["model_summary_json"])
+if __name__ == "__main__":
+    main()

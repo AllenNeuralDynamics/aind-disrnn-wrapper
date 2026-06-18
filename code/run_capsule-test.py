@@ -1,33 +1,32 @@
-import logging
+"""DEPRECATED scratch script — superseded by the unified run_eval.py CLI.
+
+Previously hard-coded a `run_post_training_analysis(...)` call with fixed /data and
+/results paths. Use the standalone CLI, which takes the trained-run directory + options
+as arguments and loads everything from the saved run.
+
+Equivalent:
+    python run_eval.py generative --model-dir <RUN_DIR> \\
+        --split train --checkpoint-policy best_eval --rollout-mode curriculum_matched \\
+        --n-rollouts-per-session 5 --window-size 10 --output-dir /results \\
+        --session-partitions train eval combined
+"""
+
 import sys
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-    stream=sys.stdout,
-    force=True,
+_EQUIVALENT = (
+    "python run_eval.py generative --model-dir <RUN_DIR> "
+    "--split train --checkpoint-policy best_eval --output-dir /results"
 )
 
 
-from post_training_analysis import (
-    run_post_training_analysis,
-    resolve_model_run,
-    load_animal_session_history,
-    simulate_model_sessions,
-    compute_switch_stats,
-)
+def main() -> None:
+    sys.stderr.write(
+        "DEPRECATED: superseded by the unified run_eval.py CLI.\n"
+        f"Equivalent:\n    {_EQUIVALENT}\n"
+        "See `python run_eval.py generative --help`.\n"
+    )
+    raise SystemExit(2)
 
-result = run_post_training_analysis(
-    # model_dir="/data/mice_multisubject_train10_all_stages-baseline_rl_Combined-260520/1",
-    # model_dir="/data/mice_multisubject_train10_all_stages-baseline_rl_Hattori-260520/1",
-    # model_dir="/data/mice_multisubject_train10_all_stages-baseline_rl_Bari-260520/1",
-    model_dir="/data/mice_multisubject_train10_all_stages-gru-260505-lr_1e_05/5",
-    split="train",
-    checkpoint_policy="best_eval",
-    rollout_mode="curriculum_matched",
-    n_rollouts_per_session=5,
-    window_size=10,
-    save_animal_session_history=False,
-    output_dir="/results",
-    session_partitions=("train", "eval", "combined"),
-)
+
+if __name__ == "__main__":
+    main()

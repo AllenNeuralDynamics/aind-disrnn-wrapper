@@ -1,37 +1,30 @@
-import logging
+"""DEPRECATED scratch script — superseded by the unified run_eval.py CLI.
+
+Equivalent:
+    python run_eval.py likelihood-comparison \\
+        --model-dirs <RUN_A> <RUN_B> ... \\
+        --checkpoint-policy best_eval --output-dir /results \\
+        --model-labels "label A" "label B" ... \\
+        --precomputed-session-metrics /code/session_metrics.pkl \\
+        --no-include-heldout
+"""
+
 import sys
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-    stream=sys.stdout,
-    force=True,
+_EQUIVALENT = (
+    "python run_eval.py likelihood-comparison --model-dirs <RUN_A> <RUN_B> ... "
+    "--checkpoint-policy best_eval --output-dir /results [--no-include-heldout]"
 )
 
 
-from post_training_analysis import run_prediction_likelihood_comparison
+def main() -> None:
+    sys.stderr.write(
+        "DEPRECATED: superseded by the unified run_eval.py CLI.\n"
+        f"Equivalent:\n    {_EQUIVALENT}\n"
+        "See `python run_eval.py likelihood-comparison --help`.\n"
+    )
+    raise SystemExit(2)
 
-result = run_prediction_likelihood_comparison(
-    [
-        "/data/mice_multisubject_train10-baseline_rl_Bari-260414/1",
-        "/data/mice_multisubject_train10-baseline_rl_Hattori-260414/1",
-        "/data/mice_multisubject_train10-baseline_rl_CTT-260415/mice_multisubject_train10-baseline_rl_CTT-260415/1",
-        "/data/mice_multisubject_train10-gru-260323/13",
-        "/data/mice_train10_test3-gru-260324/14",
-        "/data/mice_multisubject_train10-disrnn-260323/3",
-    ],
-    checkpoint_policy="best_eval",
-    output_dir="/results",            # optional
-    model_labels=[
-        "Bari model",
-        "Hattoril model",
-        "Foraging_model",
-        "GRU_subj_emb",
-        "GRU_no_subj_emb",
-        "disrnn_subj_emb",
-    ],          # optional
-    precomputed_session_metrics_path="/code/session_metrics.pkl",
-    include_heldout=False,       # optional
-)
 
-print(result)
+if __name__ == "__main__":
+    main()

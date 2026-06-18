@@ -874,8 +874,13 @@ def _evaluate_disrnn_dataset(
     import aind_disrnn_utils.data_loader as dl
     from disentangled_rnns.library import rnn_utils
 
+    # DOCUMENTED training-adjacent coupling (lazy import, never at module load):
+    # the MULTISUBJECT disRNN case borrows the trainer's network-construction helpers.
+    # Single-subject eval uses evaluation.disrnn_evaluation's own _build_network_configs.
+    # Clean fix (deferred to avoid touching training): extract disRNN construction into
+    # models/disrnn_network.py (symmetric with models/gru_network.py) and call it from both.
     from model_trainers.disrnn_trainer import DisrnnTrainer
-    from utils.disrnn_evaluation import _load_saved_params
+    from evaluation.common import _load_saved_params
 
     if run.params_path is None:
         raise ValueError("disRNN evaluation requires params_path to be resolved.")
