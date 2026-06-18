@@ -132,7 +132,7 @@ The wasted capacity is **spatial** (idle SMs *inside* each kernel), not temporal
 ![Hardware × batch-size benchmark](benchmark/hw_batch_benchmark.png)
 
 Seven hardware targets across three platforms — **Code Ocean** (CPU 4-core, T4),
-**AI1 on-premise HPC** (CPU 44-core, V100), **Beaker / AI Hub** (L40s, H100, H200).
+**AI1 on-premise HPC** (CPU 44-core, V100), **AI Hub** (L40s, H100, H200).
 Both panels: num_sessions=100, seed 0, post-warmup (eval during the warm-up phase
 is ignored — a penalty term is inactive then, so val loss is not meaningful).
 Reproduce with `python beaker/benchmark/plot_hw_batch.py`.
@@ -160,7 +160,7 @@ Two caveats (both reflected in the figure): the **HPC runs** use a shorter sched
 (200 steps) on older code, so they appear on the **left/throughput panel only** —
 s/step is comparable, time-to-target is not. And on the right panel only the **0.22**
 threshold is a fair comparison: CPU/T4 (Code Ocean, Feb code) floor at min val ≈0.210
-while the Beaker GPUs (Jun `ai_hub` code) reach ≈0.204 — a code-version difference,
+while the AI Hub GPUs (Jun `ai_hub` code) reach ≈0.204 — a code-version difference,
 not hardware.
 
 **Next (per-GPU efficiency lever, not packing):** the headroom is *spatial* (idle SMs

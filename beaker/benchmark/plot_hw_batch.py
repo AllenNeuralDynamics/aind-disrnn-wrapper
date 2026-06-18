@@ -7,9 +7,9 @@ Pulls the benchmark runs from W&B and renders a 2-panel figure:
 Hardware spans three platforms:
   - Code Ocean   : CPU (4-core), T4
   - AI1 on-premise HPC : CPU (44-core), V100   (s/step only -- see below)
-  - Beaker (AI Hub)    : L40s, H100, H200
+  - AI Hub (Beaker)    : L40s, H100, H200
 
-The Beaker/Code-Ocean runs share the config (num_sessions=100, n_steps=5000,
+The AI-Hub/Code-Ocean runs share the config (num_sessions=100, n_steps=5000,
 n_warmup_steps=500, lr=0.005, beta=0.001, seed=0, eval_every_n=2); only batch
 size / hardware vary. The HPC runs use a shorter schedule (n_steps=200) on an
 older code revision, so their *throughput* (s/step) is comparable but their
@@ -47,13 +47,13 @@ HW = [
                1024: "v0d2vmg8", 2048: "biflbgn5"}),
     dict(label="V100 (AI1 on-premise HPC)", project="hpc_test",
          color="tab:cyan", panels=("sps",), runs={512: "q9acoys6"}),
-    dict(label="L40s (Beaker)", project="ai_hub_test",
+    dict(label="L40s (AI Hub)", project="ai_hub_test",
          color="tab:green", panels=("sps", "ttt"),
          runs={512: "ybzvw1l9", 2048: "1wbc4tko"}),
-    dict(label="H100 (Beaker)", project="ai_hub_test",
+    dict(label="H100 (AI Hub)", project="ai_hub_test",
          color="tab:orange", panels=("sps", "ttt"),
          runs={512: "l9cb2l2c", 2048: "ne6hxgvz"}),
-    dict(label="H200 (Beaker)", project="ai_hub_test",
+    dict(label="H200 (AI Hub)", project="ai_hub_test",
          color="tab:red", panels=("sps", "ttt"),
          runs={512: "vhm9w9hz", 2048: "w5ix4w78"}),
 ]
@@ -120,7 +120,7 @@ def plot(data, out_png):
     axL.set_title("Time per training step vs batch size\nnum_sessions=100, seed 0")
     axR.set_ylabel(f"time to valid_loss < {THRESHOLD} (min)")
     axR.set_title(f"Time to reach valid_loss < {THRESHOLD}  (post-warmup)\n"
-                  "num_sessions=100, seed 0  (Beaker/Code Ocean only)")
+                  "num_sessions=100, seed 0  (AI Hub/Code Ocean only)")
 
     for ax in (axL, axR):
         ax.set_xscale("log", base=2)
