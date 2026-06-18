@@ -55,10 +55,12 @@ the `aind_disrnn_utils` data-loader package.
 | `data_loaders/` | `mice.py` (database + docDB loaders), `synthetic.py` (synthetic agents / task-trained RNN) |
 | `models/` | `gru_network.py`, `multisubject_disrnn.py`, `session_conditioning.py`, `subject_embedding_initialization.py` |
 | `model_trainers/` | `base_multisubject_trainer.py` (shared base), `gru_trainer.py`, `disrnn_trainer.py`, `baseline_rl_trainer.py` |
-| `utils/` | `run_helpers.py`, `multisubject.py`, `session_regularized_training.py`, `gru_evaluation.py`, `disrnn_evaluation.py`, `baseline_rl_evaluation.py`, `load_mice_database.py` |
-| `post_training_analysis/` | `generative_analysis.py`, `embedding_space_analysis.py`, `likelihood_comparison.py`, `likelihood_advantage_analysis.py`, `baseline_rl_analysis.py`, `heldout_finetuning.py` |
-| `run_heldout_subject_finetuning.py` | Standalone CLI for held-out subject embedding fine-tuning |
-| `run_capsule-test_*.py`, `run_embedding_space_analysis.py` | Alternate entry points for analysis/experiments (toggled in `run`) |
+| `utils/` | `run_helpers.py`, `multisubject.py`, `session_regularized_training.py`, `load_mice_database.py` (the `*_evaluation.py` / `disrnn_plotting.py` here are now deprecated re-export shims → `evaluation/`) |
+| `evaluation/` | Shared evaluation primitives used by **both** training-time held-out eval and post-training analysis: `heldout_eval_config.py`, `common.py`, `{disrnn,gru,baseline_rl}_evaluation.py`, `plotting.py` |
+| `post_training_analysis/` | `generative_analysis.py`, `embedding_space_analysis.py`, `likelihood_comparison.py`, `likelihood_advantage_analysis.py`, `baseline_rl_analysis.py`, `heldout_finetuning.py` — see **[EVALUATION.md](EVALUATION.md)** |
+| `run_eval.py` | **Unified post-training-analysis CLI** (see [EVALUATION.md](EVALUATION.md)) |
+| `run_heldout_subject_finetuning.py`, `run_embedding_space_analysis.py` | Older single-purpose analysis CLIs (superseded by `run_eval.py`) |
+| `run_capsule-test_*.py` | **Deprecated** scratch scripts — now stubs pointing at `run_eval.py` |
 | `tests/` | `unittest` suites (see [§9 Testing](#9-testing)) |
 | `load_mice_data.py` | Pull/cache mouse data snapshots from the database |
 
@@ -303,6 +305,15 @@ environment.
 ## Changelog
 
 > Add a dated entry (newest first) whenever you add or change a feature.
+
+### 2026-06-18
+- **Post-training evaluation reorganized into `evaluation/` + unified CLI.** Eval
+  primitives moved from `utils/` into the new `evaluation/` package (transparent
+  re-export shims left behind, so training imports are unchanged); shared
+  `HeldoutEvalConfig`/helpers split into `evaluation/heldout_eval_config.py` and
+  `evaluation/common.py`. Added `run_eval.py` (one sub-command per analysis) and
+  deprecated the `run_capsule-test_*.py` scratch scripts to stubs. New living guide:
+  **[EVALUATION.md](EVALUATION.md)**. No training-code changes. (commit `73fd4c2`)
 
 ### 2026-06-17
 - **Automatic multisubject held-out fine-tuning + evaluation.** Added
