@@ -1,0 +1,67 @@
+# Data config for MiceSnapshotDatasetLoader (database-backed).
+# Controls which subjects/sessions are included in the train/eval splits.
+#
+# Subjects are selected by the ratio-based pipeline (see
+# utils.load_mice_database.load_mice_from_database): subjects with >= min_sessions
+# sessions are assigned their most-common task as a curriculum, ranked per
+# curriculum by session count; a fixed ~20% heldout test set is reserved (every
+# heldout_every_n-th in rank order) and the training set is a seeded subject_ratio
+# sample of the remaining ~80% pool per curriculum.
+#
+# Usage in config.yaml:
+#   data:
+#     <<: !include data/mice_snapshot.yaml
+
+_target_: data_loaders.mice.MiceSnapshotDatasetLoader
+
+# ── Subject-selection pipeline ───────────────────────────────────────────
+split: train                  # "train" or "heldout"
+subject_ids: null             # direct override; bypasses the pipeline (e.g. [111, 222])
+min_sessions: 10              # drop subjects with fewer than this many sessions
+heldout_every_n: 5            # reserve every 5th ranked subject (~20%) as heldout
+subject_ratio:                # per-curriculum fraction of the ~80% train pool
+  Coupled Baiting: 1.0
+  Uncoupled Baiting: 1.0
+  Uncoupled Without Baiting: 1.0
+subject_sample_seed: ${seed}  # reproducible training-set subject sample
+
+# ── Held-out test subject evaluation ─────────────────────────────────────
+# Auto-enabled for mice_snapshot runs (gated on data.type); set
+# `heldout_eval: false` to disable, or `true` to force on for other run types.
+test_subject_ids: null        # optional explicit heldout subjects (overrides reserved set)
+heldout_example_sessions_per_subject: 1  # >=0; 0 skips held-out example plotting
+train_example_sessions_per_subject: 1    # >=0; 0 skips training example plotting
+eval_example_sessions_per_subject: 1     # >=0; 0 skips eval example plotting
+example_max_subjects: 6                  # >=0; cap subjects used for train/eval/held-out examples
+
+# Returned-trials stage filter (does NOT affect subject selection):
+#   true  → return only STAGE_FINAL / GRADUATED trials
+#   false → return all-stage trials
+mature_only: true
+
+# ── Curricula (task names) to include ────────────────────────────────────
+# Omit (or set to null) to use the three default foraging curricula.
+curricula:
+  - Coupled Baiting
+  - Uncoupled Baiting
+  - Uncoupled Without Baiting
+
+# ── Columns to keep in the returned DataFrames ───────────────────────────
+# Omit (or set to null) to use the default column set.
+cols_to_retain:
+  - trial
+  - subject_id
+  - ses_idx
+  - animal_response
+  - earned_reward
+
+# ── disRNN dataset parameters ─────────────────────────────────────────────
+# Must be "include" or "exclude".
+ignore_policy: exclude
+# Null → use library defaults (prev choice + prev reward).
+features: null
+eval_every_n: 2
+batch_size: null
+batch_mode: random
+
+seed: ${seed}

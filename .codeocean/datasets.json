@@ -1,0 +1,97 @@
+{
+	"version": 1,
+	"attached_datasets": [
+		{
+			"id": "0ae5a5ec-2d2e-4726-bcf3-f22f814795ce",
+			"mount": "mice_multisubject_train10-baseline_rl_CTT-260415"
+		},
+		{
+			"id": "1172a0a1-c9a4-4ceb-9e62-ae08ffaf8ae2",
+			"mount": "mice_multisubject_train10-baseline_rl_Bari-260414"
+		},
+		{
+			"id": "2dded585-edcc-4ddc-b088-a5cd16775575",
+			"mount": "mice_multisubject_train10_all_stages-baseline_rl_Combined-260520"
+		},
+		{
+			"id": "41983b7d-5708-42a1-9862-4bef8b11da1f",
+			"mount": "mice_multisubject_train10-gru-260323"
+		},
+		{
+			"id": "4ba57838-f4b7-4215-a9d9-11bccaaf2e1c",
+			"mount": "foraging_nwb_bpod"
+		},
+		{
+			"id": "4d96980e-d068-4ff6-879e-9d2f9ea281e0",
+			"mount": "mice_multisubject_train10-gru_session_conditioning_lr_1e_5-260505"
+		},
+		{
+			"id": "5beb1741-1285-46dc-bbeb-64c29a4ad158",
+			"mount": "mice_snapshot_4"
+		},
+		{
+			"id": "630a1fe9-2df1-44a5-996a-432a6d099e04",
+			"mount": "mice_snapshot_2"
+		},
+		{
+			"id": "66778003-ad33-41ae-a345-dd4467012e42",
+			"mount": "mice_snapshot"
+		},
+		{
+			"id": "7383823b-f6de-42c6-ac6d-ab47e2f1eedd",
+			"mount": "mice_multisubject_train10_all_stages-gru-260505-lr_1e_05"
+		},
+		{
+			"id": "75e09b6f-2c83-46f5-b0b0-3db52b4b2291",
+			"mount": "DF-TaskTrainedRNNData"
+		},
+		{
+			"id": "7bbe26c1-e5f4-4a6d-9412-c15a40665597",
+			"mount": "mice_multisubject_train10-baseline_rl_Combined-260415"
+		},
+		{
+			"id": "94e6308f-479e-4887-87b3-25c28e864401",
+			"mount": "mice_train10_test3-gru-260324"
+		},
+		{
+			"id": "a1d53838-4eef-4f86-82b8-f07fd848753d",
+			"mount": "mice_multisubject_train10-disrnn-260323"
+		},
+		{
+			"id": "ae0b6d79-dfd5-46ed-ba55-657eb0177d3f",
+			"mount": "mice_train10_test3-disrnn-260324"
+		},
+		{
+			"id": "be424839-a1bc-4359-acea-2e59aedb7436",
+			"mount": "mice_multisubject_train10-baseline_rl_Hattori-260414"
+		},
+		{
+			"id": "c1b3e0ee-baff-4cf3-9e62-0790fb2855bb",
+			"mount": "mice_snapshot_3"
+		},
+		{
+			"id": "ccf1dc32-9d83-425e-ae6d-70e183c58778",
+			"mount": "mice_snapshot_1"
+		},
+		{
+			"id": "ecf50edc-9090-4ade-bd90-7486b38de2ca",
+			"mount": "df_baseline_rl_fitting_260408"
+		},
+		{
+			"id": "efcb23a2-0e5d-45eb-a8b4-3c87cd8e2d87",
+			"mount": "mice_multisubject_train10_all_stages-baseline_rl_Hattori-260520"
+		},
+		{
+			"id": "f25f2cb1-daeb-41fa-8bf4-a860dcf92de3",
+			"mount": "mice_multisubject_train10_distillation-disrnn-260410-temp_2"
+		},
+		{
+			"id": "f908dd4d-d7ed-4d52-97cf-ccd0e167c659",
+			"mount": "foraging_nwb_bonsai"
+		},
+		{
+			"id": "fc7eee4b-cd23-4f0b-a22a-3ff752a25580",
+			"mount": "mice_multisubject_train10_all_stages-baseline_rl_Bari-260520"
+		}
+	]
+}
