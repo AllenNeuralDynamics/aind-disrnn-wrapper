@@ -1407,6 +1407,84 @@ class TestBaselineRLTrainer(unittest.TestCase):
             self.assertEqual(len(plot_paths), 1)
             self.assertTrue(Path(plot_paths[0]).exists())
 
+    # --- Held-out re-fit (fit per held-out subject; heldout/* parity) ---------
+
+    def test_fit_heldout_refits_and_logs_heldout_namespace(self):
+        """fit_heldout fits per held-out subject, logs heldout/* metrics, writes
+        artifacts under a heldout_test subdir, and restores output_dir."""
+
+        class _FakeRun:
+            def __init__(self):
+                self.summary = {}
+                self.logged = []
+                self.artifacts = []
+                self.id = "test"
+
+            def log(self, data, *args, **kwargs):
+                self.logged.append(dict(data))
+
+            def log_artifact(self, *args, **kwargs):
+                self.artifacts.append(args)
+
+        with tempfile.TemporaryDirectory(prefix="baseline_rl_heldout_") as tmpdir:
+            trainer = BaselineRLTrainer(
+                architecture={"multisubject": True},
+                multisubject_subject_workers=2,
+                agent_class="ForagerQLearning",
+                agent_kwargs={
+                    "number_of_learning_rate": 2,
+                    "number_of_forget_rate": 1,
+                    "choice_kernel": "none",
+                    "action_selection": "softmax",
+                },
+                DE_kwargs={"workers": 1, "maxiter": 2, "popsize": 4, "polish": False},
+                output_dir=tmpdir,
+                seed=42,
+            )
+            fake = _FakeRun()
+            summary = trainer.fit_heldout(
+                self.multisubject_bundle, loggers={"wandb": fake}
+            )
+
+            # Returned summary exposes the canonical held-out likelihood keys.
+            self.assertTrue(summary["enabled"])
+            self.assertEqual(summary["fit_strategy_heldout"], "refit")
+            self.assertEqual(
+                summary["test_likelihood"], summary["pooled_eval_trial_likelihood"]
+            )
+
+            # W&B keys are namespaced under heldout/ (parity with GRU/disRNN).
+            self.assertIn("heldout/train_likelihood", fake.summary)
+            self.assertIn("heldout/eval_likelihood", fake.summary)
+            self.assertIn("heldout/pooled_eval_trial_likelihood", fake.summary)
+            self.assertNotIn("train_likelihood", fake.summary)  # no bare keys leaked
+            self.assertEqual(fake.artifacts, [])  # full-dir upload suppressed
+
+            # Artifacts land under heldout_test/; training-root artifacts untouched.
+            heldout_dir = Path(tmpdir) / "heldout_test"
+            self.assertTrue((heldout_dir / "subject_fit_metrics.csv").exists())
+            self.assertTrue((heldout_dir / "subject_index_map.json").exists())
+            self.assertFalse((Path(tmpdir) / "subject_fit_metrics.csv").exists())
+
+            # output_dir is restored after the held-out pass.
+            self.assertEqual(trainer.output_dir, Path(tmpdir))
+
+    def test_baseline_rl_heldout_refit_gating(self):
+        """run_capsule gates baseline_rl held-out re-fit on model.heldout_refit.enabled."""
+        import run_capsule
+        from omegaconf import OmegaConf
+
+        enabled = OmegaConf.create(
+            {"model": {"type": "baseline_rl", "heldout_refit": {"enabled": True}}}
+        )
+        disabled = OmegaConf.create(
+            {"model": {"type": "baseline_rl", "heldout_refit": {"enabled": False}}}
+        )
+        absent = OmegaConf.create({"model": {"type": "baseline_rl"}})
+        self.assertTrue(run_capsule._baseline_rl_heldout_refit_enabled(enabled))
+        self.assertFalse(run_capsule._baseline_rl_heldout_refit_enabled(disabled))
+        self.assertFalse(run_capsule._baseline_rl_heldout_refit_enabled(absent))
+
 
 if __name__ == "__main__":
     unittest.main()

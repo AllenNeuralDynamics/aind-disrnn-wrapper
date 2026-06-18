@@ -11,10 +11,7 @@ from hydra.utils import instantiate
 from omegaconf import OmegaConf
 
 from base.interfaces import DatasetLoader, ModelTrainer
-from utils.baseline_rl_evaluation import (
-    evaluate_baseline_rl_on_heldout_subjects,
-    save_baseline_rl_output,
-)
+from utils.baseline_rl_evaluation import save_baseline_rl_output
 from utils.disrnn_evaluation import (
     HeldoutEvalConfig,
     evaluate_disrnn_on_heldout_subjects,
@@ -56,6 +53,13 @@ def _auto_heldout_finetune_enabled(hydra_config) -> bool:
     training_cfg = getattr(getattr(hydra_config, "model", None), "training", None)
     auto_cfg = getattr(training_cfg, "auto_heldout_finetune", None) if training_cfg else None
     return bool(getattr(auto_cfg, "enabled", False)) if auto_cfg is not None else False
+
+
+def _baseline_rl_heldout_refit_enabled(hydra_config) -> bool:
+    """True when model.heldout_refit.enabled is set (baseline_rl held-out re-fit)."""
+    model_cfg = getattr(hydra_config, "model", None)
+    refit_cfg = getattr(model_cfg, "heldout_refit", None) if model_cfg is not None else None
+    return bool(getattr(refit_cfg, "enabled", False)) if refit_cfg is not None else False
 
 
 def _run_auto_heldout_finetune(hydra_config, *, model_type, wandb_run):
@@ -243,6 +247,43 @@ def main() -> None:
             ]
 
     if (
+        model_type == "baseline_rl"
+        and hasattr(hydra_config.data, "mature_only")
+        and heldout_cfg.enabled
+        and _baseline_rl_heldout_refit_enabled(hydra_config)
+    ):
+        # Fit a fresh RL agent on each reserved held-out subject (train/eval split)
+        # and log aggregate held-out train/eval likelihood under heldout/*, like the
+        # NN models. The held-out reserved set is inherently multiple subjects, so
+        # load it in multisubject mode regardless of the training run's mode.
+        heldout_summary = None
+        try:
+            heldout_loader = instantiate(
+                hydra_config.data, split="heldout", multisubject=True
+            )
+            heldout_bundle = heldout_loader.load()
+            heldout_summary = model_trainer.fit_heldout(heldout_bundle, loggers=loggers)
+        except Exception as exc:
+            logger.warning("Held-out re-fit failed and will be skipped: %s", exc)
+            heldout_summary = {
+                "enabled": True,
+                "heldout_refit_failed": True,
+                "error": str(exc),
+            }
+        heldout_test_likelihood = resolve_heldout_test_likelihood(heldout_summary)
+        if heldout_test_likelihood is not None:
+            logger.info(
+                "Held-out re-fit eval likelihood: %.4f", float(heldout_test_likelihood)
+            )
+        if isinstance(output, dict):
+            output["heldout_test"] = heldout_summary
+        output_path = save_baseline_rl_output(
+            getattr(hydra_config.model, "output_dir", "/results/outputs"),
+            output,
+            indent=4,
+        )
+        logger.info("Updated baseline RL output with held-out re-fit summary at %s", output_path)
+    elif (
         hasattr(hydra_config.data, "mature_only")
         and heldout_cfg.enabled
         and not is_multisubject_personalized_model
@@ -422,11 +463,6 @@ def main() -> None:
                                 total_steps,
                                 exc,
                             )
-            elif model_type == "baseline_rl":
-                heldout_summary = evaluate_baseline_rl_on_heldout_subjects(
-                    hydra_config,
-                    wandb_run=wandb_run,
-                )
         except Exception as exc:
             logger.warning("Held-out evaluation failed and will be skipped: %s", exc)
             heldout_summary = {
@@ -444,16 +480,6 @@ def main() -> None:
                 )
             if isinstance(output, dict):
                 output["heldout_test"] = heldout_summary
-            if model_type == "baseline_rl":
-                output_path = save_baseline_rl_output(
-                    getattr(hydra_config.model, "output_dir", "/results/outputs"),
-                    output,
-                    indent=4,
-                )
-                logger.info(
-                    "Updated baseline RL output with held-out summary at %s",
-                    output_path,
-                )
     elif is_multisubject_personalized_model and heldout_cfg.enabled:
         if model_type in {"disrnn", "gru"} and _auto_heldout_finetune_enabled(hydra_config):
             try:

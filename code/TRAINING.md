@@ -163,6 +163,25 @@ enabled, input feature 1 is `session_index`.
   distillation — train the disRNN student toward the temperature-softened mean of
   one or more trained GRU teachers. v1: `aggregation=mean_probs`, `loss=kl`.
 
+### baseline_rl specifics
+Classic RL agents (`agent_class`, e.g. `ForagerQLearning`) fit by differential
+evolution — **one agent fit per subject**, independently (no shared model/embedding).
+- **Database (`mice_snapshot`) loading is supported** for both single- and
+  multi-subject runs. Multisubject fits one agent per training subject
+  (parallelized by `multisubject_subject_workers`) and reports per-subject +
+  pooled train/eval-split likelihood (`train_likelihood`/`eval_likelihood`, also
+  surfaced as `checkpoint/train_likelihood`/`checkpoint/eval_likelihood` for
+  cross-model W&B parity).
+- **Held-out subjects** are *re-fit*, not transferred: when
+  `model.heldout_refit.enabled` (default on for `config_baseline_rl.yaml`) and
+  held-out eval applies, `run_capsule` loads the reserved held-out subjects as a
+  multisubject bundle and `BaselineRLTrainer.fit_heldout` fits a fresh agent per
+  held-out subject (train/eval split), logging aggregate
+  `heldout/train_likelihood` + `heldout/eval_likelihood` into the same W&B run
+  (parity with the NN models) and writing artifacts under `outputs/heldout_test/`.
+  This replaces the older transfer-based held-out eval (apply trained params to
+  held-out), which is retired from the run path.
+
 ---
 
 ## 6. Data loaders & splits
@@ -223,10 +242,16 @@ The ~20% reserved held-out subjects (see §6) are handled differently by mode:
   `data.heldout_eval: false`). `run_capsule` evaluates the trained model directly
   on the held-out subjects at checkpoints and at the end.
 
-- **Multisubject runs:** the model has no embedding for an unseen subject, so it
-  can't be evaluated zero-shot. Held-out generalization is measured by
-  **fine-tuning a fresh embedding per held-out subject** (the rest of the model
+- **Multisubject GRU/disRNN runs:** the model has no embedding for an unseen
+  subject, so it can't be evaluated zero-shot. Held-out generalization is measured
+  by **fine-tuning a fresh embedding per held-out subject** (the rest of the model
   frozen) and reporting likelihood.
+
+- **baseline_rl runs (single- or multi-subject):** RL agents fit per subject, so
+  held-out subjects are simply **re-fit** (a fresh agent per held-out subject,
+  train/eval split) — gated by `model.heldout_refit.enabled` (see §5). Reports
+  `heldout/train_likelihood` + `heldout/eval_likelihood` like the NN models. No
+  embedding transfer/fine-tuning is involved.
 
 ### Automatic multisubject held-out fine-tuning + evaluation
 Controlled by `model.training.auto_heldout_finetune` (enabled by default in the
@@ -307,6 +332,15 @@ environment.
 > Add a dated entry (newest first) whenever you add or change a feature.
 
 ### 2026-06-18
+- **baseline_rl fits + reports likelihood on held-out subjects.** Added
+  `BaselineRLTrainer.fit_heldout` — re-fits a fresh RL agent per reserved held-out
+  subject (train/eval split) and logs aggregate `heldout/train_likelihood` +
+  `heldout/eval_likelihood` into the same W&B run (parity with GRU/disRNN), gated by
+  `model.heldout_refit.enabled` (default on in `config_baseline_rl.yaml`). Training
+  subjects also surface `checkpoint/train_likelihood`/`checkpoint/eval_likelihood`.
+  `run_capsule` now drives this for both single- and multi-subject baseline_rl,
+  replacing the retired transfer-based held-out eval. Database (`mice_snapshot`)
+  loading works for both subject groups.
 - **Post-training evaluation reorganized into `evaluation/` + unified CLI.** Eval
   primitives moved from `utils/` into the new `evaluation/` package (transparent
   re-export shims left behind, so training imports are unchanged); shared

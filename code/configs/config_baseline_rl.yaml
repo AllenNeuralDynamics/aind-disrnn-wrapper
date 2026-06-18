@@ -147,6 +147,12 @@ model:
     # mutation: [0.5, 1.0]
     # recombination: 0.7
     polish: true
+  # Re-fit baseline RL on the reserved held-out subjects (per-subject, train/eval
+  # split) and log aggregate held-out train/eval likelihood under heldout/*, like
+  # GRU/disRNN. Applies to mice_snapshot (database) runs; set false to skip the
+  # extra per-held-out-subject fitting. Replaces the old transfer-based held-out eval.
+  heldout_refit:
+    enabled: true
   seed: ${seed}
   run_name_component: baseline_rl_${.agent_class}_L${.agent_kwargs.number_of_learning_rate}F${.agent_kwargs.number_of_forget_rate}
 

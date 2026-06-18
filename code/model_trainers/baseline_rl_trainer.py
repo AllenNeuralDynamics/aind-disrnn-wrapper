@@ -51,6 +51,43 @@ def _to_dict(config: Mapping[str, Any] | DictConfig) -> Dict[str, Any]:
     return dict(config)
 
 
+class _HeldoutSummaryProxy:
+    """dict-like wrapper that namespaces W&B ``summary`` keys under a prefix."""
+
+    def __init__(self, summary: Any, prefix: str) -> None:
+        self._summary = summary
+        self._prefix = prefix
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        self._summary[f"{self._prefix}/{key}"] = value
+
+    def __getitem__(self, key: str) -> Any:
+        return self._summary[f"{self._prefix}/{key}"]
+
+
+class _HeldoutWandbProxy:
+    """Wrap a W&B run so held-out metrics are namespaced under ``prefix`` and the
+    full-output-dir artifact upload is suppressed (held-out artifacts live in a
+    subdir of the training run's outputs). All other attributes delegate to the
+    wrapped run, so the existing fit orchestrators need no changes."""
+
+    def __init__(self, run: Any, prefix: str) -> None:
+        self._run = run
+        self._prefix = prefix
+        self.summary = _HeldoutSummaryProxy(run.summary, prefix)
+
+    def log(self, data: Mapping[str, Any], *args: Any, **kwargs: Any) -> Any:
+        prefixed = {f"{self._prefix}/{key}": value for key, value in dict(data).items()}
+        return self._run.log(prefixed, *args, **kwargs)
+
+    def log_artifact(self, *args: Any, **kwargs: Any) -> None:
+        # Held-out pass does not re-upload the whole /results/outputs tree.
+        return None
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._run, name)
+
+
 def _compute_negLL_from_choice_prob(
     choice_prob: np.ndarray,
     choices: np.ndarray,
@@ -1762,18 +1799,89 @@ class BaselineRLTrainer(ModelTrainer):
         if loggers and "wandb" in loggers:
             wandb_run = loggers["wandb"]
         if self._is_multisubject_mode(metadata):
-            return self._fit_multisubject(
+            output = self._fit_multisubject(
                 bundle=bundle,
                 metadata=metadata,
                 wandb_run=wandb_run,
                 start_time=start_time,
             )
-        return self._fit_single_subject(
-            bundle=bundle,
-            metadata=metadata,
-            wandb_run=wandb_run,
-            start_time=start_time,
+        else:
+            output = self._fit_single_subject(
+                bundle=bundle,
+                metadata=metadata,
+                wandb_run=wandb_run,
+                start_time=start_time,
+            )
+        # Cross-model parity: surface train/eval split likelihood under the same
+        # W&B keys GRU/disRNN use (checkpoint/*), so baseline_rl overlays the same
+        # panels. baseline_rl has no step axis, so these are summary scalars only.
+        if wandb_run is not None and isinstance(output, dict):
+            if output.get("train_likelihood") is not None:
+                wandb_run.summary["checkpoint/train_likelihood"] = float(
+                    output["train_likelihood"]
+                )
+            if output.get("eval_likelihood") is not None:
+                wandb_run.summary["checkpoint/eval_likelihood"] = float(
+                    output["eval_likelihood"]
+                )
+        return output
+
+    def fit_heldout(
+        self,
+        bundle: DatasetBundle,
+        loggers: dict[str, Any] | None = None,
+        *,
+        wandb_key_prefix: str = "heldout",
+        output_subdir: str = "heldout_test",
+    ) -> Dict[str, Any]:
+        """Fit a fresh RL agent per HELD-OUT subject and report train/eval likelihood.
+
+        Runs the same per-subject fitting machinery as ``fit`` (fit on each held-out
+        subject's train sessions, score on its train and eval sessions), but on a
+        held-out-subject bundle. W&B metrics are namespaced under ``wandb_key_prefix``
+        (e.g. ``heldout/train_likelihood``, ``heldout/eval_likelihood``) in the
+        provided run, and artifacts are written under ``output_dir/<output_subdir>``.
+        The held-out reserved set is inherently multiple subjects, so the bundle is
+        expected to be multisubject.
+        """
+        start_time = time.time()
+        metadata = dict(bundle.metadata)
+        wandb_run = loggers.get("wandb") if loggers else None
+        proxy = (
+            _HeldoutWandbProxy(wandb_run, wandb_key_prefix)
+            if wandb_run is not None
+            else None
         )
+
+        original_output_dir = self.output_dir
+        self.output_dir = original_output_dir / output_subdir
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            if self._is_multisubject_mode(metadata):
+                summary = self._fit_multisubject(
+                    bundle=bundle,
+                    metadata=metadata,
+                    wandb_run=proxy,
+                    start_time=start_time,
+                )
+            else:
+                summary = self._fit_single_subject(
+                    bundle=bundle,
+                    metadata=metadata,
+                    wandb_run=proxy,
+                    start_time=start_time,
+                )
+        finally:
+            self.output_dir = original_output_dir
+
+        summary = dict(summary)
+        summary["enabled"] = True
+        summary["fit_strategy_heldout"] = "refit"
+        # Expose a canonical key so utils.run_helpers.resolve_heldout_test_likelihood works.
+        summary["test_likelihood"] = summary.get(
+            "pooled_eval_trial_likelihood", summary.get("eval_likelihood")
+        )
+        return summary
 
     def _plot_choice_reward_and_fitted_prob(
         self,
