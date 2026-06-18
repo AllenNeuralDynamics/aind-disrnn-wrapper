@@ -7,13 +7,13 @@ training is invoked and ``model_trainers`` is never imported just to evaluate.
 
 Examples
 --------
-    python run_eval.py generative           --model-dir RUN [--split train --checkpoint-policy best_eval]
-    python run_eval.py from-histories       --simulated-history sim.pkl [--animal-history a.pkl --resolved-run resolved_run.json]
-    python run_eval.py likelihood-comparison --model-dirs A B C [--no-include-heldout]
-    python run_eval.py likelihood-advantage  --model1-dir A --model2-dir B [--split combined]
-    python run_eval.py embedding             --model-dir RUN [--checkpoint-policy best_eval]
-    python run_eval.py baseline-rl           --resolved-run resolved_run.json --fitting-df fits.pkl
-    python run_eval.py finetune              --config finetune.yaml [--output-root DIR]
+    python run_analysis.py generative           --model-dir RUN [--split train --checkpoint-policy best_eval]
+    python run_analysis.py from-histories       --simulated-history sim.pkl [--animal-history a.pkl --resolved-run resolved_run.json]
+    python run_analysis.py likelihood-comparison --model-dirs A B C [--no-include-heldout]
+    python run_analysis.py likelihood-advantage  --model1-dir A --model2-dir B [--split combined]
+    python run_analysis.py embedding             --model-dir RUN [--checkpoint-policy best_eval]
+    python run_analysis.py baseline-rl           --resolved-run resolved_run.json --fitting-df fits.pkl
+    python run_analysis.py finetune              --config finetune.yaml [--output-root DIR]
 
 Analysis functions are imported lazily inside each handler so that importing this module
 (or running an unrelated sub-command) never pulls in heavy or training-adjacent code.
@@ -162,7 +162,7 @@ def _add_output_dir(parser: argparse.ArgumentParser) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="run_eval.py",
+        prog="run_analysis.py",
         description="Standalone post-training evaluation runner (training-independent).",
     )
     sub = parser.add_subparsers(dest="command", required=True)

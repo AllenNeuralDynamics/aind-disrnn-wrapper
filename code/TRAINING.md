@@ -57,10 +57,10 @@ the `aind_disrnn_utils` data-loader package.
 | `model_trainers/` | `base_multisubject_trainer.py` (shared base), `gru_trainer.py`, `disrnn_trainer.py`, `baseline_rl_trainer.py` |
 | `utils/` | `run_helpers.py`, `multisubject.py`, `session_regularized_training.py`, `load_mice_database.py` (the `*_evaluation.py` / `disrnn_plotting.py` here are now deprecated re-export shims → `evaluation/`) |
 | `evaluation/` | Shared evaluation primitives used by **both** training-time held-out eval and post-training analysis: `heldout_eval_config.py`, `common.py`, `{disrnn,gru,baseline_rl}_evaluation.py`, `plotting.py` |
-| `post_training_analysis/` | `generative_analysis.py`, `embedding_space_analysis.py`, `likelihood_comparison.py`, `likelihood_advantage_analysis.py`, `baseline_rl_analysis.py`, `heldout_finetuning.py` — see **[EVALUATION.md](EVALUATION.md)** |
-| `run_eval.py` | **Unified post-training-analysis CLI** (see [EVALUATION.md](EVALUATION.md)) |
-| `run_heldout_subject_finetuning.py`, `run_embedding_space_analysis.py` | Older single-purpose analysis CLIs (superseded by `run_eval.py`) |
-| `run_capsule-test_*.py` | **Deprecated** scratch scripts — now stubs pointing at `run_eval.py` |
+| `post_training_analysis/` | `generative_analysis.py`, `embedding_space_analysis.py`, `likelihood_comparison.py`, `likelihood_advantage_analysis.py`, `baseline_rl_analysis.py`, `heldout_finetuning.py` — see **[POST_TRAINING_ANALYSIS.md](POST_TRAINING_ANALYSIS.md)** |
+| `run_analysis.py` | **Unified post-training-analysis CLI** (see [POST_TRAINING_ANALYSIS.md](POST_TRAINING_ANALYSIS.md)) |
+| `run_heldout_subject_finetuning.py`, `run_embedding_space_analysis.py` | Older single-purpose analysis CLIs (superseded by `run_analysis.py`) |
+| `run_capsule-test_*.py` | **Deprecated** scratch scripts — now stubs pointing at `run_analysis.py` |
 | `tests/` | `unittest` suites (see [§9 Testing](#9-testing)) |
 | `load_mice_data.py` | Pull/cache mouse data snapshots from the database |
 
@@ -345,9 +345,9 @@ environment.
   primitives moved from `utils/` into the new `evaluation/` package (transparent
   re-export shims left behind, so training imports are unchanged); shared
   `HeldoutEvalConfig`/helpers split into `evaluation/heldout_eval_config.py` and
-  `evaluation/common.py`. Added `run_eval.py` (one sub-command per analysis) and
+  `evaluation/common.py`. Added `run_analysis.py` (one sub-command per analysis) and
   deprecated the `run_capsule-test_*.py` scratch scripts to stubs. New living guide:
-  **[EVALUATION.md](EVALUATION.md)**. No training-code changes. (commit `73fd4c2`)
+  **[POST_TRAINING_ANALYSIS.md](POST_TRAINING_ANALYSIS.md)**. No training-code changes. (commit `73fd4c2`)
 
 ### 2026-06-17
 - **Automatic multisubject held-out fine-tuning + evaluation.** Added

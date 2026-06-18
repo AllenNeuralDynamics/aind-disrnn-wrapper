@@ -1,7 +1,7 @@
-"""DEPRECATED scratch script — superseded by the unified run_eval.py CLI.
+"""DEPRECATED scratch script — superseded by the unified run_analysis.py CLI.
 
 Equivalent (top-level likelihood-advantage analysis):
-    python run_eval.py likelihood-advantage \\
+    python run_analysis.py likelihood-advantage \\
         --model1-dir <RUN_A> --model2-dir <RUN_B> \\
         --split combined --checkpoint-policy best_eval --output-dir /results
 
@@ -15,16 +15,16 @@ are not yet exposed as CLI sub-commands; call them via the Python API:
 import sys
 
 _EQUIVALENT = (
-    "python run_eval.py likelihood-advantage --model1-dir <RUN_A> --model2-dir <RUN_B> "
+    "python run_analysis.py likelihood-advantage --model1-dir <RUN_A> --model2-dir <RUN_B> "
     "--split combined --checkpoint-policy best_eval --output-dir /results"
 )
 
 
 def main() -> None:
     sys.stderr.write(
-        "DEPRECATED: superseded by the unified run_eval.py CLI.\n"
+        "DEPRECATED: superseded by the unified run_analysis.py CLI.\n"
         f"Equivalent:\n    {_EQUIVALENT}\n"
-        "See `python run_eval.py likelihood-advantage --help`.\n"
+        "See `python run_analysis.py likelihood-advantage --help`.\n"
         "State-space sub-analyses remain available via the post_training_analysis Python API.\n"
     )
     raise SystemExit(2)

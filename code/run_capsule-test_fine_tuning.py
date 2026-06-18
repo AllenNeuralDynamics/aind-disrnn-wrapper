@@ -1,9 +1,9 @@
-"""DEPRECATED scratch script — superseded by the unified run_eval.py CLI.
+"""DEPRECATED scratch script — superseded by the unified run_analysis.py CLI.
 
 This previously passed an inline config dict to run_heldout_subject_finetuning_from_config.
 Move that dict into a YAML (see configs/config_heldout_subject_finetuning.yaml) and run:
 
-    python run_eval.py finetune --config configs/config_heldout_subject_finetuning.yaml \\
+    python run_analysis.py finetune --config configs/config_heldout_subject_finetuning.yaml \\
         [--output-root /results/heldout_subject_finetuning]
 
 (The standalone run_heldout_subject_finetuning.py argparse wrapper is also still available.)
@@ -12,16 +12,16 @@ Move that dict into a YAML (see configs/config_heldout_subject_finetuning.yaml) 
 import sys
 
 _EQUIVALENT = (
-    "python run_eval.py finetune --config configs/config_heldout_subject_finetuning.yaml "
+    "python run_analysis.py finetune --config configs/config_heldout_subject_finetuning.yaml "
     "[--output-root /results/heldout_subject_finetuning]"
 )
 
 
 def main() -> None:
     sys.stderr.write(
-        "DEPRECATED: superseded by the unified run_eval.py CLI.\n"
+        "DEPRECATED: superseded by the unified run_analysis.py CLI.\n"
         f"Equivalent:\n    {_EQUIVALENT}\n"
-        "See `python run_eval.py finetune --help`.\n"
+        "See `python run_analysis.py finetune --help`.\n"
     )
     raise SystemExit(2)
 

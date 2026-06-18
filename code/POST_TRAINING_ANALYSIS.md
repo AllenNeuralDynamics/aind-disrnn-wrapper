@@ -28,7 +28,7 @@ saved run dir ──► resolve_model_run(model_dir, split, checkpoint_policy)
                           (generative, likelihood comparison, embedding space, …)
 ```
 
-- **`run_eval.py`** — the single command-line entry point. One sub-command per
+- **`run_analysis.py`** — the single command-line entry point. One sub-command per
   analysis type; loads everything from the saved run. Start here.
 - **`post_training_analysis/`** — the analysis implementations (importable Python
   API), exposed through a lazy gateway in `post_training_analysis/__init__.py`.
@@ -47,7 +47,7 @@ Everything is **JAX/Haiku** on the upstream `disentangled_rnns` library and the
 
 | Path | What it is |
 |------|------------|
-| `run_eval.py` | **Main entry point** — unified CLI; one sub-command per analysis ([§4](#4-running-analyses-run_evalpy)) |
+| `run_analysis.py` | **Main entry point** — unified CLI; one sub-command per analysis ([§4](#4-running-analyses-run_analysispy)) |
 | `post_training_analysis/__init__.py` | Lazy public-API gateway (import functions from here) |
 | `post_training_analysis/generative_analysis.py` | `resolve_model_run` / `ResolvedModelRun`; generative rollouts; switch & history-dependent switch statistics vs animal |
 | `post_training_analysis/likelihood_comparison.py` | Cross-model next-trial prediction likelihood (GRU / disRNN / baseline-RL) |
@@ -63,8 +63,8 @@ Everything is **JAX/Haiku** on the upstream `disentangled_rnns` library and the
 | `evaluation/baseline_rl_evaluation.py` | Baseline-RL held-out evaluation |
 | `evaluation/plotting.py` | Framework-free latent/trajectory plotting |
 | `utils/{disrnn,gru,baseline_rl}_evaluation.py`, `utils/disrnn_plotting.py` | **Deprecated re-export shims** → `evaluation/*` (back-compat for trainers/`run_capsule.py`; prefer `evaluation.*` in new code) |
-| `run_embedding_space_analysis.py`, `run_heldout_subject_finetuning.py` | Older single-purpose argparse CLIs (still work; `run_eval.py` supersedes them) |
-| `run_capsule-test_*.py` | **Deprecated** scratch scripts — now stubs pointing at `run_eval.py` |
+| `run_embedding_space_analysis.py`, `run_heldout_subject_finetuning.py` | Older single-purpose argparse CLIs (still work; `run_analysis.py` supersedes them) |
+| `run_capsule-test_*.py` | **Deprecated** scratch scripts — now stubs pointing at `run_analysis.py` |
 | `tests/` | `unittest` suites (see [§9](#9-testing)) |
 
 ---
@@ -96,11 +96,11 @@ training). `resolve_model_run` imports **no** `model_trainers`.
 
 ---
 
-## 4. Running analyses (`run_eval.py`)
+## 4. Running analyses (`run_analysis.py`)
 
 ```bash
-python run_eval.py <subcommand> [options]
-python run_eval.py <subcommand> --help    # full options for any sub-command
+python run_analysis.py <subcommand> [options]
+python run_analysis.py <subcommand> --help    # full options for any sub-command
 ```
 
 | Sub-command | Wraps | Key arguments |
@@ -117,17 +117,17 @@ All sub-commands accept `--output-dir` and print a JSON summary. Examples:
 
 ```bash
 # Generative rollout + switch statistics vs animal, for a saved run
-python run_eval.py generative --model-dir /data/<RUN> \
+python run_analysis.py generative --model-dir /data/<RUN> \
     --split train --checkpoint-policy best_eval --output-dir /results \
     --session-partitions train eval combined
 
 # Compare next-trial prediction likelihood across several models
-python run_eval.py likelihood-comparison \
+python run_analysis.py likelihood-comparison \
     --model-dirs /data/<GRU_RUN> /data/<DISRNN_RUN> /data/<RL_RUN>/1 \
     --model-labels GRU disRNN Bari --no-include-heldout --output-dir /results
 
 # Subject-embedding-space visualization for a multisubject run
-python run_eval.py embedding --model-dir /data/<MULTISUBJECT_RUN> --output-dir /results
+python run_analysis.py embedding --model-dir /data/<MULTISUBJECT_RUN> --output-dir /results
 ```
 
 ### Python API
@@ -248,8 +248,8 @@ python -m unittest tests.test_post_training_analysis tests.test_likelihood_compa
 
 - **New analysis:** add the implementation under `post_training_analysis/`, export
   it via the lazy map in `post_training_analysis/__init__.py`, and add a
-  `run_eval.py` sub-command (lazy-import the function inside the handler so
-  `import run_eval` stays training-free). Add a `tests/test_<analysis>.py`.
+  `run_analysis.py` sub-command (lazy-import the function inside the handler so
+  `import run_analysis` stays training-free). Add a `tests/test_<analysis>.py`.
 - **New shared eval primitive:** put model-agnostic helpers in `evaluation/common.py`
   and config logic in `evaluation/heldout_eval_config.py` so training-time and
   post-training callers share one implementation.
@@ -272,8 +272,13 @@ python -m unittest tests.test_post_training_analysis tests.test_likelihood_compa
   `evaluation/` package (moved `{disrnn,gru,baseline_rl}_evaluation` + `plotting`
   out of `utils/`; split shared `HeldoutEvalConfig` → `evaluation/heldout_eval_config.py`
   and model-agnostic helpers → `evaluation/common.py`, breaking the GRU→disRNN
-  private-helper coupling). Added the unified **`run_eval.py`** CLI; deprecated the
+  private-helper coupling). Added the unified **`run_analysis.py`** CLI; deprecated the
   seven `run_capsule-test_*.py` scratch scripts to stubs pointing at it. Transparent
   re-export shims left at `utils/*` so training is unchanged. Documented the two
   training-adjacent exceptions. No training-code changes; no test regressions.
   (commit `73fd4c2`)
+- **Naming.** Renamed this guide `EVALUATION.md` → `POST_TRAINING_ANALYSIS.md` and the
+  CLI `run_eval.py` → `run_analysis.py`, to avoid confusion with training-time held-out
+  *evaluation*. The shared `evaluation/` package (called by the trainers during training)
+  intentionally keeps its name — it is the held-out-evaluation primitive layer, not
+  post-training-specific.

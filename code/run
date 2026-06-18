@@ -5,15 +5,15 @@ set -ex
 python -u run_capsule.py "$@"
 
 # --- Post-training evaluation (standalone, independent of training) ---
-# Run any analysis on a saved trained-run directory via the unified run_eval.py CLI.
-# The old run_capsule-test_*.py scratch scripts are deprecated; see `python run_eval.py <cmd> --help`.
-# python -u run_eval.py generative           --model-dir <RUN_DIR> --split train --checkpoint-policy best_eval --output-dir /results
-# python -u run_eval.py likelihood-comparison --model-dirs <RUN_A> <RUN_B> ... --output-dir /results
-# python -u run_eval.py likelihood-advantage  --model1-dir <RUN_A> --model2-dir <RUN_B> --output-dir /results
-# python -u run_eval.py embedding             --model-dir <RUN_DIR> --output-dir /results
-# python -u run_eval.py baseline-rl           --resolved-run <JSON> --fitting-df <PKL> --output-dir /results
-# python -u run_eval.py from-histories        --simulated-history <PKL> --resolved-run <JSON> --output-dir /results
-# python -u run_eval.py finetune              --config configs/config_heldout_subject_finetuning.yaml
+# Run any analysis on a saved trained-run directory via the unified run_analysis.py CLI.
+# The old run_capsule-test_*.py scratch scripts are deprecated; see `python run_analysis.py <cmd> --help`.
+# python -u run_analysis.py generative           --model-dir <RUN_DIR> --split train --checkpoint-policy best_eval --output-dir /results
+# python -u run_analysis.py likelihood-comparison --model-dirs <RUN_A> <RUN_B> ... --output-dir /results
+# python -u run_analysis.py likelihood-advantage  --model1-dir <RUN_A> --model2-dir <RUN_B> --output-dir /results
+# python -u run_analysis.py embedding             --model-dir <RUN_DIR> --output-dir /results
+# python -u run_analysis.py baseline-rl           --resolved-run <JSON> --fitting-df <PKL> --output-dir /results
+# python -u run_analysis.py from-histories        --simulated-history <PKL> --resolved-run <JSON> --output-dir /results
+# python -u run_analysis.py finetune              --config configs/config_heldout_subject_finetuning.yaml
 
 # if loading_mice_data
 # python -u load_mice_data.py --all-subjects "$@"

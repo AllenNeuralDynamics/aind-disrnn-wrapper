@@ -1,7 +1,7 @@
 """Public entrypoints for standalone post-training analysis.
 
 This package is import-independent of model training: importing it (or running an analysis
-via ``run_eval.py``) does not import ``model_trainers``. Shared evaluation primitives live
+via ``run_analysis.py``) does not import ``model_trainers``. Shared evaluation primitives live
 in the ``evaluation`` package, and trained runs are loaded from saved artifacts via
 ``resolve_model_run`` (``model_dir/inputs.yaml`` + ``outputs/``).
 

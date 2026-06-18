@@ -3,7 +3,7 @@
 DOCUMENTED training-adjacent exception: unlike the rest of post_training_analysis, this
 module genuinely *re-trains* (fine-tunes) held-out subject embeddings, so it legitimately
 imports and uses ``DisrnnTrainer``/``GruTrainer`` and the training utilities. It is invoked
-explicitly (e.g. ``run_eval.py finetune``); importing the post_training_analysis package
+explicitly (e.g. ``run_analysis.py finetune``); importing the post_training_analysis package
 does not import it (the lazy gateway defers it until called).
 """
 
