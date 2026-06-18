@@ -82,37 +82,38 @@ The wasted capacity is **spatial** (idle SMs *inside* each kernel), not temporal
     kernels**, confirming the low-occupancy diagnosis (and refuting the earlier guess
     that eval was to blame).
 
-11. **CPU / T4 / L40s / H200 hardware sweep (seed 0, `data.batch_size=512`).** A bigger
-    GPU stops helping past the L40s — the H200 is actually *slower* than the L40s, at
-    the lowest power %. Clean signature of a latency-bound, low-occupancy model: GPU
-    beats CPU (3.5–6.6×), but extra GPU capacity goes unused. **NB: this is bs=512** —
-    the result is batch-size dependent (see item 12).
+11. **CPU / T4 / L40s / H100 / H200 hardware sweep (seed 0, `data.batch_size=512`).** A
+    bigger GPU stops helping past the L40s — the H100 *and* H200 are both *slower* than
+    the L40s, at the lowest power %. Clean signature of a latency-bound, low-occupancy
+    model: GPU beats CPU (3.5–6.6×), but extra GPU capacity goes unused. **NB: this is
+    bs=512** — the result is batch-size dependent (see item 12).
 
-    | Metric (bs=512) | CPU (4-core, CO) | T4 (CO) | L40s | H200 |
-    |---|---|---|---|---|
-    | train s/step | 1.612 | 0.460 | **0.243** | 0.289 |
-    | total elapsed (5500 steps) | 8322 s | 2549 s | **1352 s** | 1600 s |
-    | speedup vs CPU | 1.0× | 3.5× | **6.6×** | 5.6× |
-    | GPU util | — | 99% | 96% | 97% |
-    | GPU power | — | 57% (40 W) | 30% (105 W) | **18% (125 W)** |
-    | energy / run | — | 102 kJ | 142 kJ | **200 kJ** |
+    | Metric (bs=512) | CPU (4-core, CO) | T4 (CO) | L40s | H200 | H100 |
+    |---|---|---|---|---|---|
+    | train s/step | 1.612 | 0.460 | **0.243** | 0.289 | 0.331 |
+    | total elapsed (5500 steps) | 8322 s | 2549 s | **1352 s** | 1600 s | 1832 s |
+    | speedup vs CPU | 1.0× | 3.5× | **6.6×** | 5.6× | 4.9× |
+    | GPU util | — | 99% | 96% | 97% | 98% |
+    | GPU power | — | 57% (40 W) | 30% (105 W) | **18% (125 W)** | 19% (133 W) |
+    | energy / run | — | 102 kJ | 142 kJ | 200 kJ | **244 kJ** |
 
-    **At bs=512: L40s is the sweet spot** — fastest *and* less wasteful than the H200.
-    The H200's extra SMs/bandwidth can't be used by a narrow+deep tiny model at this
-    batch, so it sits at 18% power (700 W card) and burns the most energy. (Bigger
-    batches change this — item 12.)
+    **At bs=512: L40s is the sweet spot** — fastest *and* least wasteful. The bigger
+    Hopper cards (H100/H200) can't use their extra SMs/bandwidth on a narrow+deep tiny
+    model, so they sit at ~18–19% power and burn the most energy (the H100 is both the
+    slowest GPU here *and* the least efficient). (Bigger batches change the per-step
+    cost but not this ranking — item 12.)
 
 12. **Batch size = the real per-GPU lever (bs=2048 vs bs=512).** Re-ran the sweep at
     `data.batch_size=2048` (all else fixed). On the big GPUs a 4× batch costs almost no
     wall-clock — the spatial headroom (idle SMs) absorbs it:
 
-    | Metric (bs=2048) | CPU (4-core) | T4 | L40s | H200 |
-    |---|---|---|---|---|
-    | train s/step | 5.045 | 0.652 | **0.268** | 0.314 |
-    | total elapsed (5500) | 26066 s | 3602 s | **1494 s** | 1748 s |
-    | speedup vs CPU | 1.0× | 7.7× | **18.9×** | 16.1× |
-    | GPU util | — | 99% | 96% | 96% |
-    | GPU power | — | 63% (44 W) | 34% (117 W) | **19% (133 W)** |
+    | Metric (bs=2048) | CPU (4-core) | T4 | L40s | H200 | H100 |
+    |---|---|---|---|---|---|
+    | train s/step | 5.045 | 0.652 | **0.268** | 0.314 | 0.361 |
+    | total elapsed (5500) | 26066 s | 3602 s | **1494 s** | 1748 s | 2005 s |
+    | speedup vs CPU | 1.0× | 7.7× | **18.9×** | 16.1× | 14.0× |
+    | GPU util | — | 99% | 96% | 96% | 98% |
+    | GPU power | — | 63% (44 W) | 34% (117 W) | **19% (133 W)** | 21% (145 W) |
 
     Throughput gain going bs 512→2048 (4× samples/step ÷ time-ratio): CPU 1.28×, T4
     2.82×, **L40s 3.62×, H200 3.68×** — i.e. the big GPUs take 4× the work for only
@@ -130,18 +131,37 @@ The wasted capacity is **spatial** (idle SMs *inside* each kernel), not temporal
 
 ![Hardware × batch-size benchmark](benchmark/hw_batch_benchmark.png)
 
+Seven hardware targets across three platforms — **Code Ocean** (CPU 4-core, T4),
+**AI1 on-premise HPC** (CPU 44-core, V100), **Beaker / AI Hub** (L40s, H100, H200).
 Both panels: num_sessions=100, seed 0, post-warmup (eval during the warm-up phase
 is ignored — a penalty term is inactive then, so val loss is not meaningful).
 Reproduce with `python beaker/benchmark/plot_hw_batch.py`.
 
-- **Left — time per training step.** The *slope* is the marginal cost of batch:
-  L40s/H200 flat (≈free), T4 gentle, CPU steep (≈linear — no idle compute).
+- **Left — time per training step** (throughput; all 7). The *slope* is the marginal
+  cost of batch: the GPUs are nearly flat (bigger batch ≈ free), CPU is steep
+  (≈linear — no idle compute to reclaim).
 - **Right — time to `valid_loss < 0.22`** (the fair cross-batch metric: folds in
-  sample efficiency). Same ordering L40s < H200 < T4 < CPU at every batch.
+  sample efficiency). Beaker/Code-Ocean only (see threshold caveat below).
 
-Only the 0.22 threshold is a fair four-way comparison: CPU/T4 (Code Ocean, Feb
-code) floor at min val ≈0.210, while L40s/H200 (Beaker, Jun `ai_hub` code) reach
-≈0.204 — a code-version difference, not hardware.
+**s/step ladder at bs=512** (the point all platforms share):
+
+| L40s | H200 | V100 (HPC) | H100 | T4 | CPU 44-core (HPC) | CPU 4-core (CO) |
+|---|---|---|---|---|---|---|
+| **0.243** | 0.289 | 0.294 | 0.331 | 0.460 | 1.468 | 1.612 |
+
+Two cross-platform confirmations that the model — not the hardware — is the limit:
+- **The L40s is fastest; all three big datacenter GPUs (V100/H100/H200) sit *above*
+  it**, and an *old* V100 ties a brand-new H200. Raw GPU size doesn't help a
+  latency-bound, low-occupancy model.
+- **A 44-core HPC CPU (1.468) barely beats a 4-core Code-Ocean CPU (1.612)** — 11× the
+  cores buy ~10%. The model doesn't parallelize across cores either.
+
+Two caveats (both reflected in the figure): the **HPC runs** use a shorter schedule
+(200 steps) on older code, so they appear on the **left/throughput panel only** —
+s/step is comparable, time-to-target is not. And on the right panel only the **0.22**
+threshold is a fair comparison: CPU/T4 (Code Ocean, Feb code) floor at min val ≈0.210
+while the Beaker GPUs (Jun `ai_hub` code) reach ≈0.204 — a code-version difference,
+not hardware.
 
 **Next (per-GPU efficiency lever, not packing):** the headroom is *spatial* (idle SMs
 within each tiny kernel), reclaimable only by **fatter kernels** — `jax.vmap` / bigger
