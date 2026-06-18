@@ -87,8 +87,8 @@ data:
   ignore_policy: exclude
   features: null
   eval_every_n: 2
-  batch_size: null
-  batch_mode: random
+  batch_size: 1024              # random/rolling require an explicit int; null is only valid with batch_mode: single
+  batch_mode: random            # single | rolling | random
   run_name_component: mice_snapshot
   seed: ${seed}
 

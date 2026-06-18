@@ -94,7 +94,7 @@ def _validate_multisubject_dataset_inputs(
     session_conditioning_enabled: bool = False,
     session_max_index_by_subject_index: Sequence[int] | None = None,
 ) -> None:
-    xs, _ = dataset.get_all()
+    xs = dataset.get_all()["xs"]
     xs = np.asarray(xs)
     if xs.ndim != 3:
         raise ValueError(
@@ -818,9 +818,11 @@ class GruTrainer(BaseMultisubjectTrainer):
             all_training_losses: list[float] = []
             all_validation_losses: list[float] = []
             steps_completed = 0
-            xs_train_all, ys_train_all = dataset_train.get_all()
-            xs_eval_all, ys_eval_all = dataset_eval.get_all()
-            xs_full_for_checkpoint, _ = dataset.get_all()
+            _train_all = dataset_train.get_all()
+            xs_train_all, ys_train_all = _train_all["xs"], _train_all["ys"]
+            _eval_all = dataset_eval.get_all()
+            xs_eval_all, ys_eval_all = _eval_all["xs"], _eval_all["ys"]
+            xs_full_for_checkpoint = dataset.get_all()["xs"]
             df_for_checkpoint = bundle.raw
             random_key = key
 
@@ -1280,7 +1282,7 @@ class GruTrainer(BaseMultisubjectTrainer):
                         }
                     )
 
-        xs_full, _ = dataset.get_all()
+        xs_full = dataset.get_all()["xs"]
         yhat_full, network_states_full = rnn_utils.eval_network(
             final_eval_network,
             params,
@@ -1308,7 +1310,8 @@ class GruTrainer(BaseMultisubjectTrainer):
                 raw_df=df,
             )
 
-        xs_train, ys_train = dataset_train.get_all()
+        _train_data = dataset_train.get_all()
+        xs_train, ys_train = _train_data["xs"], _train_data["ys"]
         yhat_train, _ = rnn_utils.eval_network(final_eval_network, params, xs_train)
         n_action_logits_train = _require_n_action_logits(
             dataset_train,
@@ -1322,7 +1325,8 @@ class GruTrainer(BaseMultisubjectTrainer):
         output["likelihood_train"] = float(likelihood_train)
         logger.info("Final training likelihood: %.4f", float(likelihood_train))
 
-        xs_eval, ys_eval = dataset_eval.get_all()
+        _eval_data = dataset_eval.get_all()
+        xs_eval, ys_eval = _eval_data["xs"], _eval_data["ys"]
         yhat_eval, _ = rnn_utils.eval_network(final_eval_network, params, xs_eval)
         n_action_logits = _require_n_action_logits(
             dataset_eval,

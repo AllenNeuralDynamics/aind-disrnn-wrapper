@@ -497,7 +497,7 @@ def _build_multisubject_bundle(
             batch_size=batch_size,
             batch_mode=batch_mode,
         )
-        xs_subject, _ = dataset.get_all()
+        xs_subject = dataset.get_all()["xs"]
         expected_n_sessions = len(item["full_session_ids"])
         if int(xs_subject.shape[1]) != int(expected_n_sessions):
             raise ValueError(

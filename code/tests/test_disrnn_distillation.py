@@ -353,8 +353,8 @@ class TestDisrnnDistillation(unittest.TestCase):
             expected_output_size=2,
         )
 
-        xs_train, _ = student_bundle.train_set.get_all()
-        xs_eval, _ = student_bundle.eval_set.get_all()
+        xs_train = student_bundle.train_set.get_all()["xs"]
+        xs_eval = student_bundle.eval_set.get_all()["xs"]
         self.assertEqual(ensemble.train_probs.shape[:2], xs_train.shape[:2])
         self.assertEqual(ensemble.eval_probs.shape[:2], xs_eval.shape[:2])
 

@@ -90,7 +90,7 @@ data:
 
   # ── Batching / splitting ────────────────────────────────────────────────
   eval_every_n: 2               # every Nth session -> eval split (applied per-subject in multisubject mode)
-  batch_size: null              # null -> one batch of all episodes
+  batch_size: 1024              # random/rolling require an explicit int; null is only valid with batch_mode: single
   batch_mode: random            # single | rolling | random
   multisubject: true            # true -> per-subject datasets merged with subject_index prepended as feature 0
 

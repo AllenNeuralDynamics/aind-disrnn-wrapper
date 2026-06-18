@@ -448,7 +448,8 @@ def _remap_dataset_subject_indices(
     *,
     local_to_global_subject_index: Mapping[int, int],
 ) -> Any:
-    xs, ys = dataset.get_all()
+    _all = dataset.get_all()
+    xs, ys = _all["xs"], _all["ys"]
     remapped_xs = np.asarray(xs).copy()
     subject_values = np.asarray(np.rint(remapped_xs[..., 0]), dtype=int)
     valid_mask = subject_values >= 0
@@ -689,9 +690,9 @@ def _build_global_heldout_bundle(
     logger.info(
         "Held-out fine-tuning dataset shapes after session packing: full input %s, train %s, "
         "eval %s, x_names=%s",
-        tuple(np.asarray(global_bundle.extras["dataset"].get_all()[0]).shape),
-        tuple(np.asarray(global_bundle.train_set.get_all()[0]).shape),
-        tuple(np.asarray(global_bundle.eval_set.get_all()[0]).shape),
+        tuple(np.asarray(global_bundle.extras["dataset"].get_all()["xs"]).shape),
+        tuple(np.asarray(global_bundle.train_set.get_all()["xs"]).shape),
+        tuple(np.asarray(global_bundle.eval_set.get_all()["xs"]).shape),
         list(getattr(global_bundle.extras["dataset"], "x_names", [])),
     )
     return (
@@ -895,9 +896,11 @@ def _evaluate_checkpoint(
     dataset_eval = bundle.eval_set
     ignore_policy = str(bundle.metadata.get("ignore_policy", "exclude"))
 
-    xs_train, ys_train = dataset_train.get_all()
-    xs_eval, ys_eval = dataset_eval.get_all()
-    xs_full, _ = dataset_full.get_all()
+    _train = dataset_train.get_all()
+    xs_train, ys_train = _train["xs"], _train["ys"]
+    _eval = dataset_eval.get_all()
+    xs_eval, ys_eval = _eval["xs"], _eval["ys"]
+    xs_full = dataset_full.get_all()["xs"]
 
     yhat_train_for_loss, _ = rnn_utils.eval_network(make_train_network, params, xs_train)
     yhat_eval_for_loss, _ = rnn_utils.eval_network(make_train_network, params, xs_eval)

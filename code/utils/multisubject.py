@@ -148,21 +148,23 @@ def merge_datasets_with_subject_index(
         )
 
     first_dataset = dataset_list[0]
-    xs0, ys0 = first_dataset.get_all()
+    _all = first_dataset.get_all()
+    xs0, ys0 = _all["xs"], _all["ys"]
     base_x_names = list(first_dataset.x_names)
     base_y_names = list(first_dataset.y_names)
     base_y_type = getattr(first_dataset, "y_type", "categorical")
     base_n_classes = getattr(first_dataset, "n_classes", None)
     merged_batch_mode = batch_mode if batch_mode is not None else first_dataset.batch_mode
 
-    max_n_timesteps = max(dataset.get_all()[0].shape[0] for dataset in dataset_list)
+    max_n_timesteps = max(dataset.get_all()["xs"].shape[0] for dataset in dataset_list)
     merged_x_chunks: list[np.ndarray] = []
     merged_y_chunks: list[np.ndarray] = []
 
     for dataset_index, (dataset, subject_index) in enumerate(
         zip(dataset_list, subject_indices)
     ):
-        xs, ys = dataset.get_all()
+        _d = dataset.get_all()
+        xs, ys = _d["xs"], _d["ys"]
         if list(dataset.x_names) != base_x_names:
             raise ValueError("All datasets must share the same x_names.")
         if list(dataset.y_names) != base_y_names:
@@ -713,7 +715,8 @@ def prepend_session_index_to_multisubject_dataset(
     session_feature_name: str = "Session Index",
 ) -> Any:
     """Insert a session-index feature after the prepended subject index feature."""
-    xs, ys = dataset.get_all()
+    _all = dataset.get_all()
+    xs, ys = _all["xs"], _all["ys"]
     xs = np.asarray(xs)
     ys = np.asarray(ys)
     if xs.ndim != 3:

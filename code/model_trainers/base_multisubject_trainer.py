@@ -1035,7 +1035,8 @@ class BaseMultisubjectTrainer(ModelTrainer):
         with params_path.open("w") as f:
             f.write(json.dumps(params, cls=rnn_utils.NpJnpJsonEncoder))
 
-        xs_train, ys_train = dataset_train.get_all()
+        _all = dataset_train.get_all()
+        xs_train, ys_train = _all["xs"], _all["ys"]
         yhat_train, _ = rnn_utils.eval_network(make_eval_network, params, xs_train)
         n_action_logits_train = self._resolve_n_action_logits(
             dataset_train, yhat_train, context="initialization train"
@@ -1046,7 +1047,8 @@ class BaseMultisubjectTrainer(ModelTrainer):
             )
         )
 
-        xs_eval, ys_eval = dataset_eval.get_all()
+        _all = dataset_eval.get_all()
+        xs_eval, ys_eval = _all["xs"], _all["ys"]
         yhat_eval, _ = rnn_utils.eval_network(make_eval_network, params, xs_eval)
         n_action_logits_eval = self._resolve_n_action_logits(
             dataset_eval, yhat_eval, context="initialization eval"
@@ -1071,7 +1073,7 @@ class BaseMultisubjectTrainer(ModelTrainer):
             else:
                 wandb_run.log(metric_payload, step=wandb_step)
 
-        xs_full, _ = dataset.get_all()
+        xs_full = dataset.get_all()["xs"]
         yhat_full, network_states_full = rnn_utils.eval_network(
             make_eval_network, params, xs_full
         )

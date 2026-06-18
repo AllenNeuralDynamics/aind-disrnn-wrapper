@@ -904,7 +904,7 @@ def _evaluate_disrnn_dataset(
         multisubject=bool(run.multisubject),
     )
 
-    xs, _ = dataset.get_all()
+    xs = dataset.get_all()["xs"]
     params = _load_saved_params(Path(run.params_path))
     yhat, network_states = rnn_utils.eval_network(make_eval_network, params, xs)
 
@@ -1021,7 +1021,7 @@ def _evaluate_gru_dataset(
         ),
     )
 
-    xs, _ = dataset.get_all()
+    xs = dataset.get_all()["xs"]
     params = _load_saved_params(Path(run.params_path))
     yhat, network_states = rnn_utils.eval_network(make_network, params, xs)
     n_action_logits = _require_n_action_logits(

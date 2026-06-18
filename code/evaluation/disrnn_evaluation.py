@@ -728,7 +728,8 @@ def load_disrnn_heldout_subject_data(config_source: Any) -> dict[str, Any]:
     if heldout_cfg.ignore_policy == "exclude" and "animal_response" in df_test.columns:
         valid_sessions = df_test[df_test["animal_response"] != 2]["ses_idx"].unique()
         df_test = df_test[df_test["ses_idx"].isin(valid_sessions)].copy()
-    xs_test, ys_test = dataset_test.get_all()
+    _all = dataset_test.get_all()
+    xs_test, ys_test = _all["xs"], _all["ys"]
 
     return {
         "df_test": df_test,

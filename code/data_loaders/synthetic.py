@@ -187,7 +187,7 @@ class SyntheticCognitiveAgents(DatasetLoader):
             batch_mode=self.batch_mode,
         )
 
-        xs, _ = dataset.get_all()
+        xs = dataset.get_all()["xs"]
         n_sessions = xs.shape[1]
         if self.eval_every_n <= 0:
             raise ValueError("eval_every_n must be a positive integer.")
@@ -409,7 +409,9 @@ def create_disrnn_dataset_task_trained_rnn(
         x_names=feature_labels,
         y_names=["choice"],
         batch_size=batch_size,
-        batch_mode="random",
+        # batch_size defaults to None here; under disentangled_rnns 0.1.4 that is
+        # only valid with batch_mode="single" (random/rolling require an int).
+        batch_mode="single",
     )
     return dataset
 

@@ -591,7 +591,10 @@ class TestGruTrainer(unittest.TestCase):
                 self._xs = xs
 
             def get_all(self):
-                return self._xs, np.zeros((self._xs.shape[0], self._xs.shape[1], 1))
+                return {
+                    "xs": self._xs,
+                    "ys": np.zeros((self._xs.shape[0], self._xs.shape[1], 1)),
+                }
 
         xs = np.array(
             [
@@ -612,7 +615,10 @@ class TestGruTrainer(unittest.TestCase):
                 self._xs = xs
 
             def get_all(self):
-                return self._xs, np.zeros((self._xs.shape[0], self._xs.shape[1], 1))
+                return {
+                    "xs": self._xs,
+                    "ys": np.zeros((self._xs.shape[0], self._xs.shape[1], 1)),
+                }
 
         xs = np.array([[[2.0, 1.0, 0.0]]])
 
@@ -629,7 +635,10 @@ class TestGruTrainer(unittest.TestCase):
                 self._xs = xs
 
             def get_all(self):
-                return self._xs, np.zeros((self._xs.shape[0], self._xs.shape[1], 1))
+                return {
+                    "xs": self._xs,
+                    "ys": np.zeros((self._xs.shape[0], self._xs.shape[1], 1)),
+                }
 
         xs = np.array([[[0.0, 3.0, 1.0, 0.0]]])
 

@@ -58,7 +58,7 @@ class _DummyDataset:
         self.batch_mode = batch_mode
 
     def get_all(self):
-        return self._xs, self._ys
+        return {"xs": self._xs, "ys": self._ys}
 
 
 class TestMultisubjectUtils(unittest.TestCase):
@@ -120,13 +120,13 @@ class TestMultisubjectUtils(unittest.TestCase):
             batch_size=None,
             batch_mode="random",
         )
-        merged_xs, _ = merged.get_all()
+        merged_xs = merged.get_all()["xs"]
 
         self.assertEqual(merged.x_names[0], "Subject ID")
         self.assertTrue(np.allclose(merged_xs[:, 0, 0], 0.0))
         self.assertTrue(np.allclose(merged_xs[:, 1, 0], 1.0))
-        self.assertTrue(np.allclose(merged_xs[:, 0, 1:], dataset_a.get_all()[0][:, 0, :]))
-        self.assertTrue(np.allclose(merged_xs[:, 1, 1:], dataset_b.get_all()[0][:, 0, :]))
+        self.assertTrue(np.allclose(merged_xs[:, 0, 1:], dataset_a.get_all()["xs"][:, 0, :]))
+        self.assertTrue(np.allclose(merged_xs[:, 1, 1:], dataset_b.get_all()["xs"][:, 0, :]))
 
     def test_merge_datasets_with_subject_and_session_indices(self):
         dataset = _DummyDataset(
@@ -151,7 +151,7 @@ class TestMultisubjectUtils(unittest.TestCase):
             batch_size=None,
             batch_mode="random",
         )
-        merged_xs, _ = merged.get_all()
+        merged_xs = merged.get_all()["xs"]
 
         self.assertEqual(merged.x_names[:2], ["Subject ID", "Session Index"])
         self.assertTrue(np.allclose(merged_xs[:, :, 0], 3.0))
@@ -174,7 +174,7 @@ class TestMultisubjectUtils(unittest.TestCase):
             dataset,
             session_indices=[1, 2],
         )
-        conditioned_xs, _ = conditioned.get_all()
+        conditioned_xs = conditioned.get_all()["xs"]
 
         self.assertEqual(conditioned.x_names[:2], ["Subject ID", "Session Index"])
         self.assertEqual(float(conditioned_xs[1, 0, 1]), -1.0)

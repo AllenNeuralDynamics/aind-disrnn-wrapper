@@ -223,7 +223,7 @@ def _validate_multisubject_dataset_inputs(
     session_max_index_by_subject_index: Sequence[int] | None,
     context: str,
 ) -> None:
-    xs, _ = dataset.get_all()
+    xs = dataset.get_all()["xs"]
     xs = np.asarray(xs)
     min_feature_count = 3 if session_conditioning_enabled else 2
     if xs.ndim != 3:
@@ -1010,8 +1010,10 @@ class DisrnnTrainer(BaseMultisubjectTrainer):
                 lambda_reg_session,
                 int(reg_subject_indices.shape[0]),
             )
-        xs_train_all, ys_train_all = dataset_train.get_all()
-        xs_eval_all, ys_eval_all = dataset_eval.get_all()
+        _train_all = dataset_train.get_all()
+        xs_train_all, ys_train_all = _train_all["xs"], _train_all["ys"]
+        _eval_all = dataset_eval.get_all()
+        xs_eval_all, ys_eval_all = _eval_all["xs"], _eval_all["ys"]
         distillation_penalty_scale = resolve_penalty_scale(args.loss_param)
         distillation_ensemble = None
         if self.distillation.enabled:
@@ -1322,7 +1324,7 @@ class DisrnnTrainer(BaseMultisubjectTrainer):
             all_validation_losses: list[float] = []
             steps_completed = 0
             opt_state = None
-            xs_full_for_checkpoint, _ = dataset.get_all()
+            xs_full_for_checkpoint = dataset.get_all()["xs"]
             df_for_checkpoint = bundle.raw
             random_key = training_key
 
@@ -2026,7 +2028,8 @@ class DisrnnTrainer(BaseMultisubjectTrainer):
                     wandb_run.log({f"fig/update_rule_{index}": wandb.Image(str(path))})
 
         # Get model predictions on full dataset, including the training set
-        xs_full, ys_full = dataset.get_all()
+        _all = dataset.get_all()
+        xs_full, ys_full = _all["xs"], _all["ys"]
         yhat_full, network_states_full = rnn_utils.eval_network(
             final_noiseless_eval_network, params, xs_full
         )
@@ -2050,7 +2053,8 @@ class DisrnnTrainer(BaseMultisubjectTrainer):
             )
 
         # Get likelihood evaluated on the training and evaluation datasets.
-        xs_train, ys_train = dataset_train.get_all()
+        _train = dataset_train.get_all()
+        xs_train, ys_train = _train["xs"], _train["ys"]
         yhat_train, _ = rnn_utils.eval_network(
             final_noiseless_eval_network, params, xs_train
         )
@@ -2064,7 +2068,8 @@ class DisrnnTrainer(BaseMultisubjectTrainer):
         output["likelihood_train"] = float(likelihood_train)
         logger.info("Final training likelihood: %.4f", float(likelihood_train))
 
-        xs_eval, ys_eval = dataset_eval.get_all()
+        _eval = dataset_eval.get_all()
+        xs_eval, ys_eval = _eval["xs"], _eval["ys"]
         yhat_eval, network_states_eval = rnn_utils.eval_network(
             final_noiseless_eval_network, params, xs_eval
         )
