@@ -91,13 +91,13 @@ def _run_auto_heldout_finetune(hydra_config, *, model_type, wandb_run):
             "n_steps": int(getattr(auto_cfg, "n_steps", 50)),
             "lr": float(getattr(auto_cfg, "lr", 1e-2)),
             "checkpoint_every_n_steps": int(
-                getattr(auto_cfg, "checkpoint_every_n_steps", 0)
+                getattr(auto_cfg, "checkpoint_every_n_steps", 10)
             ),
             "batch_size": getattr(auto_cfg, "batch_size", None),
             "batch_mode": str(getattr(auto_cfg, "batch_mode", "single")),
             "keep_media_files": bool(getattr(auto_cfg, "keep_media_files", True)),
             "checkpoint_plot_split_examples_every_n": int(
-                getattr(auto_cfg, "checkpoint_plot_split_examples_every_n", 0)
+                getattr(auto_cfg, "checkpoint_plot_split_examples_every_n", 10)
             ),
             "checkpoint_save_output_df_every_n": int(
                 getattr(auto_cfg, "checkpoint_save_output_df_every_n", 0)

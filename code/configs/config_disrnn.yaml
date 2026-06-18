@@ -308,12 +308,13 @@ model:
       checkpoint_policy: final     # final | best_eval | best_heldout (source params to expand)
       n_steps: 50                  # fine-tune steps for the new held-out embedding rows
       lr: 1e-2                     # Adam lr for the held-out embedding fine-tune
-      checkpoint_every_n_steps: 0  # 0 -> evaluate at init + final only
+      # ── Logging / plotting cadence (mirrors the training process) ──────────
+      checkpoint_every_n_steps: 10  # eval + log heldout/train|eval_likelihood every N steps (0 -> endpoints only)
+      checkpoint_plot_split_examples_every_n: 10  # plot/log split-example figures every N steps (0 disables)
+      checkpoint_save_output_df_every_n: 0       # 0 disables per-checkpoint output_df.csv
       batch_size: null             # null -> inherit the source run's data batch_size
       batch_mode: single           # single | rolling | random
       keep_media_files: true
-      checkpoint_plot_split_examples_every_n: 0  # 0 disables checkpoint split-example plots
-      checkpoint_save_output_df_every_n: 0       # 0 disables per-checkpoint output_df.csv
       train_example_sessions_per_subject: 1
       eval_example_sessions_per_subject: 1
       example_max_subjects: 6

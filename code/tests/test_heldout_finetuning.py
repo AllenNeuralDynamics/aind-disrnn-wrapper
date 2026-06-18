@@ -613,6 +613,11 @@ class TestHeldoutSubjectFinetuning(unittest.TestCase):
         # Final aggregate likelihoods recorded under heldout/final/*.
         self.assertIn("heldout/final/train_likelihood", fake_run.summary)
         self.assertIn("heldout/final/eval_likelihood", fake_run.summary)
+        # Loss/likelihood-over-checkpoints curves are logged as images (parity with
+        # the training process's fig/validation_loss_curve).
+        logged_keys = {key for payload, _ in fake_run.logged for key in payload}
+        self.assertIn("heldout/fig/loss_curve", logged_keys)
+        self.assertIn("heldout/fig/likelihood_curve", logged_keys)
         # The injected (training) run must not be renamed or finished here.
         self.assertEqual(fake_run.name, "training-run")
         self.assertFalse(fake_run.finished)

@@ -266,10 +266,18 @@ active GRU/disRNN configs). At the end of a multisubject GRU/disRNN run,
 4. logs aggregate held-out **train/eval split likelihoods** into the same W&B run
    under `heldout/*` (mirroring the training-subject metrics).
 
+**Logging/plotting cadence mirrors training.** `checkpoint_every_n_steps` (default
+10) controls how often the held-out fine-tune evaluates and logs
+`heldout/train_likelihood`/`heldout/eval_likelihood` (so you get a curve, not just
+endpoints); `checkpoint_plot_split_examples_every_n` (default 10) controls
+split-example plotting. State-space figures and the loss/likelihood-over-checkpoints
+curves are logged as images under `heldout/fig/*` (parity with the training
+`fig/validation_loss_curve`). Set the cadence knobs to 0 for endpoints-only / no plots.
+
 It is guarded so a fine-tuning failure never fails an otherwise-successful run
 (records `output["heldout_finetune"]` with the error instead). Tune via
-`auto_heldout_finetune.{n_steps,lr,checkpoint_policy,...}`; set `enabled: false`
-to skip.
+`auto_heldout_finetune.{n_steps,lr,checkpoint_policy,checkpoint_every_n_steps,checkpoint_plot_split_examples_every_n,...}`;
+set `enabled: false` to skip.
 
 ### Standalone fine-tuning CLI
 The same pipeline can be run manually against any trained run:
@@ -332,6 +340,15 @@ environment.
 > Add a dated entry (newest first) whenever you add or change a feature.
 
 ### 2026-06-18
+- **Held-out auto fine-tune mirrors training's logging/plotting cadence.** The
+  `auto_heldout_finetune` cadence knobs now default non-zero
+  (`checkpoint_every_n_steps: 10`, `checkpoint_plot_split_examples_every_n: 10`) so
+  the held-out fine-tune logs a `heldout/train_likelihood`/`heldout/eval_likelihood`
+  curve + split-example plots at a controllable interval, and the
+  loss/likelihood-over-checkpoints curves are now logged to W&B under
+  `heldout/fig/loss_curve` + `heldout/fig/likelihood_curve` (parity with the training
+  `fig/validation_loss_curve`). The inner per-step loss logging was coarsened from
+  every step to every 10 steps (`log_losses_every=10`) to match training's cadence.
 - **baseline_rl fits + reports likelihood on held-out subjects.** Added
   `BaselineRLTrainer.fit_heldout` — re-fits a fresh RL agent per reserved held-out
   subject (train/eval split) and logs aggregate `heldout/train_likelihood` +

@@ -1315,7 +1315,7 @@ def run_heldout_subject_finetuning_from_config(
                     max_grad_norm=float(resolved_config["heldout_finetuning"]["max_grad_norm"]),
                     random_key=chunk_key,
                     report_progress_by="log",
-                    log_losses_every=1,
+                    log_losses_every=10,  # mirror training's cadence (was 1 -> per-step spam)
                 )
                 optimization_history["training_loss"].extend(
                     np.asarray(chunk_losses["training_loss"], dtype=float).tolist()
@@ -1451,6 +1451,23 @@ def run_heldout_subject_finetuning_from_config(
                 wandb_run.summary[f"{summary_prefix}/{key}"] = float(value)
             if not external_wandb_run:
                 wandb_run.summary["output_dir"] = str(run_dir)
+            # Log the loss/likelihood-over-checkpoints curves as images, mirroring
+            # the training process's fig/validation_loss_curve.
+            try:
+                import wandb
+
+                wandb_run.log(
+                    {
+                        f"{wandb_log_key_prefix}/fig/loss_curve": wandb.Image(
+                            str(loss_curve_path)
+                        ),
+                        f"{wandb_log_key_prefix}/fig/likelihood_curve": wandb.Image(
+                            str(likelihood_curve_path)
+                        ),
+                    }
+                )
+            except Exception as exc:
+                logger.warning("Held-out curve image logging failed: %s", exc)
         logger.info(
             "Completed held-out subject fine-tuning: output_dir=%s summary=%s "
             "checkpoint_metrics=%s final_train_likelihood=%s final_eval_likelihood=%s",
