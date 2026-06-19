@@ -61,8 +61,10 @@ def add_gru_model_results(
     sort_columns = ["_session_order"]
     if "trial" in output_df.columns:
         sort_columns.append("trial")
+    # Keep ``_session_order`` (dropped just before returning); the vectorized
+    # alignment below reuses it as the dense session index and to derive the
+    # per-row timestep index.
     output_df = output_df.sort_values(sort_columns).copy()
-    output_df = output_df.drop(columns=["_session_order"])
 
     states = np.asarray(network_states)
     logits = np.asarray(yhat)
@@ -90,22 +92,32 @@ def add_gru_model_results(
     probs /= np.sum(probs, axis=-1, keepdims=True)
     prob_cols = [f"choice_prob_{idx}" for idx in range(probs.shape[2])]
 
-    for col in [*latent_cols, *logit_cols, *prob_cols]:
-        output_df[col] = np.nan
+    # Align the per-(timestep, session) GRU tensors back onto the trial rows with a
+    # single vectorized gather. Rows are already sorted by (_session_order, trial),
+    # so each session's rows are contiguous and ordered by trial: the within-session
+    # positional index IS the timestep index. This replaces the previous
+    # O(n_sessions * n_rows) per-session boolean-mask loop (a full df scan + masked
+    # ``.loc`` write per session) with one O(n_rows) gather.
+    session_index_per_row = output_df["_session_order"].to_numpy()
+    timestep_index_per_row = (
+        output_df.groupby("_session_order", sort=False).cumcount().to_numpy()
+    )
 
-    for session_index, session_id in enumerate(session_order):
-        session_mask = output_df["ses_idx"] == session_id
-        session_len = int(session_mask.sum())
-        if session_len > states.shape[0]:
-            raise ValueError(
-                "More dataframe rows than GRU timepoints for session "
-                f"{session_id}: rows={session_len} timepoints={states.shape[0]}"
-            )
-        output_df.loc[session_mask, latent_cols] = states[:session_len, session_index, :]
-        output_df.loc[session_mask, logit_cols] = logits[:session_len, session_index, :]
-        output_df.loc[session_mask, prob_cols] = probs[:session_len, session_index, :]
+    session_lengths = np.bincount(session_index_per_row, minlength=states.shape[1])
+    overflow = np.flatnonzero(session_lengths > states.shape[0])
+    if overflow.size:
+        bad_index = int(overflow[0])
+        raise ValueError(
+            "More dataframe rows than GRU timepoints for session "
+            f"{session_order[bad_index]}: rows={int(session_lengths[bad_index])} "
+            f"timepoints={states.shape[0]}"
+        )
 
-    return output_df
+    output_df[latent_cols] = states[timestep_index_per_row, session_index_per_row, :]
+    output_df[logit_cols] = logits[timestep_index_per_row, session_index_per_row, :]
+    output_df[prob_cols] = probs[timestep_index_per_row, session_index_per_row, :]
+
+    return output_df.drop(columns=["_session_order"])
 
 
 def _require_n_action_logits(dataset: Any, yhat: np.ndarray, *, context: str) -> int:
