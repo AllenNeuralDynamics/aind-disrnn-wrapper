@@ -60,20 +60,21 @@ def _baseline_rl_heldout_refit_enabled(hydra_config) -> bool:
     return bool(getattr(refit_cfg, "enabled", False)) if refit_cfg is not None else False
 
 
-def _run_auto_heldout_finetune(hydra_config, *, model_type, wandb_run):
+def _run_auto_heldout_finetune(hydra_config, *, model_type, wandb_run, model_dir="/results"):
     """Auto-run held-out subject fine-tuning + eval after multisubject training.
 
     Synthesizes an in-memory fine-tuning config pointing at the just-finished run
-    (``/results``) and logs aggregate held-out train/eval likelihood into the main
-    W&B run under a ``heldout/`` namespace. Returns the fine-tuning summary dict.
+    (``model_dir``, which must contain ``inputs.yaml`` and ``outputs/``) and logs
+    aggregate held-out train/eval likelihood into the main W&B run under a
+    ``heldout/`` namespace. Returns the fine-tuning summary dict.
     """
     auto_cfg = getattr(hydra_config.model.training, "auto_heldout_finetune", None)
     finetune_config = {
         "source_run": {
-            "model_dir": "/results",
+            "model_dir": str(model_dir),
             "checkpoint_policy": str(getattr(auto_cfg, "checkpoint_policy", "final")),
         },
-        # All None -> inherit the reserved held-out set from /results/inputs.yaml.
+        # All None -> inherit the reserved held-out set from <model_dir>/inputs.yaml.
         "heldout_subjects": {
             key: None
             for key in (
@@ -135,7 +136,7 @@ def _run_auto_heldout_finetune(hydra_config, *, model_type, wandb_run):
     )
 
 
-def run_training(hydra_config, wandb_run=None):
+def run_training(hydra_config, wandb_run=None, run_output_dir="/results"):
     """Load data, train the model, and run held-out evaluation/fine-tuning.
 
     Assumes the config is already prepared and the W&B run already started.
@@ -468,6 +469,7 @@ def run_training(hydra_config, wandb_run=None):
                     hydra_config,
                     model_type=model_type,
                     wandb_run=wandb_run,
+                    model_dir=run_output_dir,
                 )
             except Exception as exc:
                 logger.warning(

@@ -58,21 +58,26 @@ def main(hydra_config: DictConfig) -> None:
 
     # --- Prepare wandb ---
     wandb_run = start_wandb_run(hydra_config)
-    wandb_run_dir: Path | None = None
+
+    # Lay the run out as <run_output_base>/inputs.yaml + <run_output_base>/outputs/
+    # so post-training analysis (resolve_model_run / auto held-out fine-tuning) can
+    # locate it, mirroring the Code Ocean layout. With W&B, use the W&B run dir
+    # (copy_run_to_wandb brings inputs.yaml there); otherwise the Hydra run dir.
+    run_output_base = run_dir
     if wandb_run is not None:
-        wandb_run_dir = Path(wandb_run.dir).resolve()
-        logger.info("wandb run directory: %s", wandb_run_dir)
-        if hasattr(hydra_config, "model") and "output_dir" in hydra_config.model:
-            hydra_config.model.output_dir = str(wandb_run_dir)
-            logger.info(f"Model output_dir overridden to wandb dir {wandb_run_dir}")
-        # Copy hydra run folder to wandb directory for full reproducibility
-        copy_run_to_wandb(run_dir, wandb_run_dir)
+        run_output_base = Path(wandb_run.dir).resolve()
+        logger.info("wandb run directory: %s", run_output_base)
+        # Copy hydra run folder (incl. inputs.yaml) into the W&B run dir.
+        copy_run_to_wandb(run_dir, run_output_base)
+    if hasattr(hydra_config, "model") and "output_dir" in hydra_config.model:
+        hydra_config.model.output_dir = str(run_output_base / "outputs")
+        logger.info("Model output_dir set to %s", hydra_config.model.output_dir)
 
     resolved_yaml = OmegaConf.to_yaml(hydra_config, resolve=True)
     logger.info("Hydra config (resolved):\n%s", resolved_yaml)
 
     # --- Train + held-out evaluation/fine-tuning (shared with run_capsule.py) ---
-    run_training(hydra_config, wandb_run)
+    run_training(hydra_config, wandb_run, run_output_dir=str(run_output_base))
     if wandb_run is not None:
         wandb_run.finish()
 
