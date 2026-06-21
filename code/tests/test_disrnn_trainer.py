@@ -136,7 +136,7 @@ class TestDisrnnTrainer(unittest.TestCase):
                 subject_df,
                 ignore_policy="exclude",
                 batch_size=None,
-                batch_mode="random",
+                batch_mode="single",
             )
             dataset_train, dataset_eval = rnn_utils.split_dataset(dataset, eval_every_n=2)
 
@@ -401,7 +401,7 @@ class TestDisrnnTrainer(unittest.TestCase):
                 subject_df,
                 ignore_policy="exclude",
                 batch_size=None,
-                batch_mode="random",
+                batch_mode="single",
             )
             dataset_train, dataset_eval = rnn_utils.split_dataset(dataset, eval_every_n=2)
 
