@@ -799,17 +799,28 @@ class BaseMultisubjectTrainer(ModelTrainer):
         self,
         *,
         output_dir: Path,
-        output_df: pd.DataFrame,
         network_states_full: np.ndarray,
         yhat_full: np.ndarray,
         params: Any,
         metadata: dict[str, Any],
         n_action_logits: int,
+        output_df: pd.DataFrame | None = None,
+        raw_df: pd.DataFrame | None = None,
+        ignore_policy: str | None = None,
         wandb_run: Any | None = None,
         log_scope: str | None = None,
         wandb_step: int | None = None,
         wandb_key_prefix: str | None = None,
     ) -> dict[str, Any]:
+        # Only a handful of subjects are ever plotted, so a caller can avoid
+        # materializing the whole-cohort per-trial frame (the eval OOM at scale)
+        # by passing raw_df (+ ignore_policy) and leaving output_df=None; each
+        # split's frame is then built on demand from the sliced tensors below.
+        if output_df is None and raw_df is None:
+            raise ValueError(
+                "_generate_split_examples requires either output_df or raw_df."
+            )
+        session_source_df = output_df if output_df is not None else raw_df
         default_sessions_per_subject = int(
             metadata.get("heldout_example_sessions_per_subject", 1)
         )
@@ -827,7 +838,7 @@ class BaseMultisubjectTrainer(ModelTrainer):
         if max_subjects_to_plot < 0:
             raise ValueError("example_max_subjects must be >= 0")
 
-        session_order = list(dict.fromkeys(output_df["ses_idx"].tolist()))
+        session_order = list(dict.fromkeys(session_source_df["ses_idx"].tolist()))
         n_sessions_full = int(np.asarray(network_states_full).shape[1])
         if len(session_order) != n_sessions_full:
             raise ValueError(
@@ -908,7 +919,22 @@ class BaseMultisubjectTrainer(ModelTrainer):
                 continue
 
             split_session_ids = [session_order[int(i)] for i in split_indices.tolist()]
-            split_output_df = output_df[output_df["ses_idx"].isin(split_session_ids)].copy()
+            states_split = np.asarray(network_states_full)[:, split_indices, :]
+            yhat_split = np.asarray(yhat_full)[:, split_indices, :]
+            if output_df is not None:
+                split_output_df = output_df[output_df["ses_idx"].isin(split_session_ids)].copy()
+            else:
+                # Build only this split's per-trial frame from the raw trials +
+                # sliced tensors, so we never materialize the whole-cohort frame.
+                split_raw = raw_df[raw_df["ses_idx"].isin(split_session_ids)].copy()
+                split_raw["ses_idx"] = pd.Categorical(
+                    split_raw["ses_idx"], categories=split_session_ids, ordered=True
+                )
+                split_raw = split_raw.sort_values(["ses_idx", "trial"]).copy()
+                split_raw["ses_idx"] = split_raw["ses_idx"].astype(str)
+                split_output_df = self._add_model_results(
+                    split_raw, states_split, yhat_split, ignore_policy=ignore_policy
+                )
             split_output_df["ses_idx"] = pd.Categorical(
                 split_output_df["ses_idx"],
                 categories=split_session_ids,
@@ -922,8 +948,8 @@ class BaseMultisubjectTrainer(ModelTrainer):
                     split_name=split_name,
                     output_dir=output_dir,
                     output_df=split_output_df,
-                    network_states=np.asarray(network_states_full)[:, split_indices, :],
-                    yhat_logits=np.asarray(yhat_full)[:, split_indices, :],
+                    network_states=states_split,
+                    yhat_logits=yhat_split,
                     params=params,
                     sessions_per_subject=split_sessions_per_subject,
                     max_subjects_to_plot=max_subjects_to_plot,
@@ -1077,12 +1103,9 @@ class BaseMultisubjectTrainer(ModelTrainer):
         yhat_full, network_states_full = rnn_utils.eval_network(
             make_eval_network, params, xs_full
         )
-        output_df = self._add_model_results(
-            bundle.raw.copy(),
-            np.asarray(network_states_full),
-            yhat_full,
-            ignore_policy=ignore_policy,
-        )
+        # The snapshot's per-trial frame feeds only the split-example plots
+        # below, which build per-subject frames on demand from the tensors; do
+        # not materialize the whole-cohort frame here (the eval OOM at scale).
 
         plot_paths = self._plot_model_specific_diagnostics(
             params=params,
@@ -1103,7 +1126,8 @@ class BaseMultisubjectTrainer(ModelTrainer):
         )
         split_summaries = self._generate_split_examples(
             output_dir=stage_dir,
-            output_df=output_df,
+            raw_df=bundle.raw,
+            ignore_policy=ignore_policy,
             network_states_full=np.asarray(network_states_full),
             yhat_full=np.asarray(yhat_full),
             params=params,

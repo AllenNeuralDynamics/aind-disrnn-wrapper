@@ -986,14 +986,16 @@ class GruTrainer(BaseMultisubjectTrainer):
                         params,
                         xs_full_for_checkpoint,
                     )
-                    output_df_ckpt = add_gru_model_results(
-                        df_for_checkpoint.copy(),
-                        np.asarray(network_states_full_ckpt),
-                        np.asarray(yhat_full_ckpt),
-                        ignore_policy=ignore_policy,
-                    )
-
+                    # Only build the whole-cohort frame when it is persisted;
+                    # plotting builds per-subject frames on demand below.
+                    output_df_ckpt = None
                     if should_save_output_df_ckpt:
+                        output_df_ckpt = add_gru_model_results(
+                            df_for_checkpoint.copy(),
+                            np.asarray(network_states_full_ckpt),
+                            np.asarray(yhat_full_ckpt),
+                            ignore_policy=ignore_policy,
+                        )
                         output_df_ckpt_path = checkpoint_dir / "output_df.csv"
                         output_df_ckpt.to_csv(output_df_ckpt_path, index=False)
                         checkpoint_record["output_df_path"] = str(output_df_ckpt_path)
@@ -1007,6 +1009,8 @@ class GruTrainer(BaseMultisubjectTrainer):
                         split_summaries_ckpt = self._generate_split_examples(
                             output_dir=checkpoint_dir,
                             output_df=output_df_ckpt,
+                            raw_df=df_for_checkpoint,
+                            ignore_policy=ignore_policy,
                             network_states_full=np.asarray(network_states_full_ckpt),
                             yhat_full=np.asarray(yhat_full_ckpt),
                             params=params,
@@ -1293,15 +1297,20 @@ class GruTrainer(BaseMultisubjectTrainer):
         )
 
         df = bundle.raw
-        output_df = add_gru_model_results(
-            df,
-            np.asarray(network_states_full),
-            np.asarray(yhat_full),
-            ignore_policy=ignore_policy,
-        )
+        # Only materialize the whole-cohort per-trial frame when it is persisted.
+        # Split-example plotting builds per-subject frames on demand from the
+        # tensors (see _generate_split_examples), so we avoid the eval OOM on
+        # large multisubject cohorts. Likelihoods below use the yhat tensors
+        # directly and never need this frame.
+        output_df = None
         if args.save_output_df:
-            output_path = self.output_dir / "output_df.csv"
-            output_df.to_csv(output_path, index=False)
+            output_df = add_gru_model_results(
+                df,
+                np.asarray(network_states_full),
+                np.asarray(yhat_full),
+                ignore_policy=ignore_policy,
+            )
+            output_df.to_csv(self.output_dir / "output_df.csv", index=False)
 
         params_path = self.output_dir / "params.json"
         with params_path.open("w") as f:
@@ -1362,6 +1371,8 @@ class GruTrainer(BaseMultisubjectTrainer):
             split_summaries = self._generate_split_examples(
                 output_dir=final_output_dir,
                 output_df=output_df,
+                raw_df=df,
+                ignore_policy=ignore_policy,
                 network_states_full=np.asarray(network_states_full),
                 yhat_full=np.asarray(yhat_full),
                 params=params,
