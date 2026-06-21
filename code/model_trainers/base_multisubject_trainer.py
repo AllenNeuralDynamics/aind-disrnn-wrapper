@@ -1022,6 +1022,31 @@ class BaseMultisubjectTrainer(ModelTrainer):
         """Model-specific per-split example plotting. Implemented by subclasses."""
         raise NotImplementedError
 
+    # Subclasses set a positive value to run eval_network in chunks along the
+    # episode (session) axis. eval_network JIT-runs the model over all episodes
+    # at once, which exhausts GPU memory for wide models on large multisubject
+    # cohorts (e.g. GRU hidden_size=256 over ~18k sessions OOM'd a 48GB L40s).
+    # None => single call (unchanged; the default for disRNN).
+    _eval_max_episodes: int | None = None
+
+    def _eval_network_full(self, make_network, params, xs):
+        """eval_network, optionally chunked over the episode axis to bound GPU
+        memory. Episodes are independent in the forward pass, so per-chunk
+        results concatenated along axis=1 match a single call for a deterministic
+        eval network."""
+        xs = np.asarray(xs)
+        cap = self._eval_max_episodes
+        if not cap or xs.shape[1] <= cap:
+            return rnn_utils.eval_network(make_network, params, xs)
+        yhats, states = [], []
+        for start in range(0, xs.shape[1], cap):
+            y, s = rnn_utils.eval_network(
+                make_network, params, xs[:, start : start + cap, :]
+            )
+            yhats.append(np.asarray(y))
+            states.append(np.asarray(s))
+        return np.concatenate(yhats, axis=1), np.concatenate(states, axis=1)
+
     def _evaluate_initialization_snapshot(
         self,
         *,
@@ -1063,7 +1088,7 @@ class BaseMultisubjectTrainer(ModelTrainer):
 
         _all = dataset_train.get_all()
         xs_train, ys_train = _all["xs"], _all["ys"]
-        yhat_train, _ = rnn_utils.eval_network(make_eval_network, params, xs_train)
+        yhat_train, _ = self._eval_network_full(make_eval_network, params, xs_train)
         n_action_logits_train = self._resolve_n_action_logits(
             dataset_train, yhat_train, context="initialization train"
         )
@@ -1075,7 +1100,7 @@ class BaseMultisubjectTrainer(ModelTrainer):
 
         _all = dataset_eval.get_all()
         xs_eval, ys_eval = _all["xs"], _all["ys"]
-        yhat_eval, _ = rnn_utils.eval_network(make_eval_network, params, xs_eval)
+        yhat_eval, _ = self._eval_network_full(make_eval_network, params, xs_eval)
         n_action_logits_eval = self._resolve_n_action_logits(
             dataset_eval, yhat_eval, context="initialization eval"
         )
@@ -1100,7 +1125,7 @@ class BaseMultisubjectTrainer(ModelTrainer):
                 wandb_run.log(metric_payload, step=wandb_step)
 
         xs_full = dataset.get_all()["xs"]
-        yhat_full, network_states_full = rnn_utils.eval_network(
+        yhat_full, network_states_full = self._eval_network_full(
             make_eval_network, params, xs_full
         )
         # The snapshot's per-trial frame feeds only the split-example plots

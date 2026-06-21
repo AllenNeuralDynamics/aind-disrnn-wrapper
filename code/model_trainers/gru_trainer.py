@@ -305,6 +305,12 @@ class GruTrainer(BaseMultisubjectTrainer):
 
 
 
+    # Cap eval_network episodes per call so a wide GRU (e.g. hidden_size=256)
+    # over a large multisubject cohort (~18k sessions) doesn't OOM the GPU; the
+    # full-cohort forward pass allocated ~39.5 GB and exceeded a 48 GB L40s.
+    # See BaseMultisubjectTrainer._eval_network_full.
+    _eval_max_episodes = 4096
+
     def _resolve_n_action_logits(self, dataset, yhat, *, context):
         return _require_n_action_logits(dataset, yhat, context=context)
 
@@ -862,7 +868,7 @@ class GruTrainer(BaseMultisubjectTrainer):
 
                 train_likelihood_ckpt: float | None = None
                 if args.checkpoint_eval_on_train_split:
-                    yhat_train_ckpt, _ = rnn_utils.eval_network(
+                    yhat_train_ckpt, _ = self._eval_network_full(
                         current_eval_network,
                         params,
                         xs_train_all,
@@ -881,7 +887,7 @@ class GruTrainer(BaseMultisubjectTrainer):
 
                 eval_likelihood_ckpt: float | None = None
                 if args.checkpoint_eval_on_eval_split:
-                    yhat_eval_ckpt, _ = rnn_utils.eval_network(
+                    yhat_eval_ckpt, _ = self._eval_network_full(
                         current_eval_network,
                         params,
                         xs_eval_all,
@@ -981,7 +987,7 @@ class GruTrainer(BaseMultisubjectTrainer):
                     )
                 )
                 if should_plot_split_examples_ckpt or should_save_output_df_ckpt:
-                    yhat_full_ckpt, network_states_full_ckpt = rnn_utils.eval_network(
+                    yhat_full_ckpt, network_states_full_ckpt = self._eval_network_full(
                         current_eval_network,
                         params,
                         xs_full_for_checkpoint,
@@ -1290,7 +1296,7 @@ class GruTrainer(BaseMultisubjectTrainer):
                     )
 
         xs_full = dataset.get_all()["xs"]
-        yhat_full, network_states_full = rnn_utils.eval_network(
+        yhat_full, network_states_full = self._eval_network_full(
             final_eval_network,
             params,
             xs_full,
@@ -1324,7 +1330,7 @@ class GruTrainer(BaseMultisubjectTrainer):
 
         _train_data = dataset_train.get_all()
         xs_train, ys_train = _train_data["xs"], _train_data["ys"]
-        yhat_train, _ = rnn_utils.eval_network(final_eval_network, params, xs_train)
+        yhat_train, _ = self._eval_network_full(final_eval_network, params, xs_train)
         n_action_logits_train = _require_n_action_logits(
             dataset_train,
             np.asarray(yhat_train),
@@ -1339,7 +1345,7 @@ class GruTrainer(BaseMultisubjectTrainer):
 
         _eval_data = dataset_eval.get_all()
         xs_eval, ys_eval = _eval_data["xs"], _eval_data["ys"]
-        yhat_eval, _ = rnn_utils.eval_network(final_eval_network, params, xs_eval)
+        yhat_eval, _ = self._eval_network_full(final_eval_network, params, xs_eval)
         n_action_logits = _require_n_action_logits(
             dataset_eval,
             np.asarray(yhat_eval),
