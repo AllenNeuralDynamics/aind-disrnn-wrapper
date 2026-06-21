@@ -364,10 +364,17 @@ def _build_multisubject_bundle(
 
     prepared_subjects: list[dict[str, object]] = []
     skipped_subjects_with_insufficient_sessions: list[dict[str, object]] = []
+    # Partition once by subject. A per-subject ``== subject_id`` on the object-dtype
+    # subject_id column re-scans every trial row in Python each iteration and
+    # dominated load time (~250s for ~600 subjects). groupby(sort=False) preserves
+    # within-group row order; we still iterate the explicit subject_order, so the
+    # subject indexing/merge order is unchanged.
+    subject_groups = {sid: g for sid, g in prepared_df.groupby("subject_id", sort=False)}
     for subject_id in subject_order:
-        subject_df = prepared_df[prepared_df["subject_id"] == subject_id].copy()
-        if subject_df.empty:
+        subject_df = subject_groups.get(subject_id)
+        if subject_df is None or subject_df.empty:
             continue
+        subject_df = subject_df.copy()
         sort_columns = ["ses_idx"]
         if "trial" in subject_df.columns:
             sort_columns.append("trial")
