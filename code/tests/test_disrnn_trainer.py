@@ -136,7 +136,7 @@ class TestDisrnnTrainer(unittest.TestCase):
                 subject_df,
                 ignore_policy="exclude",
                 batch_size=None,
-                batch_mode="random",
+                batch_mode="single",
             )
             dataset_train, dataset_eval = rnn_utils.split_dataset(dataset, eval_every_n=2)
 
@@ -292,6 +292,98 @@ class TestDisrnnTrainer(unittest.TestCase):
         self.assertLessEqual(output["likelihood_train"], 1.0)
         self.assertTrue((self.output_dir / "checkpoints" / "index.json").exists())
 
+    def test_resume_from_checkpoint_matches_uninterrupted(self):
+        """End-to-end resume: a run interrupted at a checkpoint and relaunched
+        reproduces the uninterrupted run's final params exactly (optimizer +
+        PRNG state are restored), and the relaunch skips warmup."""
+        import jax
+
+        from model_trainers.checkpoint_resume import find_latest_resumable_state
+
+        def make_trainer(output_dir: Path, n_steps: int) -> DisrnnTrainer:
+            return DisrnnTrainer(
+                architecture={
+                    "latent_size": 4,
+                    "update_net_n_units_per_layer": 8,
+                    "update_net_n_layers": 2,
+                    "choice_net_n_units_per_layer": 4,
+                    "choice_net_n_layers": 1,
+                    "activation": "leaky_relu",
+                },
+                penalties={
+                    "latent_penalty": 1e-3,
+                    "choice_net_latent_penalty": 1e-3,
+                    "update_net_obs_penalty": 1e-3,
+                    "update_net_latent_penalty": 1e-3,
+                },
+                training={
+                    "lr": 1e-3,
+                    "n_steps": n_steps,
+                    "n_warmup_steps": 1,
+                    "loss": "penalized_categorical",
+                    "loss_param": 1.0,
+                    "max_grad_norm": 1.0,
+                    "checkpoint_every_n_steps": 2,
+                    "checkpoint_plot_split_examples_every_n": 0,
+                    "checkpoint_save_output_df_every_n": 0,
+                    "checkpoint_eval_on_eval_split": False,
+                    "checkpoint_eval_on_train_split": False,
+                    "checkpoint_log_eval_to_wandb": False,
+                    "checkpoint_log_train_to_wandb": False,
+                    "checkpoint_log_split_examples_to_wandb": False,
+                    "checkpoint_run_heldout_eval": False,
+                    "checkpoint_plot_choice_rule": False,
+                    "checkpoint_plot_update_rules": False,
+                    "initialization_eval_before_warmup": False,
+                    "initialization_eval_after_warmup": False,
+                    "plot_choice_rule": False,
+                    "plot_update_rules": False,
+                    "save_output_df": False,
+                },
+                output_dir=str(output_dir),
+                seed=42,
+            )
+
+        dir_full = Path(tempfile.mkdtemp(prefix="resume_full_"))
+        dir_resume = Path(tempfile.mkdtemp(prefix="resume_part_"))
+        self.addCleanup(shutil.rmtree, dir_full, ignore_errors=True)
+        self.addCleanup(shutil.rmtree, dir_resume, ignore_errors=True)
+
+        logger_name = "model_trainers.disrnn_trainer"
+
+        # Uninterrupted reference: 4 steps straight through.
+        make_trainer(dir_full, n_steps=4).fit(self.bundle)
+
+        # Interrupted: stop at step 2 (a checkpoint boundary) — must NOT resume.
+        with self.assertLogs(logger_name, level="INFO") as partial_logs:
+            make_trainer(dir_resume, n_steps=2).fit(self.bundle)
+        self.assertFalse(
+            any("Resuming" in line for line in partial_logs.output),
+            "first run should not have resumed",
+        )
+
+        # Relaunch with the same output dir: must resume from step 2 and skip warmup.
+        with self.assertLogs(logger_name, level="INFO") as resume_logs:
+            make_trainer(dir_resume, n_steps=4).fit(self.bundle)
+        self.assertTrue(
+            any("Resuming" in line and "skipping warmup" in line for line in resume_logs.output),
+            "relaunch should have resumed from the checkpoint",
+        )
+
+        state_full = find_latest_resumable_state(dir_full / "checkpoints")
+        state_resumed = find_latest_resumable_state(dir_resume / "checkpoints")
+        self.assertEqual(state_full.steps_completed, 4)
+        self.assertEqual(state_resumed.steps_completed, 4)
+
+        leaves_full = jax.tree_util.tree_leaves(state_full.params)
+        leaves_resumed = jax.tree_util.tree_leaves(state_resumed.params)
+        self.assertEqual(len(leaves_full), len(leaves_resumed))
+        for ref, got in zip(leaves_full, leaves_resumed):
+            self.assertTrue(
+                np.allclose(np.asarray(ref), np.asarray(got), atol=1e-6),
+                "resumed params diverged from the uninterrupted run",
+            )
+
     def test_checkpointed_session_curriculum_uses_last_applied_step_for_snapshots(self):
         trainer = DisrnnTrainer(
             architecture={
@@ -401,7 +493,7 @@ class TestDisrnnTrainer(unittest.TestCase):
                 subject_df,
                 ignore_policy="exclude",
                 batch_size=None,
-                batch_mode="random",
+                batch_mode="single",
             )
             dataset_train, dataset_eval = rnn_utils.split_dataset(dataset, eval_every_n=2)
 

@@ -8,6 +8,7 @@ entry point run_capsule.py uses), keeping the two paths in parity.
 
 import json
 import logging
+import os
 from pathlib import Path
 
 import hydra
@@ -63,8 +64,20 @@ def main(hydra_config: DictConfig) -> None:
     # so post-training analysis (resolve_model_run / auto held-out fine-tuning) can
     # locate it, mirroring the Code Ocean layout. With W&B, use the W&B run dir
     # (copy_run_to_wandb brings inputs.yaml there); otherwise the Hydra run dir.
+    #
+    # Resumable mode (Beaker autoResume): when DISRNN_RESUMABLE_OUTPUT_DIR is set,
+    # anchor outputs at that STABLE path instead of the per-run W&B dir, so a
+    # preempted+restarted job re-finds its checkpoints/<step_N>/train_state.pkl
+    # and the trainer resumes. Each Beaker task owns its own /results dataset, so
+    # a fixed path there is unique to this run. W&B continuity across the restart
+    # is handled out-of-band via WANDB_RUN_ID + WANDB_RESUME env vars.
+    resumable_output_dir = os.environ.get("DISRNN_RESUMABLE_OUTPUT_DIR")
     run_output_base = run_dir
-    if wandb_run is not None:
+    if resumable_output_dir:
+        run_output_base = Path(resumable_output_dir).resolve()
+        run_output_base.mkdir(parents=True, exist_ok=True)
+        logger.info("Resumable mode: stable run output base %s", run_output_base)
+    elif wandb_run is not None:
         run_output_base = Path(wandb_run.dir).resolve()
         logger.info("wandb run directory: %s", run_output_base)
         # Copy hydra run folder (incl. inputs.yaml) into the W&B run dir.

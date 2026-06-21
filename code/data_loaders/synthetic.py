@@ -180,11 +180,15 @@ class SyntheticCognitiveAgents(DatasetLoader):
         raw_df = pd.concat(session_frames, ignore_index=True).sort_values(["ses_idx", "trial"])  # type: ignore[arg-type]
         raw_df.reset_index(drop=True, inplace=True)
 
+        # batch_size=None is only valid with batch_mode="single" under
+        # disentangled_rnns 0.1.4+ (random/rolling require an explicit int).
+        batch_mode = "single" if self.batch_size is None else self.batch_mode
+
         dataset = dl.create_disrnn_dataset(
             raw_df,
             ignore_policy="exclude",
             batch_size=self.batch_size,
-            batch_mode=self.batch_mode,
+            batch_mode=batch_mode,
         )
 
         xs = dataset.get_all()["xs"]

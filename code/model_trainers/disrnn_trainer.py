@@ -25,6 +25,10 @@ from disentangled_rnns.library import disrnn, multisubject_disrnn, plotting, rnn
 from base.interfaces import ModelTrainer
 from base.types import DatasetBundle
 from model_trainers.base_multisubject_trainer import BaseMultisubjectTrainer
+from model_trainers.checkpoint_resume import (
+    find_latest_resumable_state,
+    save_train_state,
+)
 from models import multisubject_disrnn as local_multisubject_disrnn
 from models.session_conditioning import (
     compute_session_curriculum_lambda,
@@ -847,6 +851,7 @@ class DisrnnTrainer(BaseMultisubjectTrainer):
             loss=self.training["loss"],
             loss_param=self.training["loss_param"],
             checkpoint_every_n_steps=int(self.training.get("checkpoint_every_n_steps", 0)),
+            auto_resume=bool(self.training.get("auto_resume", True)),
             checkpoint_eval_on_eval_split=bool(
                 self.training.get("checkpoint_eval_on_eval_split", True)
             ),
@@ -1137,133 +1142,148 @@ class DisrnnTrainer(BaseMultisubjectTrainer):
                         exc,
                     )
 
-        params, warmup_opt_state, _ = _train_supervised_with_optional_session_regularization(
-            make_current_network=make_noiseless_network,
-            current_session_regularization_apply=warmup_session_regularization_apply,
-            n_steps=0,
-            random_key=warmup_key,
-            optimizer=optax.adam(args.learning_rate),
-            total_step_offset=0,
-        )
-        initial_evaluations: dict[str, Any] = {}
-        if args.initialization_eval_before_warmup:
-            initial_evaluations["before_warmup"] = self._evaluate_initialization_snapshot(
-                stage_name="before_warmup",
-                params=params,
-                bundle=bundle,
-                metadata=metadata,
-                dataset=dataset,
-                dataset_train=dataset_train,
-                dataset_eval=dataset_eval,
-                ignore_policy=ignore_policy,
-                make_eval_network=(
-                    _make_noiseless_eval_network_for_completed_total_steps(0)
-                ),
-                disrnn_config=disrnn_config,
-                is_multisubject=is_multisubject,
-                heldout_eval_cfg=heldout_eval_cfg,
-                heldout_data=heldout_test_data,
-                wandb_run=wandb_run,
-                wandb_step=0,
-                keep_media_files=args.checkpoint_keep_media_files,
-                session_curriculum_lambda=(
-                    _session_curriculum_lambda_for_completed_total_steps(0)
-                ),
+        # --- Resume from latest full-state checkpoint (preemption recovery) ---
+        # Only the chunked checkpoint path writes resumable state, so resume is
+        # scoped to it. A found checkpoint already has warmup folded into its
+        # params, so the warmup phase (and its one-time init evals) is skipped.
+        warmup_duration = 0.0
+        resume_state = None
+        if args.auto_resume and args.checkpoint_every_n_steps > 0:
+            resume_state = find_latest_resumable_state(self.output_dir / "checkpoints")
+        if resume_state is not None:
+            logger.info(
+                "Resuming disRNN training from step %s; skipping warmup",
+                resume_state.steps_completed,
             )
-            distillation_metrics = _compute_distillation_metrics(
-                params,
-                completed_total_steps=0,
+            params = resume_state.params
+        else:
+            params, warmup_opt_state, _ = _train_supervised_with_optional_session_regularization(
+                make_current_network=make_noiseless_network,
+                current_session_regularization_apply=warmup_session_regularization_apply,
+                n_steps=0,
+                random_key=warmup_key,
+                optimizer=optax.adam(args.learning_rate),
+                total_step_offset=0,
             )
-            if distillation_metrics is not None:
-                (
-                    initial_evaluations["before_warmup"]["train_distillation_loss"],
-                    initial_evaluations["before_warmup"]["eval_distillation_loss"],
-                ) = distillation_metrics
-        if initial_evaluations:
-            output["initial_evaluations"] = initial_evaluations
+            initial_evaluations: dict[str, Any] = {}
+            if args.initialization_eval_before_warmup:
+                initial_evaluations["before_warmup"] = self._evaluate_initialization_snapshot(
+                    stage_name="before_warmup",
+                    params=params,
+                    bundle=bundle,
+                    metadata=metadata,
+                    dataset=dataset,
+                    dataset_train=dataset_train,
+                    dataset_eval=dataset_eval,
+                    ignore_policy=ignore_policy,
+                    make_eval_network=(
+                        _make_noiseless_eval_network_for_completed_total_steps(0)
+                    ),
+                    disrnn_config=disrnn_config,
+                    is_multisubject=is_multisubject,
+                    heldout_eval_cfg=heldout_eval_cfg,
+                    heldout_data=heldout_test_data,
+                    wandb_run=wandb_run,
+                    wandb_step=0,
+                    keep_media_files=args.checkpoint_keep_media_files,
+                    session_curriculum_lambda=(
+                        _session_curriculum_lambda_for_completed_total_steps(0)
+                    ),
+                )
+                distillation_metrics = _compute_distillation_metrics(
+                    params,
+                    completed_total_steps=0,
+                )
+                if distillation_metrics is not None:
+                    (
+                        initial_evaluations["before_warmup"]["train_distillation_loss"],
+                        initial_evaluations["before_warmup"]["eval_distillation_loss"],
+                    ) = distillation_metrics
+            if initial_evaluations:
+                output["initial_evaluations"] = initial_evaluations
 
-        logger.info("Running warmup training phase")
-        warmup_start = time.time()
-        if distillation_ensemble is None:
-            params, warmup_opt_state, warmup_losses = (
-                _train_supervised_with_optional_session_regularization(
-                    make_current_network=make_noiseless_network,
-                    current_session_regularization_apply=warmup_session_regularization_apply,
+            logger.info("Running warmup training phase")
+            warmup_start = time.time()
+            if distillation_ensemble is None:
+                params, warmup_opt_state, warmup_losses = (
+                    _train_supervised_with_optional_session_regularization(
+                        make_current_network=make_noiseless_network,
+                        current_session_regularization_apply=warmup_session_regularization_apply,
+                        params=params,
+                        opt_state=warmup_opt_state,
+                        n_steps=args.n_warmup_steps,
+                        random_key=warmup_key,
+                        optimizer=optax.adam(args.learning_rate),
+                        total_step_offset=0,
+                    )
+                )
+            else:
+                params, warmup_opt_state, warmup_losses = train_network_with_distillation(
+                    make_noiseless_network,
+                    dataset_train,
+                    dataset_eval,
+                    training_teacher_probs=distillation_ensemble.train_probs,
+                    validation_teacher_probs=distillation_ensemble.eval_probs,
+                    opt=optax.adam(args.learning_rate),
                     params=params,
                     opt_state=warmup_opt_state,
                     n_steps=args.n_warmup_steps,
+                    max_grad_norm=args.max_grad_norm,
                     random_key=warmup_key,
-                    optimizer=optax.adam(args.learning_rate),
-                    total_step_offset=0,
+                    temperature=distillation_ensemble.config.temperature,
+                    n_action_logits=expected_n_action_logits,
+                    include_penalty=False,
+                    penalty_scale=distillation_penalty_scale,
+                    session_regularization_apply=warmup_session_regularization_apply,
+                    session_regularization_scale=lambda_reg_session,
+                    session_curriculum_lambda_schedule=_session_curriculum_lambda_for_total_step,
+                    report_progress_by="wandb",
+                    wandb_run=wandb_run,
                 )
+            warmup_duration = time.time() - warmup_start
+            warmup_path = self._plot_losses(
+                warmup_losses,
+                title="Loss over warmup training",
+                output_name="warmup_validation.png",
             )
-        else:
-            params, warmup_opt_state, warmup_losses = train_network_with_distillation(
-                make_noiseless_network,
-                dataset_train,
-                dataset_eval,
-                training_teacher_probs=distillation_ensemble.train_probs,
-                validation_teacher_probs=distillation_ensemble.eval_probs,
-                opt=optax.adam(args.learning_rate),
-                params=params,
-                opt_state=warmup_opt_state,
-                n_steps=args.n_warmup_steps,
-                max_grad_norm=args.max_grad_norm,
-                random_key=warmup_key,
-                temperature=distillation_ensemble.config.temperature,
-                n_action_logits=expected_n_action_logits,
-                include_penalty=False,
-                penalty_scale=distillation_penalty_scale,
-                session_regularization_apply=warmup_session_regularization_apply,
-                session_regularization_scale=lambda_reg_session,
-                session_curriculum_lambda_schedule=_session_curriculum_lambda_for_total_step,
-                report_progress_by="wandb",
-                wandb_run=wandb_run,
-            )
-        warmup_duration = time.time() - warmup_start
-        warmup_path = self._plot_losses(
-            warmup_losses,
-            title="Loss over warmup training",
-            output_name="warmup_validation.png",
-        )
-        if wandb_run is not None:
-            wandb_run.log({"fig/warmup_loss_curve": wandb.Image(str(warmup_path))})
-        if args.initialization_eval_after_warmup:
-            initial_evaluations = output.setdefault("initial_evaluations", {})
-            initial_evaluations["after_warmup"] = self._evaluate_initialization_snapshot(
-                stage_name="after_warmup",
-                params=params,
-                bundle=bundle,
-                metadata=metadata,
-                dataset=dataset,
-                dataset_train=dataset_train,
-                dataset_eval=dataset_eval,
-                ignore_policy=ignore_policy,
-                make_eval_network=_make_noiseless_eval_network_for_completed_total_steps(
-                    int(args.n_warmup_steps)
-                ),
-                disrnn_config=disrnn_config,
-                is_multisubject=is_multisubject,
-                heldout_eval_cfg=heldout_eval_cfg,
-                heldout_data=heldout_test_data,
-                wandb_run=wandb_run,
-                wandb_step=int(args.n_warmup_steps),
-                keep_media_files=args.checkpoint_keep_media_files,
-                session_curriculum_lambda=(
-                    _session_curriculum_lambda_for_completed_total_steps(
+            if wandb_run is not None:
+                wandb_run.log({"fig/warmup_loss_curve": wandb.Image(str(warmup_path))})
+            if args.initialization_eval_after_warmup:
+                initial_evaluations = output.setdefault("initial_evaluations", {})
+                initial_evaluations["after_warmup"] = self._evaluate_initialization_snapshot(
+                    stage_name="after_warmup",
+                    params=params,
+                    bundle=bundle,
+                    metadata=metadata,
+                    dataset=dataset,
+                    dataset_train=dataset_train,
+                    dataset_eval=dataset_eval,
+                    ignore_policy=ignore_policy,
+                    make_eval_network=_make_noiseless_eval_network_for_completed_total_steps(
                         int(args.n_warmup_steps)
-                    )
-                ),
-            )
-            distillation_metrics = _compute_distillation_metrics(
-                params,
-                completed_total_steps=int(args.n_warmup_steps),
-            )
-            if distillation_metrics is not None:
-                (
-                    initial_evaluations["after_warmup"]["train_distillation_loss"],
-                    initial_evaluations["after_warmup"]["eval_distillation_loss"],
-                ) = distillation_metrics
+                    ),
+                    disrnn_config=disrnn_config,
+                    is_multisubject=is_multisubject,
+                    heldout_eval_cfg=heldout_eval_cfg,
+                    heldout_data=heldout_test_data,
+                    wandb_run=wandb_run,
+                    wandb_step=int(args.n_warmup_steps),
+                    keep_media_files=args.checkpoint_keep_media_files,
+                    session_curriculum_lambda=(
+                        _session_curriculum_lambda_for_completed_total_steps(
+                            int(args.n_warmup_steps)
+                        )
+                    ),
+                )
+                distillation_metrics = _compute_distillation_metrics(
+                    params,
+                    completed_total_steps=int(args.n_warmup_steps),
+                )
+                if distillation_metrics is not None:
+                    (
+                        initial_evaluations["after_warmup"]["train_distillation_loss"],
+                        initial_evaluations["after_warmup"]["eval_distillation_loss"],
+                    ) = distillation_metrics
 
         logger.info("Running full training phase")
         start = time.time()
@@ -1323,13 +1343,20 @@ class DisrnnTrainer(BaseMultisubjectTrainer):
             checkpoint_root = self.output_dir / "checkpoints"
             checkpoint_root.mkdir(parents=True, exist_ok=True)
 
-            all_training_losses: list[float] = []
-            all_validation_losses: list[float] = []
-            steps_completed = 0
-            opt_state = None
+            if resume_state is not None:
+                all_training_losses = list(resume_state.training_losses)
+                all_validation_losses = list(resume_state.validation_losses)
+                steps_completed = resume_state.steps_completed
+                opt_state = resume_state.opt_state
+                random_key = resume_state.random_key
+            else:
+                all_training_losses = []
+                all_validation_losses = []
+                steps_completed = 0
+                opt_state = None
+                random_key = training_key
             xs_full_for_checkpoint = dataset.get_all()["xs"]
             df_for_checkpoint = bundle.raw
-            random_key = training_key
 
             while steps_completed < args.n_steps:
                 chunk_steps = min(
@@ -1405,6 +1432,20 @@ class DisrnnTrainer(BaseMultisubjectTrainer):
                 checkpoint_params_path = checkpoint_dir / "params.json"
                 with checkpoint_params_path.open("w") as f:
                     f.write(json.dumps(params, cls=rnn_utils.NpJnpJsonEncoder))
+
+                # Persist the full training state (params + optimizer + PRNG key +
+                # step + loss history) so a preempted job can resume from here.
+                # random_key/steps_completed are already advanced for the *next*
+                # chunk, so the restored state continues seamlessly.
+                save_train_state(
+                    checkpoint_dir,
+                    steps_completed=steps_completed,
+                    params=params,
+                    opt_state=opt_state,
+                    random_key=random_key,
+                    training_losses=all_training_losses,
+                    validation_losses=all_validation_losses,
+                )
 
                 train_likelihood_ckpt: float | None = None
                 if args.checkpoint_eval_on_train_split:
