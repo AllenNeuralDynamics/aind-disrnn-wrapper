@@ -23,6 +23,10 @@ from disentangled_rnns.library import rnn_utils
 from base.interfaces import ModelTrainer
 from base.types import DatasetBundle
 from model_trainers.base_multisubject_trainer import BaseMultisubjectTrainer
+from model_trainers.checkpoint_resume import (
+    find_latest_resumable_state,
+    save_train_state,
+)
 from models.gru_network import make_gru_network
 from models.session_conditioning import (
     compute_session_curriculum_lambda,
@@ -577,6 +581,7 @@ class GruTrainer(BaseMultisubjectTrainer):
             loss=self.training["loss"],
             loss_param=self.training["loss_param"],
             checkpoint_every_n_steps=int(self.training.get("checkpoint_every_n_steps", 0)),
+            auto_resume=bool(self.training.get("auto_resume", True)),
             checkpoint_eval_on_eval_split=bool(
                 self.training.get("checkpoint_eval_on_eval_split", True)
             ),
@@ -787,7 +792,20 @@ class GruTrainer(BaseMultisubjectTrainer):
             optimizer=optax.adam(args.learning_rate),
             total_step_offset=0,
         )
-        if args.initialization_eval_before_training:
+
+        # --- Resume from latest full-state checkpoint (preemption recovery) ---
+        # Only the chunked checkpoint path writes resumable state, so resume is
+        # scoped to it. When a checkpoint is found we override the fresh init
+        # below and skip the one-time initialization eval.
+        resume_state = None
+        if args.auto_resume and args.checkpoint_every_n_steps > 0:
+            resume_state = find_latest_resumable_state(self.output_dir / "checkpoints")
+            if resume_state is not None:
+                logger.info(
+                    "Resuming GRU training from step %s", resume_state.steps_completed
+                )
+
+        if args.initialization_eval_before_training and resume_state is None:
             output["initial_evaluations"] = {
                 "before_training": self._evaluate_initialization_snapshot(
                     stage_name="before_training",
@@ -822,18 +840,26 @@ class GruTrainer(BaseMultisubjectTrainer):
             optimizer = optax.adam(args.learning_rate)
             checkpoint_root = self.output_dir / "checkpoints"
             checkpoint_root.mkdir(parents=True, exist_ok=True)
-            opt_state = init_opt_state
 
-            all_training_losses: list[float] = []
-            all_validation_losses: list[float] = []
-            steps_completed = 0
+            if resume_state is not None:
+                params = resume_state.params
+                opt_state = resume_state.opt_state
+                random_key = resume_state.random_key
+                steps_completed = resume_state.steps_completed
+                all_training_losses = list(resume_state.training_losses)
+                all_validation_losses = list(resume_state.validation_losses)
+            else:
+                opt_state = init_opt_state
+                random_key = key
+                steps_completed = 0
+                all_training_losses = []
+                all_validation_losses = []
             _train_all = dataset_train.get_all()
             xs_train_all, ys_train_all = _train_all["xs"], _train_all["ys"]
             _eval_all = dataset_eval.get_all()
             xs_eval_all, ys_eval_all = _eval_all["xs"], _eval_all["ys"]
             xs_full_for_checkpoint = dataset.get_all()["xs"]
             df_for_checkpoint = bundle.raw
-            random_key = key
 
             while steps_completed < args.n_steps:
                 chunk_steps = min(
@@ -865,6 +891,20 @@ class GruTrainer(BaseMultisubjectTrainer):
                 checkpoint_params_path = checkpoint_dir / "params.json"
                 with checkpoint_params_path.open("w") as f:
                     f.write(json.dumps(params, cls=rnn_utils.NpJnpJsonEncoder))
+
+                # Persist the full training state (params + optimizer + PRNG key +
+                # step + loss history) so a preempted job can resume from here.
+                # random_key/steps_completed are already advanced for the *next*
+                # chunk, so the restored state continues seamlessly.
+                save_train_state(
+                    checkpoint_dir,
+                    steps_completed=steps_completed,
+                    params=params,
+                    opt_state=opt_state,
+                    random_key=random_key,
+                    training_losses=all_training_losses,
+                    validation_losses=all_validation_losses,
+                )
 
                 train_likelihood_ckpt: float | None = None
                 if args.checkpoint_eval_on_train_split:
