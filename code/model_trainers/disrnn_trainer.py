@@ -969,13 +969,16 @@ class DisrnnTrainer(BaseMultisubjectTrainer):
         lambda_reg_session = float(self.training.get("lambda_reg_session", 0.0))
         if lambda_reg_session < 0:
             raise ValueError("training.lambda_reg_session must be >= 0.")
+        if lambda_reg_session > 0 and not bool(session_conditioning_cfg["enabled"]):
+            logger.warning(
+                "training.lambda_reg_session=%s but session conditioning is disabled "
+                "(session_encoding_type=none); skipping session-delta regularization.",
+                lambda_reg_session,
+            )
+            lambda_reg_session = 0.0
         train_session_regularization_apply = None
         warmup_session_regularization_apply = None
         if lambda_reg_session > 0:
-            if not bool(session_conditioning_cfg["enabled"]):
-                raise ValueError(
-                    "training.lambda_reg_session requires session conditioning to be enabled."
-                )
             session_context = metadata.get("session_context")
             if not isinstance(session_context, Mapping):
                 raise ValueError(

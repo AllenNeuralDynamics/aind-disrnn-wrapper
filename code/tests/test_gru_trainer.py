@@ -696,7 +696,7 @@ class TestGruTrainer(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "session_fourier_k must be > 0"):
             trainer.fit(self.multisubject_bundle)
 
-    def test_session_delta_regularization_requires_session_conditioning(self):
+    def test_session_delta_regularization_skipped_when_conditioning_disabled(self):
         trainer = GruTrainer(
             architecture={
                 "multisubject": True,
@@ -716,8 +716,18 @@ class TestGruTrainer(unittest.TestCase):
             seed=42,
         )
 
-        with self.assertRaisesRegex(ValueError, "requires session conditioning"):
+        # Conditioning is disabled (session_encoding_type=none by default), so a
+        # positive lambda_reg_session is auto-disabled with a warning rather than
+        # raising — this is what lets a sweep cross none x scalar arms safely.
+        with self.assertLogs(level="WARNING") as captured:
             trainer.fit(self.multisubject_bundle)
+        self.assertTrue(
+            any(
+                "skipping session-delta regularization" in message
+                for message in captured.output
+            ),
+            captured.output,
+        )
 
     def test_heldout_eval_rejects_multisubject_gru(self):
         hydra_config = OmegaConf.create(

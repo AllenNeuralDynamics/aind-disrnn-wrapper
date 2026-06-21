@@ -835,7 +835,7 @@ class TestDisrnnTrainer(unittest.TestCase):
                 metadata={"multisubject": False},
             )
 
-    def test_session_delta_regularization_requires_session_conditioning(self):
+    def test_session_delta_regularization_skipped_when_conditioning_disabled(self):
         trainer = DisrnnTrainer(
             architecture={
                 "multisubject": True,
@@ -866,8 +866,18 @@ class TestDisrnnTrainer(unittest.TestCase):
             seed=42,
         )
 
-        with self.assertRaisesRegex(ValueError, "requires session conditioning"):
+        # Conditioning is disabled (session_encoding_type=none by default), so a
+        # positive lambda_reg_session is auto-disabled with a warning rather than
+        # raising — this is what lets a sweep cross none x scalar arms safely.
+        with self.assertLogs(level="WARNING") as captured:
             trainer.fit(self._make_multisubject_bundle())
+        self.assertTrue(
+            any(
+                "skipping session-delta regularization" in message
+                for message in captured.output
+            ),
+            captured.output,
+        )
 
     def test_aligned_action_probabilities_preserve_dataframe_rows(self):
         session_df = pd.DataFrame(
