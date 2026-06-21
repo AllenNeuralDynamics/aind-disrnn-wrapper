@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pandas as pd
 
 from disentangled_rnns.library import rnn_utils
 
@@ -113,9 +114,23 @@ def add_gru_model_results(
             f"timepoints={states.shape[0]}"
         )
 
-    output_df[latent_cols] = states[timestep_index_per_row, session_index_per_row, :]
-    output_df[logit_cols] = logits[timestep_index_per_row, session_index_per_row, :]
-    output_df[prob_cols] = probs[timestep_index_per_row, session_index_per_row, :]
+    # Attach the latent/logit/prob columns in a single block. Assigning each
+    # group separately calls frame.insert once per column (latent_cols alone is
+    # hidden_size-wide), which fragments the frame; build one DataFrame and
+    # concat once instead. Concat on a positional index so a non-unique trial
+    # index can't trigger a cartesian align, then restore the original index.
+    aligned = np.concatenate(
+        [
+            states[timestep_index_per_row, session_index_per_row, :],
+            logits[timestep_index_per_row, session_index_per_row, :],
+            probs[timestep_index_per_row, session_index_per_row, :],
+        ],
+        axis=1,
+    )
+    new_cols = pd.DataFrame(aligned, columns=latent_cols + logit_cols + prob_cols)
+    trial_index = output_df.index
+    output_df = pd.concat([output_df.reset_index(drop=True), new_cols], axis=1)
+    output_df.index = trial_index
 
     return output_df.drop(columns=["_session_order"])
 
