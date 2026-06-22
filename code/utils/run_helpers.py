@@ -294,13 +294,30 @@ def start_wandb_run(
         "tags": base_tags + extra_tags,
     })
 
-    # Reproducibility / provenance metadata stamped into the W&B config.
-    # allow_val_change so resuming a run after a code bump (WANDB_RESUME=allow with
-    # a new WRAPPER_COMMIT) updates the SHA instead of crashing on a config conflict.
-    run.config.update({
+    # Provenance stamped into the W&B config (allow_val_change so a resume after a
+    # code/ref bump updates values instead of raising ConfigError). Two layers:
+    #  - platform-native cross-ref ids (alongside CO_COMPUTATION_ID): Beaker exp/job +
+    #    code SHAs — for jumping to the exact run on each platform.
+    #  - `meta`: our portable, human-readable system (study / variant / launch_id /
+    #    label / config_hash), set by launch_beaker_resumable.py via DISRNN_META_* env —
+    #    consistent across CO / Beaker / AI1 HPC. Merge-safe with any config `meta`.
+    meta_env = {
+        "study": os.environ.get("DISRNN_META_STUDY"),
+        "variant": os.environ.get("DISRNN_META_VARIANT"),
+        "launch_id": os.environ.get("DISRNN_META_LAUNCH_ID"),
+        "label": os.environ.get("DISRNN_META_LABEL"),
+        "config_hash": os.environ.get("DISRNN_META_CONFIG_HASH"),
+    }
+    meta = {**(run.config.get("meta") or {}), **{k: v for k, v in meta_env.items() if v}}
+    provenance = {
         "CO_COMPUTATION_ID": os.environ.get("CO_COMPUTATION_ID"),
+        "BEAKER_EXPERIMENT_ID": os.environ.get("BEAKER_EXPERIMENT_ID"),
+        "BEAKER_JOB_ID": os.environ.get("BEAKER_JOB_ID"),
         **_code_versions(),
-    }, allow_val_change=True)
+    }
+    if meta:
+        provenance["meta"] = meta
+    run.config.update(provenance, allow_val_change=True)
     return run
 
 
