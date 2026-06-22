@@ -299,13 +299,16 @@ def start_wandb_run(
     #  - platform-native cross-ref ids (alongside CO_COMPUTATION_ID): Beaker exp/job +
     #    code SHAs — for jumping to the exact run on each platform.
     #  - `meta`: our portable, human-readable system (study / variant / launch_id /
-    #    label / config_hash), set by launch_beaker_resumable.py via DISRNN_META_* env —
-    #    consistent across CO / Beaker / AI1 HPC. Merge-safe with any config `meta`.
+    #    label / note / config_hash), set by launch_beaker_resumable.py via DISRNN_META_*
+    #    env — consistent across CO / Beaker / AI1 HPC. Merge-safe with any config `meta`.
+    #    `note` is a free-text "why this run exists + what we want to learn" so humans and
+    #    agents can read intent straight from the run record.
     meta_env = {
         "study": os.environ.get("DISRNN_META_STUDY"),
         "variant": os.environ.get("DISRNN_META_VARIANT"),
         "launch_id": os.environ.get("DISRNN_META_LAUNCH_ID"),
         "label": os.environ.get("DISRNN_META_LABEL"),
+        "note": os.environ.get("DISRNN_META_NOTE"),
         "config_hash": os.environ.get("DISRNN_META_CONFIG_HASH"),
     }
     meta = {**(run.config.get("meta") or {}), **{k: v for k, v in meta_env.items() if v}}
