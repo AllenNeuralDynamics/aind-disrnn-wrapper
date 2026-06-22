@@ -861,6 +861,39 @@ class GruTrainer(BaseMultisubjectTrainer):
             xs_full_for_checkpoint = dataset.get_all()["xs"]
             df_for_checkpoint = bundle.raw
 
+            # --- Length-bucketed batching (opt-in via training.length_bucketing) ---
+            # Trim the per-batch unroll to the batch's session length instead of
+            # the global T_max, cutting padding compute. Set on the train dataset
+            # that session-regularized training samples from.
+            if bool(self.training.get("length_bucketing", False)):
+                dataset_train.length_bucketing = True
+                dataset_train.length_bucket_grid = int(
+                    self.training.get("length_bucket_grid", 128)
+                )
+                logger.info(
+                    "Length-bucketed batching enabled (grid=%s)",
+                    dataset_train.length_bucket_grid,
+                )
+
+            # --- Early stopping (opt-in via training.early_stopping) ---
+            # On trigger we `break` the loop, so finalization (gru_config.json,
+            # subject_index_map, checkpoints/index.json, auto held-out fine-tune)
+            # still runs and the best_eval checkpoint is used downstream.
+            _es_cfg = self.training.get("early_stopping", {}) or {}
+            _es_enabled = bool(_es_cfg.get("enabled", False))
+            _es_metric = str(_es_cfg.get("metric", "eval_likelihood"))
+            _es_min_delta = float(_es_cfg.get("min_delta", 0.0))
+            _es_patience = int(_es_cfg.get("patience", 2))
+            _es_guard = _es_cfg.get("overfit_guard", None)
+            _es_guard = float(_es_guard) if _es_guard is not None else None
+            _es_best = float("-inf")
+            _es_stale = 0
+            if _es_enabled:
+                logger.info(
+                    "Early stopping enabled: metric=%s min_delta=%s patience=%s overfit_guard=%s",
+                    _es_metric, _es_min_delta, _es_patience, _es_guard,
+                )
+
             while steps_completed < args.n_steps:
                 chunk_steps = min(
                     args.checkpoint_every_n_steps,
@@ -1264,6 +1297,30 @@ class GruTrainer(BaseMultisubjectTrainer):
                             steps_completed,
                             exc,
                         )
+
+                # --- Early-stopping check (opt-in; checkpoint already saved above) ---
+                if _es_enabled:
+                    _es_val = (
+                        train_likelihood_ckpt
+                        if _es_metric == "train_likelihood"
+                        else eval_likelihood_ckpt
+                    )
+                    if _es_val is not None:
+                        if _es_val > _es_best + _es_min_delta:
+                            _es_best = _es_val
+                            _es_stale = 0
+                        else:
+                            _es_stale += 1
+                        _es_overfit = (
+                            _es_guard is not None and (_es_best - _es_val) > _es_guard
+                        )
+                        if _es_stale >= _es_patience or _es_overfit:
+                            logger.info(
+                                "Early stopping at step %s: %s=%.4f best=%.4f stale=%d/%d overfit=%s",
+                                steps_completed, _es_metric, _es_val, _es_best,
+                                _es_stale, _es_patience, _es_overfit,
+                            )
+                            break
 
             losses = {
                 "training_loss": np.asarray(all_training_losses, dtype=float),

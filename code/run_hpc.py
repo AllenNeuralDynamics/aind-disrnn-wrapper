@@ -77,6 +77,12 @@ def main(hydra_config: DictConfig) -> None:
         run_output_base = Path(resumable_output_dir).resolve()
         run_output_base.mkdir(parents=True, exist_ok=True)
         logger.info("Resumable mode: stable run output base %s", run_output_base)
+        # Bring inputs.yaml/inputs/.hydra into the stable base so post-training
+        # analysis (resolve_model_run / auto held-out fine-tuning) can locate the
+        # run — same as the wandb branch below. Without this the held-out fine-tune
+        # fails with "Could not find run inputs at <base>/inputs.yaml". Idempotent
+        # on autoResume (dirs_exist_ok; does not touch outputs/checkpoints).
+        copy_run_to_wandb(run_dir, run_output_base)
     elif wandb_run is not None:
         run_output_base = Path(wandb_run.dir).resolve()
         logger.info("wandb run directory: %s", run_output_base)

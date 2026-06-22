@@ -124,6 +124,20 @@ class TestPartitionSubjects(unittest.TestCase):
         self.assertNotEqual(a["train_ids"], c["train_ids"])  # different seed -> different
         self.assertEqual(a["heldout_ids"], c["heldout_ids"])  # heldout is seed-independent
 
+    def test_training_sample_is_nested_across_ratios(self):
+        # Permutation-prefix sampling => raising subject_ratio only EXTENDS the
+        # training set, so smaller-D cohorts are subsets of larger-D ones
+        # (required for a clean data-scaling curve). Held-out stays constant.
+        small = self._partition(subject_ratio=0.25, seed=0)
+        mid = self._partition(subject_ratio=0.5, seed=0)
+        full = self._partition(subject_ratio=1.0, seed=0)
+        self.assertTrue(set(small["train_ids"]).issubset(set(mid["train_ids"])))
+        self.assertTrue(set(mid["train_ids"]).issubset(set(full["train_ids"])))
+        # sizes scale with ratio (Coupled pool=20 -> 5/10/20)
+        coupled = lambda p: len(p["per_curriculum"]["Coupled Baiting"]["train"])
+        self.assertEqual((coupled(small), coupled(mid), coupled(full)), (5, 10, 20))
+        self.assertEqual(small["heldout_ids"], full["heldout_ids"])
+
     def test_most_common_task_assignment_with_tiebreak(self):
         # m0: 6 Coupled + 6 Uncoupled Baiting -> tie, broken by task name asc -> Coupled.
         df = _make_session_df(
