@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -243,18 +244,46 @@ def start_wandb_run(
     base_tags = wandb_cfg.pop("tags", []) or []
     extra_tags = [hydra_config.data.type, hydra_config.model.type, *_hardware_tags()]
 
-    # Init wandb with merged tags
-    run = wandb.init(
-        **wandb_cfg,
-        config={k: dict_config[k] for k in ("data", "model", "meta") if k in dict_config},
-        tags=base_tags + extra_tags,
-    )
-    
+    # When many tasks launch at once (e.g. a grid sweep), simultaneous wandb.init
+    # calls overwhelm the W&B backend and hit the default 90s init timeout. Spread
+    # the first attempt over a per-run-deterministic window, use a longer timeout,
+    # and retry transient failures with backoff. All knobs are env-overridable.
+    init_timeout = int(os.environ.get("WANDB_INIT_TIMEOUT", "300"))
+    stagger_window = int(os.environ.get("WANDB_INIT_STAGGER", "20"))
+    rid = os.environ.get("WANDB_RUN_ID") or str(wandb_cfg.get("name", "")) or ""
+    rid_offset = sum(ord(c) for c in rid)
+    if stagger_window > 0 and rid:
+        time.sleep(rid_offset % stagger_window)
+
+    settings = wandb.Settings(init_timeout=init_timeout)
+    max_attempts = 5
+    run = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            run = wandb.init(
+                **wandb_cfg,
+                config={k: dict_config[k] for k in ("data", "model", "meta") if k in dict_config},
+                tags=base_tags + extra_tags,
+                settings=settings,
+            )
+            break
+        except Exception as exc:  # transient W&B backend/init failures
+            if attempt == max_attempts:
+                raise
+            backoff = min(120, 10 * 2 ** (attempt - 1)) + (rid_offset % 7)
+            logger.warning(
+                "wandb.init failed (attempt %d/%d): %s; retrying in %ds",
+                attempt, max_attempts, exc, backoff,
+            )
+            time.sleep(backoff)
+
     # Reproducibility / provenance metadata stamped into the W&B config.
+    # allow_val_change so resuming a run after a code bump (WANDB_RESUME=allow with
+    # a new WRAPPER_COMMIT) updates the SHA instead of crashing on a config conflict.
     run.config.update({
         "CO_COMPUTATION_ID": os.environ.get("CO_COMPUTATION_ID"),
         **_code_versions(),
-    })
+    }, allow_val_change=True)
     return run
 
 
