@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import logging
 import os
+import random
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -233,6 +235,47 @@ def _code_versions() -> dict[str, Optional[str]]:
     }
 
 
+def _init_wandb_with_fallback(init_kwargs: dict) -> wandb.sdk.wandb_run.Run:
+    """``wandb.init`` with bounded jittered retries, then an offline fallback.
+
+    Online run creation hits the W&B backend; when many tasks launch at once (a
+    grid sweep starts all its Beaker tasks together) that handshake can time out.
+    Retry a few times with *random* backoff — the jitter de-correlates simultaneous
+    retries so they don't all collide again — then fall back to ``mode="offline"``
+    so training never blocks on W&B. Offline runs log locally and can be synced to
+    W&B afterward (``wandb sync``). If ``WANDB_MODE`` is already offline/disabled,
+    the first attempt just succeeds locally and the retry/fallback never engages.
+    Knobs: ``WANDB_INIT_ATTEMPTS`` (default 3), ``WANDB_INIT_TIMEOUT`` (default 120).
+    """
+    attempts = int(os.environ.get("WANDB_INIT_ATTEMPTS", "3"))
+    timeout = int(os.environ.get("WANDB_INIT_TIMEOUT", "120"))
+    last_exc: Optional[Exception] = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return wandb.init(**init_kwargs, settings=wandb.Settings(init_timeout=timeout))
+        except Exception as exc:  # online run-creation failed (e.g. CommError timeout)
+            last_exc = exc
+            try:
+                wandb.teardown()  # reset any half-started wandb-core service before retry
+            except Exception:
+                pass
+            if attempt < attempts:
+                delay = random.uniform(5.0, 30.0) * attempt  # jittered, grows per attempt
+                logger.warning(
+                    "wandb.init failed (attempt %d/%d): %s; retrying in %.0fs",
+                    attempt, attempts, exc, delay,
+                )
+                time.sleep(delay)
+    logger.warning(
+        "wandb.init failed after %d attempts (%s); falling back to OFFLINE mode "
+        "(run logged locally under the wandb dir; sync to W&B later)",
+        attempts, last_exc,
+    )
+    return wandb.init(
+        **init_kwargs, settings=wandb.Settings(init_timeout=timeout), mode="offline"
+    )
+
+
 def start_wandb_run(
     hydra_config: DictConfig,
 ) -> Optional[wandb.sdk.wandb_run.Run]:
@@ -243,18 +286,38 @@ def start_wandb_run(
     base_tags = wandb_cfg.pop("tags", []) or []
     extra_tags = [hydra_config.data.type, hydra_config.model.type, *_hardware_tags()]
 
-    # Init wandb with merged tags
-    run = wandb.init(
+    # Init wandb with merged tags, retrying then falling back to offline so training
+    # never blocks on a flaky online run-creation handshake.
+    run = _init_wandb_with_fallback({
         **wandb_cfg,
-        config={k: dict_config[k] for k in ("data", "model", "meta") if k in dict_config},
-        tags=base_tags + extra_tags,
-    )
-    
-    # Reproducibility / provenance metadata stamped into the W&B config.
-    run.config.update({
-        "CO_COMPUTATION_ID": os.environ.get("CO_COMPUTATION_ID"),
-        **_code_versions(),
+        "config": {k: dict_config[k] for k in ("data", "model", "meta") if k in dict_config},
+        "tags": base_tags + extra_tags,
     })
+
+    # Provenance stamped into the W&B config (allow_val_change so a resume after a
+    # code/ref bump updates values instead of raising ConfigError). Two layers:
+    #  - platform-native cross-ref ids (alongside CO_COMPUTATION_ID): Beaker exp/job +
+    #    code SHAs — for jumping to the exact run on each platform.
+    #  - `meta`: our portable, human-readable system (study / variant / launch_id /
+    #    label / config_hash), set by launch_beaker_resumable.py via DISRNN_META_* env —
+    #    consistent across CO / Beaker / AI1 HPC. Merge-safe with any config `meta`.
+    meta_env = {
+        "study": os.environ.get("DISRNN_META_STUDY"),
+        "variant": os.environ.get("DISRNN_META_VARIANT"),
+        "launch_id": os.environ.get("DISRNN_META_LAUNCH_ID"),
+        "label": os.environ.get("DISRNN_META_LABEL"),
+        "config_hash": os.environ.get("DISRNN_META_CONFIG_HASH"),
+    }
+    meta = {**(run.config.get("meta") or {}), **{k: v for k, v in meta_env.items() if v}}
+    provenance = {
+        "CO_COMPUTATION_ID": os.environ.get("CO_COMPUTATION_ID"),
+        "BEAKER_EXPERIMENT_ID": os.environ.get("BEAKER_EXPERIMENT_ID"),
+        "BEAKER_JOB_ID": os.environ.get("BEAKER_JOB_ID"),
+        **_code_versions(),
+    }
+    if meta:
+        provenance["meta"] = meta
+    run.config.update(provenance, allow_val_change=True)
     return run
 
 

@@ -174,15 +174,19 @@ def run_training(hydra_config, wandb_run=None, run_output_dir="/results"):
             logger.info("Updated wandb run name to reflect multisubject mode: %s", new_name)
         wandb_run.config.update({"multisubject": True})
 
-    # Append resolved subject IDs to the wandb run name so rank-based slices
-    # (where subject_ids is null in config) are still identifiable in the UI.
+    # Append the resolved subject COUNT to the wandb run name so rank-based slices
+    # (where subject_ids is null in config) stay identifiable in the UI without a
+    # multi-hundred-ID string. The full list lives in config.resolved_subject_ids.
     resolved_subject_ids = dataset_bundle.metadata.get("subject_ids")
     if wandb_run is not None and resolved_subject_ids is not None:
-        ids_str = "-".join(str(s) for s in resolved_subject_ids)
-        new_name = f"{wandb_run.name}_subjs-{ids_str}" if wandb_run.name else f"subs-{ids_str}"
-        wandb_run.name = new_name
+        n_subj = len(resolved_subject_ids)
+        current_name = wandb_run.name or ""
+        suffix = f"n{n_subj}subj"
+        if suffix not in current_name:  # idempotent across autoResume restarts
+            new_name = f"{current_name}_{suffix}" if current_name else suffix
+            wandb_run.name = new_name
+            logger.info("Updated wandb run name to: %s", new_name)
         wandb_run.config.update({"resolved_subject_ids": list(resolved_subject_ids)})
-        logger.info("Updated wandb run name to: %s", new_name)
 
     heldout_test_data = None
     model_type = getattr(hydra_config.model, "type", None)
