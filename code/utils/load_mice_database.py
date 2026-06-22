@@ -245,9 +245,12 @@ def _partition_subjects(
     )
 
     # Step 6 — seeded ratio sample of the train pool, per curriculum.
-    rng = np.random.default_rng(seed)
+    # Permutation-PREFIX (not rng.choice): each curriculum gets an order seeded
+    # independently of n_take, so raising subject_ratio only EXTENDS the set
+    # (D=10 subset of D=30 ...). Nested cohorts are required for a clean
+    # data-scaling curve; rng.choice(size=n_take) is NOT nested across sizes.
     train_ids: List[str] = []
-    for curriculum in curricula:
+    for idx, curriculum in enumerate(curricula):
         pool = per_curriculum[curriculum]["pool"]
         ratio = ratio_map[curriculum]
         n_take = max(0, min(len(pool), int(round(ratio * len(pool)))))
@@ -259,9 +262,11 @@ def _partition_subjects(
                 len(pool),
             )
         if n_take > 0:
-            sampled_index = set(
-                int(i) for i in rng.choice(len(pool), size=n_take, replace=False)
+            seed_seq = (
+                np.random.SeedSequence([int(seed), idx]) if seed is not None else None
             )
+            order = np.random.default_rng(seed_seq).permutation(len(pool))
+            sampled_index = set(int(i) for i in order[:n_take])
             curr_train = [s for i, s in enumerate(pool) if i in sampled_index]
         else:
             curr_train = []
