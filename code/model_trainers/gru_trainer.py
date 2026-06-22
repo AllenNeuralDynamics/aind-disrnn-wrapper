@@ -861,6 +861,20 @@ class GruTrainer(BaseMultisubjectTrainer):
             xs_full_for_checkpoint = dataset.get_all()["xs"]
             df_for_checkpoint = bundle.raw
 
+            # --- Length-bucketed batching (opt-in via training.length_bucketing) ---
+            # Trim the per-batch unroll to the batch's session length instead of
+            # the global T_max, cutting padding compute. Set on the train dataset
+            # that session-regularized training samples from.
+            if bool(self.training.get("length_bucketing", False)):
+                dataset_train.length_bucketing = True
+                dataset_train.length_bucket_grid = int(
+                    self.training.get("length_bucket_grid", 128)
+                )
+                logger.info(
+                    "Length-bucketed batching enabled (grid=%s)",
+                    dataset_train.length_bucket_grid,
+                )
+
             # --- Early stopping (opt-in via training.early_stopping) ---
             # On trigger we `break` the loop, so finalization (gru_config.json,
             # subject_index_map, checkpoints/index.json, auto held-out fine-tune)

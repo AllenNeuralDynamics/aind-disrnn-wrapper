@@ -29,6 +29,27 @@ def _extract_dataset_arrays(dataset: Any) -> tuple[np.ndarray, np.ndarray]:
     return np.asarray(xs), np.asarray(ys)
 
 
+def _length_bucket_cache(xs_all: np.ndarray, grid: int) -> tuple[list[int], dict[int, np.ndarray], np.ndarray]:
+    """Group session columns into grid-rounded length buckets.
+
+    Padding timesteps are marked by feature 0 < 0 (same convention as
+    ``prepend_session_index_to_multisubject_dataset``). Each session's real
+    length is rounded UP to the next multiple of ``grid`` (capped at T_max);
+    sessions sharing a rounded length form one bucket. Returns the sorted
+    bucket lengths, the column indices per bucket, and per-bucket weights
+    (proportional to #sessions, so sampling stays ~uniform over sessions).
+    """
+    t_max = int(xs_all.shape[0])
+    grid = max(1, int(grid))
+    valid = np.asarray(xs_all[:, :, 0]) >= 0
+    lengths = valid.sum(axis=0).astype(int)
+    rounded = np.minimum(((np.maximum(lengths, 1) + grid - 1) // grid) * grid, t_max)
+    uniq = sorted(int(b) for b in set(rounded.tolist()))
+    pools = {b: np.where(rounded == b)[0] for b in uniq}
+    sizes = np.array([len(pools[b]) for b in uniq], dtype=float)
+    return uniq, pools, sizes / sizes.sum()
+
+
 def _sample_batch(dataset: Any) -> tuple[np.ndarray, np.ndarray]:
     xs_all, ys_all = _extract_dataset_arrays(dataset)
     n_episodes = int(xs_all.shape[1])
@@ -42,16 +63,32 @@ def _sample_batch(dataset: Any) -> tuple[np.ndarray, np.ndarray]:
     if batch_size == 0:
         return xs_all[:, :0], ys_all[:, :0]
 
+    rng = getattr(dataset, "rng", None)
+    use_rng = rng if (rng is not None and hasattr(rng, "choice")) else np.random
+
+    # Length-bucketed sampling (opt-in via dataset.length_bucketing): draw the
+    # batch from a single length bucket and TRIM the unroll to that bucket's
+    # grid-rounded length, so short sessions don't pay the global-T_max padding
+    # cost. Trimming only drops all-padding rows (real length <= bucket length),
+    # so the loss/mask are unaffected. Distinct trims = #buckets (~T_max/grid),
+    # i.e. that many JAX recompiles, amortized over training.
+    if batch_mode == "random" and bool(getattr(dataset, "length_bucketing", False)):
+        grid = int(getattr(dataset, "length_bucket_grid", 128))
+        cache = getattr(dataset, "_length_bucket_cache", None)
+        if cache is None:
+            cache = _length_bucket_cache(xs_all, grid)
+            setattr(dataset, "_length_bucket_cache", cache)
+        uniq, pools, weights = cache
+        bucket = int(use_rng.choice(np.asarray(uniq), p=weights))
+        indices = use_rng.choice(pools[bucket], size=batch_size)
+        return xs_all[:bucket, indices], ys_all[:bucket, indices]
+
     if batch_mode == "rolling":
         current_start = int(getattr(dataset, "_current_start_index", 0))
         indices = np.arange(current_start, current_start + batch_size) % n_episodes
         setattr(dataset, "_current_start_index", (current_start + batch_size) % n_episodes)
     elif batch_mode == "random":
-        rng = getattr(dataset, "rng", None)
-        if rng is not None and hasattr(rng, "choice"):
-            indices = rng.choice(n_episodes, size=batch_size)
-        else:
-            indices = np.random.choice(n_episodes, size=batch_size)
+        indices = use_rng.choice(n_episodes, size=batch_size)
     else:
         raise ValueError(
             f"Unsupported dataset.batch_mode='{batch_mode}' for session-regularized training."
