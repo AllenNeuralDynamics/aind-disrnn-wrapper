@@ -886,12 +886,17 @@ class GruTrainer(BaseMultisubjectTrainer):
             _es_patience = int(_es_cfg.get("patience", 2))
             _es_guard = _es_cfg.get("overfit_guard", None)
             _es_guard = float(_es_guard) if _es_guard is not None else None
+            # Only arm the check once step >= start_after_step (default 0 = no gating).
+            # Used to let the session-conditioning curriculum reach lambda=1 and train a
+            # while before early stopping can fire (otherwise it stops in pretrain/warm-up).
+            _es_start_after = int(_es_cfg.get("start_after_step", 0) or 0)
             _es_best = float("-inf")
             _es_stale = 0
             if _es_enabled:
                 logger.info(
-                    "Early stopping enabled: metric=%s min_delta=%s patience=%s overfit_guard=%s",
-                    _es_metric, _es_min_delta, _es_patience, _es_guard,
+                    "Early stopping enabled: metric=%s min_delta=%s patience=%s "
+                    "overfit_guard=%s start_after_step=%s",
+                    _es_metric, _es_min_delta, _es_patience, _es_guard, _es_start_after,
                 )
 
             while steps_completed < args.n_steps:
@@ -1299,7 +1304,9 @@ class GruTrainer(BaseMultisubjectTrainer):
                         )
 
                 # --- Early-stopping check (opt-in; checkpoint already saved above) ---
-                if _es_enabled:
+                # Gated: only arm once steps_completed >= start_after_step, so the
+                # session-conditioning curriculum reaches lambda=1 (+ buffer) first.
+                if _es_enabled and steps_completed >= _es_start_after:
                     _es_val = (
                         train_likelihood_ckpt
                         if _es_metric == "train_likelihood"
