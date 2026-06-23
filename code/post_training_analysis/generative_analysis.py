@@ -14,6 +14,7 @@ import importlib
 import json
 import logging
 import math
+import os
 import pickle
 import random
 import time
@@ -506,6 +507,80 @@ def load_animal_session_history(
     return session_history
 
 
+def _run_batched_rollout(runner, lanes, *, n_actions: int):
+    """Roll out every lane in ``lanes`` in lockstep, batching the model step
+    across lanes.
+
+    Each ``lane`` is a dict with keys ``subject_id``, ``model_ses_idx``,
+    ``source_ses_idx``, ``curriculum_name``, ``n_trials`` and ``seed``. Lanes
+    are mutually independent, so we advance them together over trial index and
+    call ``runner.step_batch`` once per trial for the whole batch — instead of
+    the old per-lane loop that called the model at batch size 1, once per
+    (lane, trial). Every lane keeps its own seeded RNG and curriculum-matched
+    task and is sampled only while ``t < n_trials``, so its (choice, reward)
+    history is identical to a sequential per-lane rollout; only the model step
+    is batched. Returns ``(choice_histories, reward_histories)`` aligned with
+    ``lanes``.
+    """
+    np = _import_dependency("numpy")
+    n_lanes = len(lanes)
+    if n_lanes == 0:
+        return [], []
+    max_trials = max(int(lane["n_trials"]) for lane in lanes)
+
+    tasks: list[Any] = []
+    rngs: list[Any] = []
+    prefixes: list[list[float]] = []
+    for lane in lanes:
+        task = _build_curriculum_matched_task(
+            curriculum_name=lane["curriculum_name"],
+            n_trials=int(lane["n_trials"]),
+            seed=int(lane["seed"]),
+        )
+        if hasattr(task, "reset"):
+            task.reset()
+        tasks.append(task)
+        rngs.append(np.random.default_rng(int(lane["seed"])))
+        # encode_inputs returns [*static_prefix, prev_choice, prev_reward]; the
+        # prefix (subject/session indices) is constant across trials, so build
+        # it once and only mutate the trailing [prev_choice, prev_reward].
+        if hasattr(runner, "encode_inputs"):
+            encoded = runner.encode_inputs(
+                lane["subject_id"],
+                lane["model_ses_idx"],
+                [0.0, 0.0],
+                source_session_id=lane["source_ses_idx"],
+            )
+        else:
+            encoded = [0.0, 0.0]
+        prefixes.append([float(value) for value in encoded[:-2]])
+
+    prefix_width = len(prefixes[0])
+    inputs_np = np.full((n_lanes, prefix_width + 2), -1.0, dtype=np.float32)
+    for lane_index in range(n_lanes):
+        if prefix_width:
+            inputs_np[lane_index, :prefix_width] = prefixes[lane_index]
+
+    choice_histories: list[list[float]] = [[] for _ in range(n_lanes)]
+    reward_histories: list[list[float]] = [[] for _ in range(n_lanes)]
+    state = runner.initial_state_batch(n_lanes)
+
+    for trial_index in range(max_trials):
+        logits_batch, state = runner.step_batch(inputs_np, state)
+        for lane_index in range(n_lanes):
+            if trial_index >= int(lanes[lane_index]["n_trials"]):
+                continue  # finished lane: leave its RNG/history untouched
+            probs = _softmax(logits_batch[lane_index])
+            choice = int(rngs[lane_index].choice(n_actions, p=probs))
+            reward = _step_task_reward(tasks[lane_index], choice)
+            choice_histories[lane_index].append(float(choice))
+            reward_histories[lane_index].append(float(reward))
+            inputs_np[lane_index, -2] = float(choice)
+            inputs_np[lane_index, -1] = float(reward)
+
+    return choice_histories, reward_histories
+
+
 def simulate_model_sessions(
     resolved_run: ResolvedModelRun | Mapping[str, Any],
     animal_sessions,
@@ -559,119 +634,104 @@ def simulate_model_sessions(
         normalized_rollout_mode,
     )
 
-    records = []
-    completed_rollouts = 0
+    # Sessions (rollouts) are mutually independent. The previous implementation
+    # looped per session and called ``runner.step`` at batch size 1, once per
+    # (session, trial) — ~n_sessions * n_trials sequential model dispatches,
+    # dominated by per-call host/device-sync overhead rather than compute.
+    # Instead we advance every lane (= one requested rollout) in lockstep and
+    # batch the model step across lanes (one dispatch per trial for the whole
+    # batch). Each lane keeps its own seeded RNG and curriculum-matched task, so
+    # the produced histories match the per-session loop; only the step is
+    # batched. Lanes are chunked to bound memory at large D. The chunk size is
+    # overridable via DISRNN_GENERATIVE_ROLLOUT_CHUNK (chunk=1 reproduces the
+    # old per-session batch-1 path bit-for-bit; larger trades reproducibility
+    # against speed, since batched matmul differs from batch-1 at the last bit).
+    BATCHED_ROLLOUT_CHUNK = int(os.environ.get("DISRNN_GENERATIVE_ROLLOUT_CHUNK", "4096"))
+
+    lanes = []
     for session_index, animal_row in enumerate(animal_rows, start=1):
         model_ses_idx = str(animal_row.get("ses_idx"))
         source_ses_idx = _coalesce_session_identifier(
             animal_row.get("source_ses_idx"),
             fallback=model_ses_idx,
         )
-        subject_id = _normalize_identifier(animal_row.get("subject_id"))
-        session_date = str(animal_row.get("session_date"))
-        curriculum_name = animal_row.get("curriculum_name")
-        current_stage_actual = animal_row.get("current_stage_actual")
-        nwb_suffix = animal_row.get("nwb_suffix")
-        nwb_name = animal_row.get("nwb_name")
         n_trials = int(animal_row.get("n_trials", 0))
         if n_trials <= 0:
             logger.info(
                 "Skipping session %d/%d: subject=%s ses_idx=%s has n_trials=%s",
                 session_index,
                 total_source_sessions,
-                subject_id,
+                _normalize_identifier(animal_row.get("subject_id")),
                 model_ses_idx,
                 animal_row.get("n_trials"),
             )
             continue
-
-        logger.info(
-            "Simulating session %d/%d: subject=%s ses_idx=%s source_ses_idx=%s curriculum=%s n_trials=%d "
-            "(%d rollout%s)",
-            session_index,
-            total_source_sessions,
-            subject_id,
-            model_ses_idx,
-            source_ses_idx,
-            curriculum_name,
-            n_trials,
-            int(n_rollouts_per_session),
-            "" if int(n_rollouts_per_session) == 1 else "s",
-        )
         for rollout_index in range(int(n_rollouts_per_session)):
-            random_seed = _derive_session_seed(
-                run.seed,
-                source_ses_idx,
-                rollout_index=rollout_index,
+            lanes.append(
+                {
+                    "subject_id": _normalize_identifier(animal_row.get("subject_id")),
+                    "model_ses_idx": model_ses_idx,
+                    "source_ses_idx": source_ses_idx,
+                    "session_date": str(animal_row.get("session_date")),
+                    "curriculum_name": animal_row.get("curriculum_name"),
+                    "current_stage_actual": animal_row.get("current_stage_actual"),
+                    "nwb_suffix": animal_row.get("nwb_suffix"),
+                    "nwb_name": animal_row.get("nwb_name"),
+                    "n_trials": n_trials,
+                    "rollout_index": rollout_index,
+                    "seed": _derive_session_seed(
+                        run.seed, source_ses_idx, rollout_index=rollout_index
+                    ),
+                }
             )
-            task = _build_curriculum_matched_task(
-                curriculum_name=curriculum_name,
-                n_trials=n_trials,
-                seed=random_seed,
-            )
-            if hasattr(task, "reset"):
-                task.reset()
 
-            state = copy.deepcopy(runner.initial_state)
-            rng = np.random.default_rng(random_seed)
-            prev_choice = -1.0
-            prev_reward = -1.0
-            choice_history: list[float] = []
-            reward_history: list[float] = []
-
-            for _ in range(n_trials):
-                model_inputs = (
-                    runner.encode_inputs(
-                        subject_id,
-                        model_ses_idx,
-                        [prev_choice, prev_reward],
-                        source_session_id=source_ses_idx,
-                    )
-                    if hasattr(runner, "encode_inputs")
-                    else [prev_choice, prev_reward]
-                )
-                logits, state = runner.step(model_inputs, state)
-                probs = _softmax(logits)
-                choice = int(rng.choice(runner.n_actions, p=probs))
-                reward = _step_task_reward(task, choice)
-
-                choice_history.append(float(choice))
-                reward_history.append(float(reward))
-                prev_choice = float(choice)
-                prev_reward = float(reward)
-
+    records = []
+    completed_rollouts = 0
+    for chunk_start in range(0, len(lanes), BATCHED_ROLLOUT_CHUNK):
+        chunk = lanes[chunk_start : chunk_start + BATCHED_ROLLOUT_CHUNK]
+        max_trials = max(lane["n_trials"] for lane in chunk)
+        logger.info(
+            "Simulating lanes %d-%d/%d (batched rollout): max_trials=%d",
+            chunk_start + 1,
+            chunk_start + len(chunk),
+            len(lanes),
+            max_trials,
+        )
+        choice_histories, reward_histories = _run_batched_rollout(
+            runner, chunk, n_actions=runner.n_actions
+        )
+        for lane_index, lane in enumerate(chunk):
             if int(n_rollouts_per_session) == 1:
-                simulated_ses_idx = source_ses_idx
+                simulated_ses_idx = lane["source_ses_idx"]
             else:
-                simulated_ses_idx = f"{source_ses_idx}__rollout_{rollout_index}"
-
+                simulated_ses_idx = (
+                    f"{lane['source_ses_idx']}__rollout_{lane['rollout_index']}"
+                )
             records.append(
                 {
-                    "subject_id": subject_id,
+                    "subject_id": lane["subject_id"],
                     "ses_idx": simulated_ses_idx,
-                    "source_ses_idx": source_ses_idx,
-                    "session_date": session_date,
-                    "curriculum_name": curriculum_name,
-                    "current_stage_actual": current_stage_actual,
-                    "n_trials": n_trials,
-                    "choice_history": choice_history,
-                    "reward_history": reward_history,
-                    "nwb_suffix": nwb_suffix,
-                    "nwb_name": nwb_name,
-                    "random_seed": int(random_seed),
+                    "source_ses_idx": lane["source_ses_idx"],
+                    "session_date": lane["session_date"],
+                    "curriculum_name": lane["curriculum_name"],
+                    "current_stage_actual": lane["current_stage_actual"],
+                    "n_trials": lane["n_trials"],
+                    "choice_history": choice_histories[lane_index],
+                    "reward_history": reward_histories[lane_index],
+                    "nwb_suffix": lane["nwb_suffix"],
+                    "nwb_name": lane["nwb_name"],
+                    "random_seed": int(lane["seed"]),
                     "model_dir": run.model_dir,
                     "checkpoint_step": run.checkpoint_step,
                     "rollout_mode": normalized_rollout_mode,
                 }
             )
             completed_rollouts += 1
-            logger.info(
-                "Completed rollout %d/%d for ses_idx=%s seed=%d",
-                completed_rollouts,
-                total_requested_rollouts,
-                simulated_ses_idx,
-                int(random_seed),
-            )
+        logger.info(
+            "Completed %d/%d rollouts (batched).",
+            completed_rollouts,
+            total_requested_rollouts,
+        )
 
     logger.info(
         "Finished model simulation: generated %d simulated session%s from %d source session%s.",
@@ -5374,6 +5434,31 @@ def _restore_model_runner(resolved_run: ResolvedModelRun):
                 raise ValueError(
                     "Model output logits width does not match n_actions: "
                     f"{action_logits.shape[0]} vs {self.n_actions}."
+                )
+            return action_logits, next_state
+
+        def initial_state_batch(self, batch_size: int):
+            """Batch-`batch_size` initial state: tile the batch-1 state. Lanes
+            start identical and evolve independently (RNN state has no
+            cross-batch coupling)."""
+            return jax.tree_util.tree_map(
+                lambda leaf: jnp.repeat(leaf, int(batch_size), axis=0),
+                self.initial_state,
+            )
+
+        def step_batch(self, inputs_2d, prev_state):
+            """Batched analogue of ``step``: ``inputs_2d`` is (B, input_dim);
+            returns (B, n_actions) logits and the batched next state. The RNN
+            core applies independently across the batch, so row ``b`` is
+            identical to a separate batch-1 ``step`` on lane ``b`` — batching
+            only amortizes the per-trial dispatch/host-sync over the batch."""
+            input_array = jnp.asarray(inputs_2d, dtype=jnp.float32)
+            logits, next_state = step_transform.apply(params, input_array, prev_state)
+            action_logits = np.asarray(logits)[:, : self.n_actions]
+            if int(action_logits.shape[1]) != self.n_actions:
+                raise ValueError(
+                    "Model output logits width does not match n_actions: "
+                    f"{action_logits.shape[1]} vs {self.n_actions}."
                 )
             return action_logits, next_state
 
