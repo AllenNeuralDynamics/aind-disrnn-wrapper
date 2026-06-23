@@ -14,6 +14,7 @@ import importlib
 import json
 import logging
 import math
+import os
 import pickle
 import random
 import time
@@ -641,8 +642,11 @@ def simulate_model_sessions(
     # batch the model step across lanes (one dispatch per trial for the whole
     # batch). Each lane keeps its own seeded RNG and curriculum-matched task, so
     # the produced histories match the per-session loop; only the step is
-    # batched. Lanes are chunked to bound memory at large D.
-    BATCHED_ROLLOUT_CHUNK = 4096
+    # batched. Lanes are chunked to bound memory at large D. The chunk size is
+    # overridable via DISRNN_GENERATIVE_ROLLOUT_CHUNK (chunk=1 reproduces the
+    # old per-session batch-1 path bit-for-bit; larger trades reproducibility
+    # against speed, since batched matmul differs from batch-1 at the last bit).
+    BATCHED_ROLLOUT_CHUNK = int(os.environ.get("DISRNN_GENERATIVE_ROLLOUT_CHUNK", "4096"))
 
     lanes = []
     for session_index, animal_row in enumerate(animal_rows, start=1):
