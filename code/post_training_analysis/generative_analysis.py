@@ -1565,10 +1565,16 @@ def _compute_and_save_partitioned_post_training_outputs(
             partition_simulated_sessions = simulated_sessions
         else:
             allowed_session_ids = manifest[f"{partition}_session_ids"]
+            # The split manifest is in the SOURCE session namespace (e.g.
+            # "632105_2022-07-16_162930"). Multisubject animal rows are aligned
+            # to the MERGED/training namespace ("632105__632105_..."), so match
+            # them on source_ses_idx (like simulated) — matching on ses_idx
+            # silently dropped every animal session in train/eval. Falls back to
+            # ses_idx when no source id is present (non-aligned/single-subject).
             partition_animal_sessions = _filter_session_rows_by_session_ids(
                 animal_sessions,
                 allowed_session_ids=allowed_session_ids,
-                prefer_source_session_ids=False,
+                prefer_source_session_ids=True,
             )
             partition_simulated_sessions = _filter_session_rows_by_session_ids(
                 simulated_sessions,
