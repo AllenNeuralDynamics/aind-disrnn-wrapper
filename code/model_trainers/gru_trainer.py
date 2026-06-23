@@ -1335,10 +1335,15 @@ class GruTrainer(BaseMultisubjectTrainer):
             }
 
         training_time = time.time() - start
+        actual_training_steps = int(args.n_steps)
+        if args.checkpoint_every_n_steps > 0:
+            actual_training_steps = int(steps_completed)
         output["training_time"] = training_time
+        output["training_steps_completed"] = actual_training_steps
+        output["training_steps_requested"] = int(args.n_steps)
         output["checkpoint_every_n_steps"] = int(args.checkpoint_every_n_steps)
         output["session_curriculum"]["final_lambda"] = float(
-            _session_curriculum_lambda_for_step(args.n_steps)
+            _session_curriculum_lambda_for_step(actual_training_steps)
         )
         if checkpoint_records:
             output["checkpoints"] = checkpoint_records
@@ -1353,8 +1358,10 @@ class GruTrainer(BaseMultisubjectTrainer):
         if wandb_run is not None:
             wandb_run.log({"fig/validation_loss_curve": wandb.Image(str(losses_path))})
 
-        final_session_curriculum_lambda = _session_curriculum_lambda_for_step(args.n_steps)
-        final_eval_network = _make_eval_network_for_step(args.n_steps)
+        final_session_curriculum_lambda = _session_curriculum_lambda_for_step(
+            actual_training_steps
+        )
+        final_eval_network = _make_eval_network_for_step(actual_training_steps)
 
         if is_multisubject:
             subject_embedding_fig = self._plot_subject_embedding_state_space(
@@ -1465,14 +1472,16 @@ class GruTrainer(BaseMultisubjectTrainer):
 
         final_output_dir = self.output_dir
         if args.checkpoint_every_n_steps > 0:
-            final_output_dir = self.output_dir / "checkpoints" / f"step_{args.n_steps}"
+            final_output_dir = (
+                self.output_dir / "checkpoints" / f"step_{actual_training_steps}"
+            )
             final_output_dir.mkdir(parents=True, exist_ok=True)
 
         split_summaries: dict[str, Any] | None = None
         if checkpoint_records:
             last_checkpoint = checkpoint_records[-1]
             if (
-                int(last_checkpoint.get("step", -1)) == int(args.n_steps)
+                int(last_checkpoint.get("step", -1)) == int(actual_training_steps)
                 and "split_examples" in last_checkpoint
             ):
                 split_summaries = last_checkpoint["split_examples"]
@@ -1513,7 +1522,10 @@ class GruTrainer(BaseMultisubjectTrainer):
             checkpoint_index_path = checkpoint_root / "index.json"
             checkpoint_index = {
                 "checkpoint_every_n_steps": int(args.checkpoint_every_n_steps),
-                "n_steps": int(args.n_steps),
+                "n_steps": int(actual_training_steps),
+                "requested_n_steps": int(args.n_steps),
+                "completed_steps": int(actual_training_steps),
+                "early_stopped": bool(actual_training_steps < int(args.n_steps)),
                 "count": int(len(checkpoint_records)),
                 "checkpoints": checkpoint_records,
             }

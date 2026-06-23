@@ -286,6 +286,44 @@ class TestGruTrainer(unittest.TestCase):
             self.assertLessEqual(checkpoint["train_likelihood"], 1.0)
         self.assertTrue((self.output_dir / "checkpoints" / "index.json").exists())
 
+    def test_early_stop_final_metadata_uses_completed_step(self):
+        trainer = GruTrainer(
+            architecture={"hidden_size": 8, "num_layers": 1},
+            training={
+                "lr": 1e-3,
+                "n_steps": 4,
+                "loss": "categorical",
+                "loss_param": 1,
+                "max_grad_norm": 1.0,
+                "checkpoint_every_n_steps": 2,
+                "checkpoint_plot_split_examples_every_n": 0,
+                "checkpoint_save_output_df_every_n": 0,
+                "checkpoint_log_eval_to_wandb": False,
+                "checkpoint_log_split_examples_to_wandb": False,
+                "checkpoint_run_heldout_eval": False,
+                "early_stopping": {
+                    "enabled": True,
+                    "metric": "eval_likelihood",
+                    "patience": 0,
+                    "start_after_step": 0,
+                },
+            },
+            output_dir=str(self.output_dir),
+            seed=42,
+        )
+
+        output = trainer.fit(self.bundle)
+        index = json.loads((self.output_dir / "checkpoints" / "index.json").read_text())
+
+        self.assertEqual(output["training_steps_completed"], 2)
+        self.assertEqual(output["training_steps_requested"], 4)
+        self.assertEqual(index["n_steps"], 2)
+        self.assertEqual(index["completed_steps"], 2)
+        self.assertEqual(index["requested_n_steps"], 4)
+        self.assertTrue(index["early_stopped"])
+        self.assertTrue((self.output_dir / "checkpoints" / "step_2").exists())
+        self.assertFalse((self.output_dir / "checkpoints" / "step_4").exists())
+
     def test_multisubject_training_exports_subject_artifacts(self):
         trainer = GruTrainer(
             architecture={
