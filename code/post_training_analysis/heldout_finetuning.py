@@ -340,7 +340,24 @@ def _resolve_runtime_config(
                 _normalize_mapping(source_model_cfg.get("training")).get("max_grad_norm", 1.0),
             )
         ),
+        # Few-shot adaptation budget: cap each held-out subject's ADAPT (train) sessions
+        # to the first K (deterministic by session order). None/absent = use all adapt
+        # sessions (current behavior). K=0 => no adaptation (zero-shot init eval only).
+        # The EVAL (test) split is never touched, so held-out likelihood stays comparable
+        # across K.
+        "adapt_sessions_per_subject": (
+            None
+            if fine_tune_cfg.get("adapt_sessions_per_subject") is None
+            else int(fine_tune_cfg["adapt_sessions_per_subject"])
+        ),
     }
+    if (
+        resolved["heldout_finetuning"]["adapt_sessions_per_subject"] is not None
+        and resolved["heldout_finetuning"]["adapt_sessions_per_subject"] < 0
+    ):
+        raise ValueError(
+            "heldout_finetuning.adapt_sessions_per_subject must be >= 0 or null."
+        )
     return resolved
 
 
@@ -565,6 +582,110 @@ def _maybe_prepend_session_indices(
     )
 
 
+def _cap_adapt_sessions_per_subject(
+    *,
+    dataset_bundle: DatasetBundle,
+    adapt_sessions_per_subject: int,
+) -> DatasetBundle:
+    """Cap each held-out subject's ADAPT (train) sessions to the first K columns.
+
+    The merged train dataset stacks each subject's adapt sessions along axis 1 in the
+    same order as ``metadata["train_session_ids"]`` (both built in one pass over the
+    per-subject split in ``mice._build_multisubject_bundle``), so column ``j`` of the
+    train set is ``train_session_ids[j]`` whose owning subject is recovered from
+    ``metadata["session_context"]`` (same mapping used by the per-subject eval
+    decomposition). Keeping the first K columns per subject is deterministic by session
+    order. ``dataset_eval`` and ``dataset_full`` are left UNCHANGED so held-out
+    likelihood stays comparable across K. K=0 yields an empty train set (no adaptation).
+    """
+    K = int(adapt_sessions_per_subject)
+    metadata = dict(dataset_bundle.metadata)
+    train_session_ids = [str(s) for s in (metadata.get("train_session_ids") or [])]
+
+    train_set = dataset_bundle.train_set
+    n_columns = int(np.asarray(train_set.get_all()["xs"]).shape[1])
+    if len(train_session_ids) != n_columns:
+        raise ValueError(
+            "adapt-session capping: train session/column mismatch: "
+            f"len(train_session_ids)={len(train_session_ids)} but train array has "
+            f"{n_columns} columns."
+        )
+
+    session_context = _normalize_mapping(metadata.get("session_context"))
+    subject_id_by_session: dict[str, str] = {}
+    for row in session_context.get("per_subject", []):
+        subject_id = str(row.get("subject_id"))
+        for session_id in row.get("ordered_session_ids") or []:
+            subject_id_by_session[str(session_id)] = subject_id
+
+    kept_columns: list[int] = []
+    kept_session_ids: list[str] = []
+    seen_per_subject: dict[str, int] = {}
+    capped_per_subject: dict[str, int] = {}
+    for column_index, session_id in enumerate(train_session_ids):
+        subject_id = subject_id_by_session.get(session_id, "unknown")
+        seen = seen_per_subject.get(subject_id, 0)
+        if seen < K:
+            kept_columns.append(column_index)
+            kept_session_ids.append(session_id)
+            capped_per_subject[subject_id] = capped_per_subject.get(subject_id, 0) + 1
+        seen_per_subject[subject_id] = seen + 1
+
+    logger.info(
+        "Few-shot adaptation budget adapt_sessions_per_subject=%d: capped adapt sessions "
+        "per held-out subject to %s (was %s); total adapt columns %d -> %d",
+        K,
+        capped_per_subject,
+        seen_per_subject,
+        n_columns,
+        len(kept_columns),
+    )
+
+    metadata["adapt_sessions_per_subject"] = K
+    metadata["adapt_sessions_per_subject_counts"] = capped_per_subject
+
+    if not kept_columns:
+        # K=0 (zero-shot): no adapt columns. The DatasetRNN constructor rejects empty
+        # arrays, so we leave the train_set untouched here; the caller forces 0 gradient
+        # steps off ``metadata["adapt_sessions_per_subject"] == 0`` so the embedding stays
+        # at its init and only the step-0 eval + per_subject logging run. The diagnostic
+        # train metrics at step 0 then reflect the un-adapted model on the full train
+        # split, which is harmless (eval is the comparable metric).
+        return DatasetBundle(
+            raw=dataset_bundle.raw,
+            train_set=dataset_bundle.train_set,
+            eval_set=dataset_bundle.eval_set,
+            metadata=metadata,
+            extras=dataset_bundle.extras,
+        )
+
+    _all = train_set.get_all()
+    xs = np.asarray(_all["xs"])
+    ys = np.asarray(_all["ys"])
+    kept = np.asarray(kept_columns, dtype=int)
+    capped_xs = xs[:, kept, :]
+    capped_ys = ys[:, kept, :]
+    dataset_class = train_set.__class__
+    capped_train = dataset_class(
+        capped_xs,
+        capped_ys,
+        y_type=getattr(train_set, "y_type", "categorical"),
+        n_classes=getattr(train_set, "n_classes", None),
+        x_names=list(getattr(train_set, "x_names", [])),
+        y_names=list(getattr(train_set, "y_names", [])),
+        batch_size=getattr(train_set, "batch_size", None),
+        batch_mode=getattr(train_set, "batch_mode", "random"),
+    )
+    metadata["train_session_ids"] = kept_session_ids
+    return DatasetBundle(
+        raw=dataset_bundle.raw,
+        train_set=capped_train,
+        eval_set=dataset_bundle.eval_set,
+        metadata=metadata,
+        extras=dataset_bundle.extras,
+    )
+
+
 def _build_global_heldout_bundle(
     *,
     source_run: Any,
@@ -687,6 +808,12 @@ def _build_global_heldout_bundle(
         dataset_bundle=global_bundle,
         architecture=architecture,
     )
+    adapt_sessions_per_subject = fine_tune_cfg.get("adapt_sessions_per_subject")
+    if adapt_sessions_per_subject is not None:
+        global_bundle = _cap_adapt_sessions_per_subject(
+            dataset_bundle=global_bundle,
+            adapt_sessions_per_subject=int(adapt_sessions_per_subject),
+        )
     logger.info(
         "Held-out fine-tuning dataset shapes after session packing: full input %s, train %s, "
         "eval %s, x_names=%s",
@@ -1450,6 +1577,14 @@ def run_heldout_subject_finetuning_from_config(
             resolved_config["heldout_finetuning"]["checkpoint_every_n_steps"]
         )
         total_steps = int(resolved_config["heldout_finetuning"]["n_steps"])
+        # Zero-shot (K=0): no adapt sessions, so skip all gradient steps and run only the
+        # step-0 init eval + per_subject logging (embedding stays at its init).
+        if int(bundle.metadata.get("adapt_sessions_per_subject", -1)) == 0:
+            logger.info(
+                "No adapt sessions (adapt_sessions_per_subject=0); skipping gradient "
+                "steps and running zero-shot init eval only."
+            )
+            total_steps = 0
         evaluation_steps = [0]
         if checkpoint_every_n_steps <= 0:
             if total_steps > 0:
