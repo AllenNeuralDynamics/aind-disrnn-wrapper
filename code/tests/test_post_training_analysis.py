@@ -10,6 +10,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import numpy as np
+
 from post_training_analysis import generative_analysis
 from post_training_analysis.generative_analysis import (
     _parse_simple_yaml,
@@ -343,21 +345,17 @@ seed: 7
                 self.calls.append((subject_id, encoded))
                 return encoded
 
-            def step(self, inputs, prev_state):
-                self.calls[-1] = (self.calls[-1][0], list(inputs))
-                return [50.0, -50.0], prev_state
+            def initial_state_batch(self, batch_size):
+                return {"hidden": [0] * int(batch_size)}
+
+            def step_batch(self, inputs_2d, prev_state):
+                if not hasattr(self, "batched_inputs"):
+                    self.batched_inputs = []
+                arr = np.asarray(inputs_2d, dtype=float)
+                self.batched_inputs.append(arr.tolist())
+                return np.array([[50.0, -50.0]] * arr.shape[0]), prev_state
 
         fake_runner = _FakeRunner()
-
-        class _FakeRng:
-            def choice(self, n_actions, p):
-                return 0
-
-        class _FakeNumpy:
-            class random:
-                @staticmethod
-                def default_rng(seed):
-                    return _FakeRng()
 
         class _FakePandas:
             class DataFrame:
@@ -381,7 +379,7 @@ seed: 7
             generative_analysis,
             "_import_dependency",
             side_effect=lambda module_name: (
-                _FakeNumpy
+                np
                 if module_name == "numpy"
                 else _FakePandas
                 if module_name == "pandas"
@@ -395,13 +393,17 @@ seed: 7
             )
 
         self.assertEqual(len(simulated), 2)
+        # encode_inputs is called once per lane to build the constant prefix
+        # (subject index), in lane order.
+        self.assertEqual([subject for subject, _ in fake_runner.calls], ["m1", "m2"])
+        # The model step is batched across lanes, one call per trial. Each row
+        # carries [subject_index, prev_choice, prev_reward]; row b == the old
+        # per-session step for lane b.
         self.assertEqual(
-            fake_runner.calls,
+            fake_runner.batched_inputs,
             [
-                ("m1", [0.0, -1.0, -1.0]),
-                ("m1", [0.0, 0.0, 1.0]),
-                ("m2", [1.0, -1.0, -1.0]),
-                ("m2", [1.0, 0.0, 1.0]),
+                [[0.0, -1.0, -1.0], [1.0, -1.0, -1.0]],
+                [[0.0, 0.0, 1.0], [1.0, 0.0, 1.0]],
             ],
         )
 
@@ -491,21 +493,17 @@ seed: 7
                 self.calls.append((subject_id, encoded))
                 return encoded
 
-            def step(self, inputs, prev_state):
-                self.calls[-1] = (self.calls[-1][0], list(inputs))
-                return [50.0, -50.0], prev_state
+            def initial_state_batch(self, batch_size):
+                return {"hidden": [0] * int(batch_size)}
+
+            def step_batch(self, inputs_2d, prev_state):
+                if not hasattr(self, "batched_inputs"):
+                    self.batched_inputs = []
+                arr = np.asarray(inputs_2d, dtype=float)
+                self.batched_inputs.append(arr.tolist())
+                return np.array([[50.0, -50.0]] * arr.shape[0]), prev_state
 
         fake_runner = _FakeRunner()
-
-        class _FakeRng:
-            def choice(self, n_actions, p):
-                return 0
-
-        class _FakeNumpy:
-            class random:
-                @staticmethod
-                def default_rng(seed):
-                    return _FakeRng()
 
         class _FakePandas:
             class DataFrame:
@@ -529,7 +527,7 @@ seed: 7
             generative_analysis,
             "_import_dependency",
             side_effect=lambda module_name: (
-                _FakeNumpy
+                np
                 if module_name == "numpy"
                 else _FakePandas
                 if module_name == "pandas"
@@ -543,15 +541,74 @@ seed: 7
             )
 
         self.assertEqual(len(simulated), 2)
+        self.assertEqual([subject for subject, _ in fake_runner.calls], ["m1", "m2"])
+        # Batched step inputs carry [subject_index, session_index, prev_choice,
+        # prev_reward] for each lane, one batched call per trial.
         self.assertEqual(
-            fake_runner.calls,
+            fake_runner.batched_inputs,
             [
-                ("m1", [0.0, 1.0, -1.0, -1.0]),
-                ("m1", [0.0, 1.0, 0.0, 1.0]),
-                ("m2", [1.0, 1.0, -1.0, -1.0]),
-                ("m2", [1.0, 1.0, 0.0, 1.0]),
+                [[0.0, 1.0, -1.0, -1.0], [1.0, 1.0, -1.0, -1.0]],
+                [[0.0, 1.0, 0.0, 1.0], [1.0, 1.0, 0.0, 1.0]],
             ],
         )
+
+    def test_run_batched_rollout_matches_per_lane_and_respects_lengths(self):
+        # The only non-trivial part of batching is variable session lengths:
+        # a batched rollout must (a) produce, for each lane, exactly what a
+        # solo (batch-1) rollout of that lane would, and (b) not over-run a
+        # short lane just because a longer lane shares the batch.
+        class _Runner:
+            n_actions = 2
+
+            def encode_inputs(self, subject_id, session_id, inputs, *, source_session_id=None):
+                return [float(subject_id), *list(inputs)]
+
+            def initial_state_batch(self, batch_size):
+                return np.zeros((int(batch_size), 1), dtype=float)
+
+            def step_batch(self, inputs_2d, prev_state):
+                arr = np.asarray(inputs_2d, dtype=float)
+                # Row-independent recurrence: state[b] depends only on input[b].
+                state = np.asarray(prev_state, dtype=float) + arr[:, :1]
+                logits = np.stack([state[:, 0], -state[:, 0]], axis=1)
+                return logits, state
+
+        lanes = [
+            {"subject_id": 0, "model_ses_idx": "a", "source_ses_idx": "a",
+             "curriculum_name": "Uncoupled Baiting", "n_trials": 3, "seed": 7},
+            {"subject_id": 1, "model_ses_idx": "b", "source_ses_idx": "b",
+             "curriculum_name": "Uncoupled Baiting", "n_trials": 1, "seed": 9},
+        ]
+
+        class _Task:
+            def __init__(self, seed):
+                self.rng = np.random.default_rng(seed)
+
+            def reset(self):
+                pass
+
+        with mock.patch.object(
+            generative_analysis,
+            "_build_curriculum_matched_task",
+            side_effect=lambda **kwargs: _Task(kwargs["seed"]),
+        ), mock.patch.object(
+            generative_analysis,
+            "_step_task_reward",
+            side_effect=lambda task, action: float(task.rng.integers(0, 2)),
+        ):
+            runner = _Runner()
+            ch_both, rw_both = generative_analysis._run_batched_rollout(runner, lanes, n_actions=2)
+            ch0, rw0 = generative_analysis._run_batched_rollout(runner, [lanes[0]], n_actions=2)
+            ch1, rw1 = generative_analysis._run_batched_rollout(runner, [lanes[1]], n_actions=2)
+
+        # Lengths respected: short lane not over-run despite batch max_trials=3.
+        self.assertEqual(len(ch_both[0]), 3)
+        self.assertEqual(len(ch_both[1]), 1)
+        # Batched == per-lane, bit-for-bit (batch-independence + correct masking).
+        self.assertEqual(ch_both[0], ch0[0])
+        self.assertEqual(rw_both[0], rw0[0])
+        self.assertEqual(ch_both[1], ch1[0])
+        self.assertEqual(rw_both[1], rw1[0])
 
     def test_parse_simple_yaml_handles_saved_hydra_inputs(self):
         parsed = _parse_simple_yaml(
