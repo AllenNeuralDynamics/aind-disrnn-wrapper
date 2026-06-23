@@ -610,6 +610,51 @@ seed: 7
         self.assertEqual(ch_both[1], ch1[0])
         self.assertEqual(rw_both[1], rw1[0])
 
+    def test_build_curriculum_matched_task_maps_family_and_version_variants(self):
+        # Family-level mapping (coupled/uncoupled + baiting), robust to curriculum
+        # *version* suffixes like "2p3". NOTE: deliberately family-only (default
+        # task params, stage ignored) — see the TODO in the function.
+        calls = []
+
+        class _FakeTaskMod:
+            class UncoupledBlockTask:
+                def __init__(self, **kwargs):
+                    calls.append(("Uncoupled", kwargs))
+
+            class CoupledBlockTask:
+                def __init__(self, **kwargs):
+                    calls.append(("Coupled", kwargs))
+
+        real_import = generative_analysis.importlib.import_module
+        with mock.patch.object(
+            generative_analysis.importlib,
+            "import_module",
+            side_effect=lambda name, *a, **k: (
+                _FakeTaskMod if "dynamic_foraging.task" in name else real_import(name, *a, **k)
+            ),
+        ):
+            cases = {
+                "Uncoupled Baiting": ("Uncoupled", True),
+                "Uncoupled Without Baiting": ("Uncoupled", False),
+                "Coupled Baiting": ("Coupled", True),
+                "None": ("Uncoupled", True),
+                None: ("Uncoupled", True),
+                # the high-D failure that motivated the fix:
+                "UnCoupledBaiting2p3Curriculum": ("Uncoupled", True),
+            }
+            for name, (family, baiting) in cases.items():
+                calls.clear()
+                generative_analysis._build_curriculum_matched_task(
+                    curriculum_name=name, n_trials=5, seed=1
+                )
+                self.assertEqual(calls[-1][0], family, msg=f"{name!r} family")
+                self.assertEqual(calls[-1][1].get("reward_baiting"), baiting, msg=f"{name!r} baiting")
+            # A non-block-task family still raises (don't silently mis-map it).
+            with self.assertRaises(ValueError):
+                generative_analysis._build_curriculum_matched_task(
+                    curriculum_name="RandomWalkFooCurriculum", n_trials=5, seed=1
+                )
+
     def test_parse_simple_yaml_handles_saved_hydra_inputs(self):
         parsed = _parse_simple_yaml(
             """

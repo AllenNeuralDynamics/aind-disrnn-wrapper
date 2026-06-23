@@ -17,6 +17,7 @@ import math
 import os
 import pickle
 import random
+import re
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -5481,33 +5482,37 @@ def _build_curriculum_matched_task(
     n_trials: int,
     seed: int,
 ):
+    # IMPORTANT LIMITATION (TODO): this matches only the curriculum *family*
+    # (coupled/uncoupled + baiting) and builds the task with the gym's DEFAULT
+    # block/reward parameters. It does NOT use the session's stage-specific task
+    # parameters (current_stage_actual is logged but unused), so a curriculum
+    # that spans multiple stages -- each with its own reward probs / block
+    # structure / sometimes a different task -- is collapsed into one generic
+    # task. The real per-(curriculum, stage) parameters live in
+    #   https://github.com/AllenNeuralDynamics/aind-foraging-behavior-bonsai-automatic-training
+    # Faithfully reproducing them is tracked in studies/data-scaling-law/
+    # FUTURE_DIRECTIONS.md. Match on normalized family substrings so curriculum
+    # *version* variants (e.g. "UnCoupledBaiting2p3Curriculum") resolve too.
     task_mod = importlib.import_module("aind_behavior_gym.dynamic_foraging.task")
-    curriculum = str(curriculum_name) if curriculum_name is not None else "None"
-    if curriculum == "Uncoupled Baiting":
+    raw = str(curriculum_name) if curriculum_name is not None else "None"
+    norm = re.sub(r"[^a-z0-9]", "", raw.lower())
+    if norm in ("", "none"):
         return task_mod.UncoupledBlockTask(
-            reward_baiting=True,
-            num_trials=int(n_trials),
-            seed=int(seed),
+            reward_baiting=True, num_trials=int(n_trials), seed=int(seed)
         )
-    if curriculum == "Uncoupled Without Baiting":
+    baiting = "withoutbaiting" not in norm and "nobaiting" not in norm
+    if "uncoupled" in norm:
         return task_mod.UncoupledBlockTask(
-            reward_baiting=False,
-            num_trials=int(n_trials),
-            seed=int(seed),
+            reward_baiting=baiting, num_trials=int(n_trials), seed=int(seed)
         )
-    if curriculum == "Coupled Baiting":
+    if "coupled" in norm:  # uncoupled already handled above
         return task_mod.CoupledBlockTask(
-            reward_baiting=True,
-            num_trials=int(n_trials),
-            seed=int(seed),
+            reward_baiting=baiting, num_trials=int(n_trials), seed=int(seed)
         )
-    if curriculum == "None":
-        return task_mod.UncoupledBlockTask(
-            reward_baiting=True,
-            num_trials=int(n_trials),
-            seed=int(seed),
-        )
-    raise ValueError(f"Unsupported curriculum_name={curriculum_name!r}")
+    raise ValueError(
+        f"Unsupported curriculum_name={curriculum_name!r} "
+        "(no coupled/uncoupled family match)"
+    )
 
 
 def _step_task_reward(task: Any, action: int) -> float:
