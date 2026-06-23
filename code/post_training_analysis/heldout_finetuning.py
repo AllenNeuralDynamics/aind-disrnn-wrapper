@@ -10,6 +10,7 @@ does not import it (the lazy gateway defers it until called).
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import logging
 from dataclasses import asdict
@@ -234,11 +235,23 @@ def _maybe_start_wandb_run(
     source_wandb_cfg = _normalize_mapping(_normalize_mapping(source_run.run_config).get("wandb"))
     default_name = source_wandb_cfg.get("name") or run_dir.name
     init_kwargs.setdefault("name", str(default_name))
-    return wandb.init(
-        **init_kwargs,
-        config=resolved_config,
-        tags=tags,
+    from utils.run_helpers import _init_wandb_with_fallback
+
+    return _init_wandb_with_fallback(
+        {
+            **init_kwargs,
+            "config": resolved_config,
+            "tags": tags,
+        }
     )
+
+
+def _heldout_subject_run_name_suffix(heldout_subject_ids: Sequence[Any]) -> str:
+    if not heldout_subject_ids:
+        return ""
+    encoded_ids = "\0".join(str(subject_id) for subject_id in heldout_subject_ids)
+    digest = hashlib.sha1(encoded_ids.encode("utf-8")).hexdigest()[:8]
+    return f"heldout-n{len(heldout_subject_ids)}-{digest}"
 
 
 def _update_wandb_run_name_for_heldout_subjects(
@@ -251,8 +264,8 @@ def _update_wandb_run_name_for_heldout_subjects(
     configured_name = _normalize_mapping(resolved_config.get("wandb")).get("name")
     source_wandb_cfg = _normalize_mapping(_normalize_mapping(source_run.run_config).get("wandb"))
     base_name = configured_name or source_wandb_cfg.get("name") or wandb_run.name or "heldout_finetuning"
-    ids_str = "-".join(str(subject_id) for subject_id in heldout_subject_ids)
-    new_name = f"{base_name}_heldout-{ids_str}" if ids_str else str(base_name)
+    suffix = _heldout_subject_run_name_suffix(heldout_subject_ids)
+    new_name = f"{base_name}_{suffix}" if suffix else str(base_name)
     wandb_run.name = new_name
     try:
         wandb_run.config.update({"resolved_heldout_subject_ids": list(heldout_subject_ids)})
