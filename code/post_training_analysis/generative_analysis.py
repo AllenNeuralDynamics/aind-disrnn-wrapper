@@ -36,7 +36,9 @@ _DEFAULT_HISTORY_MAX_TRIALS_BACK = 3
 _DEFAULT_HISTORY_AGGREGATE_MIN_TRIALS = 10
 _DEFAULT_HISTORY_SUBJECT_MIN_TRIALS = 5
 _SUBJECT_LEVEL_MIN_ANIMAL_N = 5
-_DEFAULT_SUBJECT_BOOTSTRAP_RESAMPLES = 1000
+_DEFAULT_SUBJECT_BOOTSTRAP_RESAMPLES = int(
+    os.environ.get("DISRNN_SUBJECT_BOOTSTRAP_RESAMPLES", "250")
+)  # 250 gives fine subject-level CIs at a fraction of the 1000-resample cost
 _DEFAULT_SUBJECT_BOOTSTRAP_SEED = 0
 _REWARD_CONDITIONS = ("rewarded", "unrewarded")
 _RUN_LENGTH_CONDITIONS = ("run_length_1", "run_length_gt1")
@@ -1539,6 +1541,20 @@ def _count_session_rows(session_rows) -> int:
     return sum(1 for _ in _iter_session_records(session_rows))
 
 
+def _parallel_partition_worker(task):
+    """Spawn-pool worker: run the unchanged per-partition pipeline for one
+    partition. Returns ``(partition, result)`` — bit-identical to serial."""
+    os.environ.setdefault("MPLBACKEND", "Agg")  # headless figure rendering in workers
+    partition, partition_animal_sessions, partition_simulated_sessions, output_dir, common = task
+    result = _compute_and_save_post_training_outputs(
+        animal_sessions=partition_animal_sessions,
+        simulated_sessions=partition_simulated_sessions,
+        output_dir=output_dir,
+        **common,
+    )
+    return partition, result
+
+
 def _compute_and_save_partitioned_post_training_outputs(
     *,
     animal_sessions,
@@ -1557,41 +1573,81 @@ def _compute_and_save_partitioned_post_training_outputs(
     resolved_run_path = analysis_output_dir / "resolved_run.json"
     resolved_run_path.write_text(json.dumps(resolved_run.to_dict(), indent=2))
 
-    partition_results: dict[str, Any] = {}
-    partition_summary: dict[str, Any] = {}
+    # Slice each partition's sessions up front (cheap; per-session frames). The
+    # split manifest is in the SOURCE session namespace (e.g.
+    # "632105_2022-07-16_162930"); multisubject animal rows are aligned to the
+    # MERGED namespace ("632105__632105_..."), so match animal on source_ses_idx
+    # (like simulated) — matching on ses_idx silently dropped all train/eval
+    # animal sessions.
+    partition_slices: dict[str, tuple[Any, Any]] = {}
     for partition in session_partitions:
         if partition == _SESSION_PARTITION_COMBINED:
-            partition_animal_sessions = animal_sessions
-            partition_simulated_sessions = simulated_sessions
+            partition_slices[partition] = (animal_sessions, simulated_sessions)
         else:
             allowed_session_ids = manifest[f"{partition}_session_ids"]
-            # The split manifest is in the SOURCE session namespace (e.g.
-            # "632105_2022-07-16_162930"). Multisubject animal rows are aligned
-            # to the MERGED/training namespace ("632105__632105_..."), so match
-            # them on source_ses_idx (like simulated) — matching on ses_idx
-            # silently dropped every animal session in train/eval. Falls back to
-            # ses_idx when no source id is present (non-aligned/single-subject).
-            partition_animal_sessions = _filter_session_rows_by_session_ids(
-                animal_sessions,
-                allowed_session_ids=allowed_session_ids,
-                prefer_source_session_ids=True,
-            )
-            partition_simulated_sessions = _filter_session_rows_by_session_ids(
-                simulated_sessions,
-                allowed_session_ids=allowed_session_ids,
-                prefer_source_session_ids=True,
+            partition_slices[partition] = (
+                _filter_session_rows_by_session_ids(
+                    animal_sessions,
+                    allowed_session_ids=allowed_session_ids,
+                    prefer_source_session_ids=True,
+                ),
+                _filter_session_rows_by_session_ids(
+                    simulated_sessions,
+                    allowed_session_ids=allowed_session_ids,
+                    prefer_source_session_ids=True,
+                ),
             )
 
-        partition_result = _compute_and_save_post_training_outputs(
-            animal_sessions=partition_animal_sessions,
-            simulated_sessions=partition_simulated_sessions,
-            output_dir=analysis_output_dir / partition,
-            resolved_run=resolved_run,
-            window_size=window_size,
-            save_animal_session_history=save_animal_session_history,
-        )
+    # Partitions are independent whole computations, so compute them
+    # concurrently — each worker runs the unchanged per-partition pipeline, so
+    # outputs are bit-identical to serial; only scheduling is parallel. Use
+    # 'spawn' (NOT fork): this runs right after the JAX/GPU rollout and forking a
+    # CUDA-initialised process can hang. DISRNN_GENERATIVE_STATS_WORKERS=1 forces
+    # serial (used by the in-process-mock unit tests); the launcher sets it >1.
+    common = dict(
+        resolved_run=resolved_run,
+        window_size=window_size,
+        save_animal_session_history=save_animal_session_history,
+    )
+    max_workers = int(os.environ.get("DISRNN_GENERATIVE_STATS_WORKERS", "1"))
+    partition_results: dict[str, Any] = {}
+    if max_workers > 1 and len(session_partitions) > 1:
+        import concurrent.futures
+        import multiprocessing
+
+        tasks = [
+            (
+                partition,
+                partition_slices[partition][0],
+                partition_slices[partition][1],
+                str(analysis_output_dir / partition),
+                common,
+            )
+            for partition in session_partitions
+        ]
+        with concurrent.futures.ProcessPoolExecutor(
+            max_workers=min(max_workers, len(tasks)),
+            mp_context=multiprocessing.get_context("spawn"),
+        ) as executor:
+            for partition, partition_result in executor.map(
+                _parallel_partition_worker, tasks
+            ):
+                partition_results[partition] = partition_result
+    else:
+        for partition in session_partitions:
+            partition_animal_sessions, partition_simulated_sessions = partition_slices[partition]
+            partition_results[partition] = _compute_and_save_post_training_outputs(
+                animal_sessions=partition_animal_sessions,
+                simulated_sessions=partition_simulated_sessions,
+                output_dir=analysis_output_dir / partition,
+                **common,
+            )
+
+    partition_summary: dict[str, Any] = {}
+    for partition in session_partitions:
+        partition_result = partition_results[partition]
         partition_result["session_partition"] = partition
-        partition_results[partition] = partition_result
+        partition_animal_sessions, partition_simulated_sessions = partition_slices[partition]
         partition_summary[partition] = {
             "output_dir": partition_result["output_dir"],
             "num_animal_sessions": _count_session_rows(partition_animal_sessions),
