@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from dataclasses import asdict
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 try:
@@ -24,6 +25,8 @@ try:
     from models.gru_network import make_gru_network
     from models.session_conditioning import resolve_session_conditioning_from_architecture
     from post_training_analysis.heldout_finetuning import (
+        _heldout_subject_run_name_suffix,
+        _maybe_start_wandb_run,
         run_heldout_subject_finetuning_from_config,
     )
     from utils.multisubject import (
@@ -570,6 +573,41 @@ class TestHeldoutSubjectFinetuning(unittest.TestCase):
             captured_selector["test_subject_ids"],
             list(self.heldout_subject_ids),
         )
+
+    def test_heldout_subject_run_name_suffix_is_compact_and_stable(self):
+        suffix = _heldout_subject_run_name_suffix(["s1", "s2", "s3"])
+
+        self.assertRegex(suffix, r"^heldout-n3-[0-9a-f]{8}$")
+        self.assertEqual(suffix, _heldout_subject_run_name_suffix(["s1", "s2", "s3"]))
+        self.assertNotIn("s1-s2-s3", suffix)
+        self.assertEqual(_heldout_subject_run_name_suffix([]), "")
+
+    def test_standalone_wandb_init_uses_retry_fallback_helper(self):
+        fake_run = _FakeWandbRun()
+        resolved_config = {"wandb": {"project": "proj"}, "meta": {"kind": "test"}}
+        source_run = SimpleNamespace(
+            model_type="gru",
+            run_config={"wandb": {"name": "source-run"}},
+        )
+
+        with mock.patch(
+            "utils.run_helpers._init_wandb_with_fallback",
+            return_value=fake_run,
+        ) as init_with_fallback:
+            run = _maybe_start_wandb_run(
+                resolved_config=resolved_config,
+                run_dir=self.output_root,
+                source_run=source_run,
+            )
+
+        self.assertIs(run, fake_run)
+        init_with_fallback.assert_called_once()
+        init_kwargs = init_with_fallback.call_args.args[0]
+        self.assertEqual(init_kwargs["project"], "proj")
+        self.assertEqual(init_kwargs["name"], "source-run")
+        self.assertEqual(init_kwargs["config"], resolved_config)
+        self.assertIn("heldout_subject_finetuning", init_kwargs["tags"])
+        self.assertIn("gru", init_kwargs["tags"])
 
     # --- Auto held-out fine-tuning: injected W&B run + namespacing ------------
 

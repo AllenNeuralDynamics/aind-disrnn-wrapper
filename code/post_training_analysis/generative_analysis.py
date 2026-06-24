@@ -14,8 +14,10 @@ import importlib
 import json
 import logging
 import math
+import os
 import pickle
 import random
+import re
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -34,7 +36,9 @@ _DEFAULT_HISTORY_MAX_TRIALS_BACK = 3
 _DEFAULT_HISTORY_AGGREGATE_MIN_TRIALS = 10
 _DEFAULT_HISTORY_SUBJECT_MIN_TRIALS = 5
 _SUBJECT_LEVEL_MIN_ANIMAL_N = 5
-_DEFAULT_SUBJECT_BOOTSTRAP_RESAMPLES = 1000
+_DEFAULT_SUBJECT_BOOTSTRAP_RESAMPLES = int(
+    os.environ.get("DISRNN_SUBJECT_BOOTSTRAP_RESAMPLES", "250")
+)  # 250 gives fine subject-level CIs at a fraction of the 1000-resample cost
 _DEFAULT_SUBJECT_BOOTSTRAP_SEED = 0
 _REWARD_CONDITIONS = ("rewarded", "unrewarded")
 _RUN_LENGTH_CONDITIONS = ("run_length_1", "run_length_gt1")
@@ -506,6 +510,80 @@ def load_animal_session_history(
     return session_history
 
 
+def _run_batched_rollout(runner, lanes, *, n_actions: int):
+    """Roll out every lane in ``lanes`` in lockstep, batching the model step
+    across lanes.
+
+    Each ``lane`` is a dict with keys ``subject_id``, ``model_ses_idx``,
+    ``source_ses_idx``, ``curriculum_name``, ``n_trials`` and ``seed``. Lanes
+    are mutually independent, so we advance them together over trial index and
+    call ``runner.step_batch`` once per trial for the whole batch — instead of
+    the old per-lane loop that called the model at batch size 1, once per
+    (lane, trial). Every lane keeps its own seeded RNG and curriculum-matched
+    task and is sampled only while ``t < n_trials``, so its (choice, reward)
+    history is identical to a sequential per-lane rollout; only the model step
+    is batched. Returns ``(choice_histories, reward_histories)`` aligned with
+    ``lanes``.
+    """
+    np = _import_dependency("numpy")
+    n_lanes = len(lanes)
+    if n_lanes == 0:
+        return [], []
+    max_trials = max(int(lane["n_trials"]) for lane in lanes)
+
+    tasks: list[Any] = []
+    rngs: list[Any] = []
+    prefixes: list[list[float]] = []
+    for lane in lanes:
+        task = _build_curriculum_matched_task(
+            curriculum_name=lane["curriculum_name"],
+            n_trials=int(lane["n_trials"]),
+            seed=int(lane["seed"]),
+        )
+        if hasattr(task, "reset"):
+            task.reset()
+        tasks.append(task)
+        rngs.append(np.random.default_rng(int(lane["seed"])))
+        # encode_inputs returns [*static_prefix, prev_choice, prev_reward]; the
+        # prefix (subject/session indices) is constant across trials, so build
+        # it once and only mutate the trailing [prev_choice, prev_reward].
+        if hasattr(runner, "encode_inputs"):
+            encoded = runner.encode_inputs(
+                lane["subject_id"],
+                lane["model_ses_idx"],
+                [0.0, 0.0],
+                source_session_id=lane["source_ses_idx"],
+            )
+        else:
+            encoded = [0.0, 0.0]
+        prefixes.append([float(value) for value in encoded[:-2]])
+
+    prefix_width = len(prefixes[0])
+    inputs_np = np.full((n_lanes, prefix_width + 2), -1.0, dtype=np.float32)
+    for lane_index in range(n_lanes):
+        if prefix_width:
+            inputs_np[lane_index, :prefix_width] = prefixes[lane_index]
+
+    choice_histories: list[list[float]] = [[] for _ in range(n_lanes)]
+    reward_histories: list[list[float]] = [[] for _ in range(n_lanes)]
+    state = runner.initial_state_batch(n_lanes)
+
+    for trial_index in range(max_trials):
+        logits_batch, state = runner.step_batch(inputs_np, state)
+        for lane_index in range(n_lanes):
+            if trial_index >= int(lanes[lane_index]["n_trials"]):
+                continue  # finished lane: leave its RNG/history untouched
+            probs = _softmax(logits_batch[lane_index])
+            choice = int(rngs[lane_index].choice(n_actions, p=probs))
+            reward = _step_task_reward(tasks[lane_index], choice)
+            choice_histories[lane_index].append(float(choice))
+            reward_histories[lane_index].append(float(reward))
+            inputs_np[lane_index, -2] = float(choice)
+            inputs_np[lane_index, -1] = float(reward)
+
+    return choice_histories, reward_histories
+
+
 def simulate_model_sessions(
     resolved_run: ResolvedModelRun | Mapping[str, Any],
     animal_sessions,
@@ -559,119 +637,104 @@ def simulate_model_sessions(
         normalized_rollout_mode,
     )
 
-    records = []
-    completed_rollouts = 0
+    # Sessions (rollouts) are mutually independent. The previous implementation
+    # looped per session and called ``runner.step`` at batch size 1, once per
+    # (session, trial) — ~n_sessions * n_trials sequential model dispatches,
+    # dominated by per-call host/device-sync overhead rather than compute.
+    # Instead we advance every lane (= one requested rollout) in lockstep and
+    # batch the model step across lanes (one dispatch per trial for the whole
+    # batch). Each lane keeps its own seeded RNG and curriculum-matched task, so
+    # the produced histories match the per-session loop; only the step is
+    # batched. Lanes are chunked to bound memory at large D. The chunk size is
+    # overridable via DISRNN_GENERATIVE_ROLLOUT_CHUNK (chunk=1 reproduces the
+    # old per-session batch-1 path bit-for-bit; larger trades reproducibility
+    # against speed, since batched matmul differs from batch-1 at the last bit).
+    BATCHED_ROLLOUT_CHUNK = int(os.environ.get("DISRNN_GENERATIVE_ROLLOUT_CHUNK", "4096"))
+
+    lanes = []
     for session_index, animal_row in enumerate(animal_rows, start=1):
         model_ses_idx = str(animal_row.get("ses_idx"))
         source_ses_idx = _coalesce_session_identifier(
             animal_row.get("source_ses_idx"),
             fallback=model_ses_idx,
         )
-        subject_id = _normalize_identifier(animal_row.get("subject_id"))
-        session_date = str(animal_row.get("session_date"))
-        curriculum_name = animal_row.get("curriculum_name")
-        current_stage_actual = animal_row.get("current_stage_actual")
-        nwb_suffix = animal_row.get("nwb_suffix")
-        nwb_name = animal_row.get("nwb_name")
         n_trials = int(animal_row.get("n_trials", 0))
         if n_trials <= 0:
             logger.info(
                 "Skipping session %d/%d: subject=%s ses_idx=%s has n_trials=%s",
                 session_index,
                 total_source_sessions,
-                subject_id,
+                _normalize_identifier(animal_row.get("subject_id")),
                 model_ses_idx,
                 animal_row.get("n_trials"),
             )
             continue
-
-        logger.info(
-            "Simulating session %d/%d: subject=%s ses_idx=%s source_ses_idx=%s curriculum=%s n_trials=%d "
-            "(%d rollout%s)",
-            session_index,
-            total_source_sessions,
-            subject_id,
-            model_ses_idx,
-            source_ses_idx,
-            curriculum_name,
-            n_trials,
-            int(n_rollouts_per_session),
-            "" if int(n_rollouts_per_session) == 1 else "s",
-        )
         for rollout_index in range(int(n_rollouts_per_session)):
-            random_seed = _derive_session_seed(
-                run.seed,
-                source_ses_idx,
-                rollout_index=rollout_index,
+            lanes.append(
+                {
+                    "subject_id": _normalize_identifier(animal_row.get("subject_id")),
+                    "model_ses_idx": model_ses_idx,
+                    "source_ses_idx": source_ses_idx,
+                    "session_date": str(animal_row.get("session_date")),
+                    "curriculum_name": animal_row.get("curriculum_name"),
+                    "current_stage_actual": animal_row.get("current_stage_actual"),
+                    "nwb_suffix": animal_row.get("nwb_suffix"),
+                    "nwb_name": animal_row.get("nwb_name"),
+                    "n_trials": n_trials,
+                    "rollout_index": rollout_index,
+                    "seed": _derive_session_seed(
+                        run.seed, source_ses_idx, rollout_index=rollout_index
+                    ),
+                }
             )
-            task = _build_curriculum_matched_task(
-                curriculum_name=curriculum_name,
-                n_trials=n_trials,
-                seed=random_seed,
-            )
-            if hasattr(task, "reset"):
-                task.reset()
 
-            state = copy.deepcopy(runner.initial_state)
-            rng = np.random.default_rng(random_seed)
-            prev_choice = -1.0
-            prev_reward = -1.0
-            choice_history: list[float] = []
-            reward_history: list[float] = []
-
-            for _ in range(n_trials):
-                model_inputs = (
-                    runner.encode_inputs(
-                        subject_id,
-                        model_ses_idx,
-                        [prev_choice, prev_reward],
-                        source_session_id=source_ses_idx,
-                    )
-                    if hasattr(runner, "encode_inputs")
-                    else [prev_choice, prev_reward]
-                )
-                logits, state = runner.step(model_inputs, state)
-                probs = _softmax(logits)
-                choice = int(rng.choice(runner.n_actions, p=probs))
-                reward = _step_task_reward(task, choice)
-
-                choice_history.append(float(choice))
-                reward_history.append(float(reward))
-                prev_choice = float(choice)
-                prev_reward = float(reward)
-
+    records = []
+    completed_rollouts = 0
+    for chunk_start in range(0, len(lanes), BATCHED_ROLLOUT_CHUNK):
+        chunk = lanes[chunk_start : chunk_start + BATCHED_ROLLOUT_CHUNK]
+        max_trials = max(lane["n_trials"] for lane in chunk)
+        logger.info(
+            "Simulating lanes %d-%d/%d (batched rollout): max_trials=%d",
+            chunk_start + 1,
+            chunk_start + len(chunk),
+            len(lanes),
+            max_trials,
+        )
+        choice_histories, reward_histories = _run_batched_rollout(
+            runner, chunk, n_actions=runner.n_actions
+        )
+        for lane_index, lane in enumerate(chunk):
             if int(n_rollouts_per_session) == 1:
-                simulated_ses_idx = source_ses_idx
+                simulated_ses_idx = lane["source_ses_idx"]
             else:
-                simulated_ses_idx = f"{source_ses_idx}__rollout_{rollout_index}"
-
+                simulated_ses_idx = (
+                    f"{lane['source_ses_idx']}__rollout_{lane['rollout_index']}"
+                )
             records.append(
                 {
-                    "subject_id": subject_id,
+                    "subject_id": lane["subject_id"],
                     "ses_idx": simulated_ses_idx,
-                    "source_ses_idx": source_ses_idx,
-                    "session_date": session_date,
-                    "curriculum_name": curriculum_name,
-                    "current_stage_actual": current_stage_actual,
-                    "n_trials": n_trials,
-                    "choice_history": choice_history,
-                    "reward_history": reward_history,
-                    "nwb_suffix": nwb_suffix,
-                    "nwb_name": nwb_name,
-                    "random_seed": int(random_seed),
+                    "source_ses_idx": lane["source_ses_idx"],
+                    "session_date": lane["session_date"],
+                    "curriculum_name": lane["curriculum_name"],
+                    "current_stage_actual": lane["current_stage_actual"],
+                    "n_trials": lane["n_trials"],
+                    "choice_history": choice_histories[lane_index],
+                    "reward_history": reward_histories[lane_index],
+                    "nwb_suffix": lane["nwb_suffix"],
+                    "nwb_name": lane["nwb_name"],
+                    "random_seed": int(lane["seed"]),
                     "model_dir": run.model_dir,
                     "checkpoint_step": run.checkpoint_step,
                     "rollout_mode": normalized_rollout_mode,
                 }
             )
             completed_rollouts += 1
-            logger.info(
-                "Completed rollout %d/%d for ses_idx=%s seed=%d",
-                completed_rollouts,
-                total_requested_rollouts,
-                simulated_ses_idx,
-                int(random_seed),
-            )
+        logger.info(
+            "Completed %d/%d rollouts (batched).",
+            completed_rollouts,
+            total_requested_rollouts,
+        )
 
     logger.info(
         "Finished model simulation: generated %d simulated session%s from %d source session%s.",
@@ -1478,6 +1541,20 @@ def _count_session_rows(session_rows) -> int:
     return sum(1 for _ in _iter_session_records(session_rows))
 
 
+def _parallel_partition_worker(task):
+    """Spawn-pool worker: run the unchanged per-partition pipeline for one
+    partition. Returns ``(partition, result)`` — bit-identical to serial."""
+    os.environ.setdefault("MPLBACKEND", "Agg")  # headless figure rendering in workers
+    partition, partition_animal_sessions, partition_simulated_sessions, output_dir, common = task
+    result = _compute_and_save_post_training_outputs(
+        animal_sessions=partition_animal_sessions,
+        simulated_sessions=partition_simulated_sessions,
+        output_dir=output_dir,
+        **common,
+    )
+    return partition, result
+
+
 def _compute_and_save_partitioned_post_training_outputs(
     *,
     animal_sessions,
@@ -1496,35 +1573,81 @@ def _compute_and_save_partitioned_post_training_outputs(
     resolved_run_path = analysis_output_dir / "resolved_run.json"
     resolved_run_path.write_text(json.dumps(resolved_run.to_dict(), indent=2))
 
-    partition_results: dict[str, Any] = {}
-    partition_summary: dict[str, Any] = {}
+    # Slice each partition's sessions up front (cheap; per-session frames). The
+    # split manifest is in the SOURCE session namespace (e.g.
+    # "632105_2022-07-16_162930"); multisubject animal rows are aligned to the
+    # MERGED namespace ("632105__632105_..."), so match animal on source_ses_idx
+    # (like simulated) — matching on ses_idx silently dropped all train/eval
+    # animal sessions.
+    partition_slices: dict[str, tuple[Any, Any]] = {}
     for partition in session_partitions:
         if partition == _SESSION_PARTITION_COMBINED:
-            partition_animal_sessions = animal_sessions
-            partition_simulated_sessions = simulated_sessions
+            partition_slices[partition] = (animal_sessions, simulated_sessions)
         else:
             allowed_session_ids = manifest[f"{partition}_session_ids"]
-            partition_animal_sessions = _filter_session_rows_by_session_ids(
-                animal_sessions,
-                allowed_session_ids=allowed_session_ids,
-                prefer_source_session_ids=False,
-            )
-            partition_simulated_sessions = _filter_session_rows_by_session_ids(
-                simulated_sessions,
-                allowed_session_ids=allowed_session_ids,
-                prefer_source_session_ids=True,
+            partition_slices[partition] = (
+                _filter_session_rows_by_session_ids(
+                    animal_sessions,
+                    allowed_session_ids=allowed_session_ids,
+                    prefer_source_session_ids=True,
+                ),
+                _filter_session_rows_by_session_ids(
+                    simulated_sessions,
+                    allowed_session_ids=allowed_session_ids,
+                    prefer_source_session_ids=True,
+                ),
             )
 
-        partition_result = _compute_and_save_post_training_outputs(
-            animal_sessions=partition_animal_sessions,
-            simulated_sessions=partition_simulated_sessions,
-            output_dir=analysis_output_dir / partition,
-            resolved_run=resolved_run,
-            window_size=window_size,
-            save_animal_session_history=save_animal_session_history,
-        )
+    # Partitions are independent whole computations, so compute them
+    # concurrently — each worker runs the unchanged per-partition pipeline, so
+    # outputs are bit-identical to serial; only scheduling is parallel. Use
+    # 'spawn' (NOT fork): this runs right after the JAX/GPU rollout and forking a
+    # CUDA-initialised process can hang. DISRNN_GENERATIVE_STATS_WORKERS=1 forces
+    # serial (used by the in-process-mock unit tests); the launcher sets it >1.
+    common = dict(
+        resolved_run=resolved_run,
+        window_size=window_size,
+        save_animal_session_history=save_animal_session_history,
+    )
+    max_workers = int(os.environ.get("DISRNN_GENERATIVE_STATS_WORKERS", "1"))
+    partition_results: dict[str, Any] = {}
+    if max_workers > 1 and len(session_partitions) > 1:
+        import concurrent.futures
+        import multiprocessing
+
+        tasks = [
+            (
+                partition,
+                partition_slices[partition][0],
+                partition_slices[partition][1],
+                str(analysis_output_dir / partition),
+                common,
+            )
+            for partition in session_partitions
+        ]
+        with concurrent.futures.ProcessPoolExecutor(
+            max_workers=min(max_workers, len(tasks)),
+            mp_context=multiprocessing.get_context("spawn"),
+        ) as executor:
+            for partition, partition_result in executor.map(
+                _parallel_partition_worker, tasks
+            ):
+                partition_results[partition] = partition_result
+    else:
+        for partition in session_partitions:
+            partition_animal_sessions, partition_simulated_sessions = partition_slices[partition]
+            partition_results[partition] = _compute_and_save_post_training_outputs(
+                animal_sessions=partition_animal_sessions,
+                simulated_sessions=partition_simulated_sessions,
+                output_dir=analysis_output_dir / partition,
+                **common,
+            )
+
+    partition_summary: dict[str, Any] = {}
+    for partition in session_partitions:
+        partition_result = partition_results[partition]
         partition_result["session_partition"] = partition
-        partition_results[partition] = partition_result
+        partition_animal_sessions, partition_simulated_sessions = partition_slices[partition]
         partition_summary[partition] = {
             "output_dir": partition_result["output_dir"],
             "num_animal_sessions": _count_session_rows(partition_animal_sessions),
@@ -5377,6 +5500,31 @@ def _restore_model_runner(resolved_run: ResolvedModelRun):
                 )
             return action_logits, next_state
 
+        def initial_state_batch(self, batch_size: int):
+            """Batch-`batch_size` initial state: tile the batch-1 state. Lanes
+            start identical and evolve independently (RNN state has no
+            cross-batch coupling)."""
+            return jax.tree_util.tree_map(
+                lambda leaf: jnp.repeat(leaf, int(batch_size), axis=0),
+                self.initial_state,
+            )
+
+        def step_batch(self, inputs_2d, prev_state):
+            """Batched analogue of ``step``: ``inputs_2d`` is (B, input_dim);
+            returns (B, n_actions) logits and the batched next state. The RNN
+            core applies independently across the batch, so row ``b`` is
+            identical to a separate batch-1 ``step`` on lane ``b`` — batching
+            only amortizes the per-trial dispatch/host-sync over the batch."""
+            input_array = jnp.asarray(inputs_2d, dtype=jnp.float32)
+            logits, next_state = step_transform.apply(params, input_array, prev_state)
+            action_logits = np.asarray(logits)[:, : self.n_actions]
+            if int(action_logits.shape[1]) != self.n_actions:
+                raise ValueError(
+                    "Model output logits width does not match n_actions: "
+                    f"{action_logits.shape[1]} vs {self.n_actions}."
+                )
+            return action_logits, next_state
+
     return _ModelRunner(
         initial_state=initial_state,
         n_actions=n_actions,
@@ -5396,33 +5544,37 @@ def _build_curriculum_matched_task(
     n_trials: int,
     seed: int,
 ):
+    # IMPORTANT LIMITATION (TODO): this matches only the curriculum *family*
+    # (coupled/uncoupled + baiting) and builds the task with the gym's DEFAULT
+    # block/reward parameters. It does NOT use the session's stage-specific task
+    # parameters (current_stage_actual is logged but unused), so a curriculum
+    # that spans multiple stages -- each with its own reward probs / block
+    # structure / sometimes a different task -- is collapsed into one generic
+    # task. The real per-(curriculum, stage) parameters live in
+    #   https://github.com/AllenNeuralDynamics/aind-foraging-behavior-bonsai-automatic-training
+    # Faithfully reproducing them is tracked in studies/data-scaling-law/
+    # FUTURE_DIRECTIONS.md. Match on normalized family substrings so curriculum
+    # *version* variants (e.g. "UnCoupledBaiting2p3Curriculum") resolve too.
     task_mod = importlib.import_module("aind_behavior_gym.dynamic_foraging.task")
-    curriculum = str(curriculum_name) if curriculum_name is not None else "None"
-    if curriculum == "Uncoupled Baiting":
+    raw = str(curriculum_name) if curriculum_name is not None else "None"
+    norm = re.sub(r"[^a-z0-9]", "", raw.lower())
+    if norm in ("", "none"):
         return task_mod.UncoupledBlockTask(
-            reward_baiting=True,
-            num_trials=int(n_trials),
-            seed=int(seed),
+            reward_baiting=True, num_trials=int(n_trials), seed=int(seed)
         )
-    if curriculum == "Uncoupled Without Baiting":
+    baiting = "withoutbaiting" not in norm and "nobaiting" not in norm
+    if "uncoupled" in norm:
         return task_mod.UncoupledBlockTask(
-            reward_baiting=False,
-            num_trials=int(n_trials),
-            seed=int(seed),
+            reward_baiting=baiting, num_trials=int(n_trials), seed=int(seed)
         )
-    if curriculum == "Coupled Baiting":
+    if "coupled" in norm:  # uncoupled already handled above
         return task_mod.CoupledBlockTask(
-            reward_baiting=True,
-            num_trials=int(n_trials),
-            seed=int(seed),
+            reward_baiting=baiting, num_trials=int(n_trials), seed=int(seed)
         )
-    if curriculum == "None":
-        return task_mod.UncoupledBlockTask(
-            reward_baiting=True,
-            num_trials=int(n_trials),
-            seed=int(seed),
-        )
-    raise ValueError(f"Unsupported curriculum_name={curriculum_name!r}")
+    raise ValueError(
+        f"Unsupported curriculum_name={curriculum_name!r} "
+        "(no coupled/uncoupled family match)"
+    )
 
 
 def _step_task_reward(task: Any, action: int) -> float:

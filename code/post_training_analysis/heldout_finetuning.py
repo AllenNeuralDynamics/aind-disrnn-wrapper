@@ -10,6 +10,7 @@ does not import it (the lazy gateway defers it until called).
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import logging
 from dataclasses import asdict
@@ -234,11 +235,23 @@ def _maybe_start_wandb_run(
     source_wandb_cfg = _normalize_mapping(_normalize_mapping(source_run.run_config).get("wandb"))
     default_name = source_wandb_cfg.get("name") or run_dir.name
     init_kwargs.setdefault("name", str(default_name))
-    return wandb.init(
-        **init_kwargs,
-        config=resolved_config,
-        tags=tags,
+    from utils.run_helpers import _init_wandb_with_fallback
+
+    return _init_wandb_with_fallback(
+        {
+            **init_kwargs,
+            "config": resolved_config,
+            "tags": tags,
+        }
     )
+
+
+def _heldout_subject_run_name_suffix(heldout_subject_ids: Sequence[Any]) -> str:
+    if not heldout_subject_ids:
+        return ""
+    encoded_ids = "\0".join(str(subject_id) for subject_id in heldout_subject_ids)
+    digest = hashlib.sha1(encoded_ids.encode("utf-8")).hexdigest()[:8]
+    return f"heldout-n{len(heldout_subject_ids)}-{digest}"
 
 
 def _update_wandb_run_name_for_heldout_subjects(
@@ -251,8 +264,8 @@ def _update_wandb_run_name_for_heldout_subjects(
     configured_name = _normalize_mapping(resolved_config.get("wandb")).get("name")
     source_wandb_cfg = _normalize_mapping(_normalize_mapping(source_run.run_config).get("wandb"))
     base_name = configured_name or source_wandb_cfg.get("name") or wandb_run.name or "heldout_finetuning"
-    ids_str = "-".join(str(subject_id) for subject_id in heldout_subject_ids)
-    new_name = f"{base_name}_heldout-{ids_str}" if ids_str else str(base_name)
+    suffix = _heldout_subject_run_name_suffix(heldout_subject_ids)
+    new_name = f"{base_name}_{suffix}" if suffix else str(base_name)
     wandb_run.name = new_name
     try:
         wandb_run.config.update({"resolved_heldout_subject_ids": list(heldout_subject_ids)})
@@ -340,7 +353,24 @@ def _resolve_runtime_config(
                 _normalize_mapping(source_model_cfg.get("training")).get("max_grad_norm", 1.0),
             )
         ),
+        # Few-shot adaptation budget: cap each held-out subject's ADAPT (train) sessions
+        # to the first K (deterministic by session order). None/absent = use all adapt
+        # sessions (current behavior). K=0 => no adaptation (zero-shot init eval only).
+        # The EVAL (test) split is never touched, so held-out likelihood stays comparable
+        # across K.
+        "adapt_sessions_per_subject": (
+            None
+            if fine_tune_cfg.get("adapt_sessions_per_subject") is None
+            else int(fine_tune_cfg["adapt_sessions_per_subject"])
+        ),
     }
+    if (
+        resolved["heldout_finetuning"]["adapt_sessions_per_subject"] is not None
+        and resolved["heldout_finetuning"]["adapt_sessions_per_subject"] < 0
+    ):
+        raise ValueError(
+            "heldout_finetuning.adapt_sessions_per_subject must be >= 0 or null."
+        )
     return resolved
 
 
@@ -565,6 +595,110 @@ def _maybe_prepend_session_indices(
     )
 
 
+def _cap_adapt_sessions_per_subject(
+    *,
+    dataset_bundle: DatasetBundle,
+    adapt_sessions_per_subject: int,
+) -> DatasetBundle:
+    """Cap each held-out subject's ADAPT (train) sessions to the first K columns.
+
+    The merged train dataset stacks each subject's adapt sessions along axis 1 in the
+    same order as ``metadata["train_session_ids"]`` (both built in one pass over the
+    per-subject split in ``mice._build_multisubject_bundle``), so column ``j`` of the
+    train set is ``train_session_ids[j]`` whose owning subject is recovered from
+    ``metadata["session_context"]`` (same mapping used by the per-subject eval
+    decomposition). Keeping the first K columns per subject is deterministic by session
+    order. ``dataset_eval`` and ``dataset_full`` are left UNCHANGED so held-out
+    likelihood stays comparable across K. K=0 yields an empty train set (no adaptation).
+    """
+    K = int(adapt_sessions_per_subject)
+    metadata = dict(dataset_bundle.metadata)
+    train_session_ids = [str(s) for s in (metadata.get("train_session_ids") or [])]
+
+    train_set = dataset_bundle.train_set
+    n_columns = int(np.asarray(train_set.get_all()["xs"]).shape[1])
+    if len(train_session_ids) != n_columns:
+        raise ValueError(
+            "adapt-session capping: train session/column mismatch: "
+            f"len(train_session_ids)={len(train_session_ids)} but train array has "
+            f"{n_columns} columns."
+        )
+
+    session_context = _normalize_mapping(metadata.get("session_context"))
+    subject_id_by_session: dict[str, str] = {}
+    for row in session_context.get("per_subject", []):
+        subject_id = str(row.get("subject_id"))
+        for session_id in row.get("ordered_session_ids") or []:
+            subject_id_by_session[str(session_id)] = subject_id
+
+    kept_columns: list[int] = []
+    kept_session_ids: list[str] = []
+    seen_per_subject: dict[str, int] = {}
+    capped_per_subject: dict[str, int] = {}
+    for column_index, session_id in enumerate(train_session_ids):
+        subject_id = subject_id_by_session.get(session_id, "unknown")
+        seen = seen_per_subject.get(subject_id, 0)
+        if seen < K:
+            kept_columns.append(column_index)
+            kept_session_ids.append(session_id)
+            capped_per_subject[subject_id] = capped_per_subject.get(subject_id, 0) + 1
+        seen_per_subject[subject_id] = seen + 1
+
+    logger.info(
+        "Few-shot adaptation budget adapt_sessions_per_subject=%d: capped adapt sessions "
+        "per held-out subject to %s (was %s); total adapt columns %d -> %d",
+        K,
+        capped_per_subject,
+        seen_per_subject,
+        n_columns,
+        len(kept_columns),
+    )
+
+    metadata["adapt_sessions_per_subject"] = K
+    metadata["adapt_sessions_per_subject_counts"] = capped_per_subject
+
+    if not kept_columns:
+        # K=0 (zero-shot): no adapt columns. The DatasetRNN constructor rejects empty
+        # arrays, so we leave the train_set untouched here; the caller forces 0 gradient
+        # steps off ``metadata["adapt_sessions_per_subject"] == 0`` so the embedding stays
+        # at its init and only the step-0 eval + per_subject logging run. The diagnostic
+        # train metrics at step 0 then reflect the un-adapted model on the full train
+        # split, which is harmless (eval is the comparable metric).
+        return DatasetBundle(
+            raw=dataset_bundle.raw,
+            train_set=dataset_bundle.train_set,
+            eval_set=dataset_bundle.eval_set,
+            metadata=metadata,
+            extras=dataset_bundle.extras,
+        )
+
+    _all = train_set.get_all()
+    xs = np.asarray(_all["xs"])
+    ys = np.asarray(_all["ys"])
+    kept = np.asarray(kept_columns, dtype=int)
+    capped_xs = xs[:, kept, :]
+    capped_ys = ys[:, kept, :]
+    dataset_class = train_set.__class__
+    capped_train = dataset_class(
+        capped_xs,
+        capped_ys,
+        y_type=getattr(train_set, "y_type", "categorical"),
+        n_classes=getattr(train_set, "n_classes", None),
+        x_names=list(getattr(train_set, "x_names", [])),
+        y_names=list(getattr(train_set, "y_names", [])),
+        batch_size=getattr(train_set, "batch_size", None),
+        batch_mode=getattr(train_set, "batch_mode", "random"),
+    )
+    metadata["train_session_ids"] = kept_session_ids
+    return DatasetBundle(
+        raw=dataset_bundle.raw,
+        train_set=capped_train,
+        eval_set=dataset_bundle.eval_set,
+        metadata=metadata,
+        extras=dataset_bundle.extras,
+    )
+
+
 def _build_global_heldout_bundle(
     *,
     source_run: Any,
@@ -687,6 +821,12 @@ def _build_global_heldout_bundle(
         dataset_bundle=global_bundle,
         architecture=architecture,
     )
+    adapt_sessions_per_subject = fine_tune_cfg.get("adapt_sessions_per_subject")
+    if adapt_sessions_per_subject is not None:
+        global_bundle = _cap_adapt_sessions_per_subject(
+            dataset_bundle=global_bundle,
+            adapt_sessions_per_subject=int(adapt_sessions_per_subject),
+        )
     logger.info(
         "Held-out fine-tuning dataset shapes after session packing: full input %s, train %s, "
         "eval %s, x_names=%s",
@@ -869,6 +1009,162 @@ def _log_checkpoint_plot_paths_to_wandb(
         wandb_run.log(payload, step=int(step))
 
 
+def _compute_per_subject_eval_likelihood(
+    *,
+    ys_eval: np.ndarray,
+    yhat_eval: np.ndarray,
+    eval_likelihood: float,
+    metadata: Mapping[str, Any],
+    rtol: float = 1e-4,
+) -> dict[str, Any] | None:
+    """Decompose the aggregate eval normalized likelihood per held-out subject/session.
+
+    The merged eval dataset stacks each held-out subject's eval sessions along axis 1
+    (episodes) in the same order they appear in ``metadata["eval_session_ids"]`` (both
+    are built in a single pass over the same per-subject split in
+    ``mice._build_multisubject_bundle``). Column ``j`` of ``ys_eval``/``yhat_eval`` is
+    therefore eval session ``eval_session_ids[j]``, whose owning subject is recovered from
+    ``metadata["session_context"]``.
+
+    Normalized likelihood is ``exp(-total_nll / n_unmasked)`` (see
+    ``rnn_utils.normalized_likelihood``), so per-session and per-subject values are the
+    same quantity recomputed over the relevant columns; the per-subject aggregate is the
+    trial-count-weighted combination of its sessions' log-likelihoods (i.e. recomputed
+    over the subject's eval trials), not a plain mean of per-session values.
+
+    Returns the JSON-ready wrapper dict, or ``None`` if the decomposition fails.
+    """
+    try:
+        ys_eval = np.asarray(ys_eval)
+        yhat_eval = np.asarray(yhat_eval)
+        eval_session_ids = [str(s) for s in (metadata.get("eval_session_ids") or [])]
+        n_columns = int(ys_eval.shape[1])
+        if len(eval_session_ids) != n_columns:
+            raise ValueError(
+                "eval session/column mismatch: "
+                f"len(eval_session_ids)={len(eval_session_ids)} but eval array has "
+                f"{n_columns} columns."
+            )
+
+        # ses_idx -> subject_id from the session context (the same unique ses_idx form
+        # used for the merged dataset columns).
+        session_context = _normalize_mapping(metadata.get("session_context"))
+        subject_id_by_session: dict[str, str] = {}
+        for row in session_context.get("per_subject", []):
+            subject_id = str(row.get("subject_id"))
+            for session_id in row.get("ordered_session_ids") or []:
+                subject_id_by_session[str(session_id)] = subject_id
+
+        # Per-column total nll and unmasked-sample count.
+        per_subject_records: list[dict[str, Any]] = []
+        subject_order: list[str] = []
+        subject_nll: dict[str, float] = {}
+        subject_n: dict[str, int] = {}
+        total_nll = 0.0
+        total_n = 0
+        for column_index, session_id in enumerate(eval_session_ids):
+            subject_id = subject_id_by_session.get(session_id, "unknown")
+            column_ys = ys_eval[:, column_index : column_index + 1, :]
+            column_yhat = yhat_eval[:, column_index : column_index + 1, :]
+            nll, n_unmasked = rnn_utils.categorical_neg_log_likelihood(
+                column_ys, column_yhat
+            )
+            nll = float(nll)
+            n_unmasked = int(n_unmasked)
+            session_likelihood = (
+                float(np.exp(-nll / n_unmasked)) if n_unmasked > 0 else float("nan")
+            )
+            per_subject_records.append(
+                {
+                    "heldout_subject_id": subject_id,
+                    "ses_idx": session_id,
+                    "split": "eval",
+                    "n_trials": n_unmasked,
+                    "likelihood": session_likelihood,
+                }
+            )
+            if subject_id not in subject_nll:
+                subject_order.append(subject_id)
+                subject_nll[subject_id] = 0.0
+                subject_n[subject_id] = 0
+            subject_nll[subject_id] += nll
+            subject_n[subject_id] += n_unmasked
+            total_nll += nll
+            total_n += n_unmasked
+
+        for subject_id in subject_order:
+            n_subject = subject_n[subject_id]
+            subject_likelihood = (
+                float(np.exp(-subject_nll[subject_id] / n_subject))
+                if n_subject > 0
+                else float("nan")
+            )
+            per_subject_records.append(
+                {
+                    "heldout_subject_id": subject_id,
+                    "ses_idx": None,
+                    "split": "eval",
+                    "n_trials": int(n_subject),
+                    "likelihood": subject_likelihood,
+                }
+            )
+
+        # Correctness guard: the trial-count-weighted aggregate over ALL eval trials must
+        # reproduce the existing aggregate eval_likelihood scalar.
+        aggregate_likelihood = (
+            float(np.exp(-total_nll / total_n)) if total_n > 0 else float("nan")
+        )
+        if total_n > 0 and not np.isclose(
+            aggregate_likelihood, float(eval_likelihood), rtol=0.0, atol=rtol
+        ):
+            logger.warning(
+                "Per-subject eval-likelihood decomposition does not reproduce the "
+                "aggregate eval_likelihood (decomposed=%.6f vs aggregate=%.6f, atol=%g); "
+                "the per-subject breakdown may not be faithful.",
+                aggregate_likelihood,
+                float(eval_likelihood),
+                rtol,
+            )
+
+        return {
+            "eval_likelihood_aggregate": float(eval_likelihood),
+            "n_heldout_subjects": int(len(subject_order)),
+            "records": per_subject_records,
+        }
+    except Exception as exc:  # never crash the run or the aggregate metric
+        logger.warning("Per-subject eval-likelihood decomposition failed: %s", exc)
+        return None
+
+
+def _log_per_subject_likelihood_to_wandb(
+    *,
+    wandb_run: Any,
+    per_subject_likelihood: Mapping[str, Any],
+) -> None:
+    """Log a compact per-subject eval-likelihood table to the held-out W&B run."""
+    try:
+        import wandb
+    except ModuleNotFoundError:
+        logger.warning("wandb is unavailable; skipping per-subject likelihood table.")
+        return
+    try:
+        subject_rows = [
+            row
+            for row in per_subject_likelihood.get("records", [])
+            if row.get("ses_idx") is None
+        ]
+        table = wandb.Table(columns=["heldout_subject_id", "n_trials", "eval_likelihood"])
+        for row in subject_rows:
+            table.add_data(
+                str(row.get("heldout_subject_id")),
+                int(row.get("n_trials", 0)),
+                float(row.get("likelihood")),
+            )
+        wandb_run.log({"heldout/per_subject_likelihood": table})
+    except Exception as exc:
+        logger.warning("Failed to log per-subject likelihood table to W&B: %s", exc)
+
+
 def _evaluate_checkpoint(
     *,
     model_type: str,
@@ -980,6 +1276,12 @@ def _evaluate_checkpoint(
         "train_likelihood": float(train_likelihood),
         "eval_likelihood": float(eval_likelihood),
     }
+    record["per_subject_likelihood"] = _compute_per_subject_eval_likelihood(
+        ys_eval=ys_eval,
+        yhat_eval=np.asarray(yhat_eval_eval)[:, :, :eval_n_action_logits],
+        eval_likelihood=eval_likelihood,
+        metadata=bundle.metadata,
+    )
     record["plot_paths"] = _save_state_space_figures(
         trainer=trainer,
         params=params,
@@ -1288,6 +1590,14 @@ def run_heldout_subject_finetuning_from_config(
             resolved_config["heldout_finetuning"]["checkpoint_every_n_steps"]
         )
         total_steps = int(resolved_config["heldout_finetuning"]["n_steps"])
+        # Zero-shot (K=0): no adapt sessions, so skip all gradient steps and run only the
+        # step-0 init eval + per_subject logging (embedding stays at its init).
+        if int(bundle.metadata.get("adapt_sessions_per_subject", -1)) == 0:
+            logger.info(
+                "No adapt sessions (adapt_sessions_per_subject=0); skipping gradient "
+                "steps and running zero-shot init eval only."
+            )
+            total_steps = 0
         evaluation_steps = [0]
         if checkpoint_every_n_steps <= 0:
             if total_steps > 0:
@@ -1376,6 +1686,25 @@ def run_heldout_subject_finetuning_from_config(
 
         _save_params(outputs_dir / "params.json", params)
         _save_json(outputs_dir / "checkpoint_metrics.json", checkpoint_records)
+
+        # Per-held-out-subject / per-session eval likelihood decomposition (from the
+        # final checkpoint). Tidy artifact + compact W&B table for downstream paired
+        # statistics across data-scaling conditions. Add-only; never gates the run.
+        final_per_subject_likelihood = (
+            checkpoint_records[-1].get("per_subject_likelihood")
+            if checkpoint_records
+            else None
+        )
+        if final_per_subject_likelihood is not None:
+            _save_json(
+                outputs_dir / "per_subject_likelihood.json",
+                final_per_subject_likelihood,
+            )
+            if wandb_run is not None:
+                _log_per_subject_likelihood_to_wandb(
+                    wandb_run=wandb_run,
+                    per_subject_likelihood=final_per_subject_likelihood,
+                )
         _save_json(
             checkpoints_root / "index.json",
             {
