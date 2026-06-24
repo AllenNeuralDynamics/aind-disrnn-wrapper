@@ -655,6 +655,26 @@ seed: 7
                     curriculum_name="RandomWalkFooCurriculum", n_trials=5, seed=1
                 )
 
+    def test_partition_filter_matches_animal_on_source_namespace(self):
+        # Multisubject animal rows are aligned to the merged namespace (ses_idx)
+        # but carry source_ses_idx in the manifest's source namespace. The
+        # train/eval partition filter must match on source_ses_idx, else every
+        # animal session is dropped (the train/eval "only simulated bar" bug).
+        rows = [
+            {"ses_idx": "632105__632105_s1", "source_ses_idx": "632105_s1", "subject_id": "632105"},
+            {"ses_idx": "632105__632105_s2", "source_ses_idx": "632105_s2", "subject_id": "632105"},
+        ]
+        allowed = ["632105_s1"]  # source-namespace manifest id (as in train/eval)
+        kept = generative_analysis._filter_session_rows_by_session_ids(
+            rows, allowed_session_ids=allowed, prefer_source_session_ids=True
+        )
+        self.assertEqual([r["source_ses_idx"] for r in kept], ["632105_s1"])
+        # The pre-fix behaviour matched on the merged ses_idx and dropped all:
+        dropped = generative_analysis._filter_session_rows_by_session_ids(
+            rows, allowed_session_ids=allowed, prefer_source_session_ids=False
+        )
+        self.assertEqual(len(dropped), 0)
+
     def test_parse_simple_yaml_handles_saved_hydra_inputs(self):
         parsed = _parse_simple_yaml(
             """
