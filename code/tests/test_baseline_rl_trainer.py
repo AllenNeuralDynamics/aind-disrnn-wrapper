@@ -1544,6 +1544,7 @@ class TestBaselineRLTrainer(unittest.TestCase):
                         "mature_only": False,
                         "min_sessions": 10,
                         "heldout_every_n": 5,
+                        "test_subject_ids": [101, 202],
                     },
                     "model": {
                         "type": "baseline_rl",
@@ -1565,6 +1566,7 @@ class TestBaselineRLTrainer(unittest.TestCase):
                     return trainer
                 self.assertEqual(kwargs.get("split"), "heldout")
                 self.assertTrue(kwargs.get("multisubject"))
+                self.assertEqual(kwargs.get("subject_ids"), [101, 202])
                 return _FakeLoader(self.multisubject_bundle)
 
             with mock.patch.object(

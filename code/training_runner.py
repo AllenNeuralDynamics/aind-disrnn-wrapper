@@ -67,6 +67,15 @@ def _baseline_rl_skip_train_fit(hydra_config) -> bool:
     return bool(getattr(refit_cfg, "skip_train_fit", False)) if refit_cfg is not None else False
 
 
+def _baseline_rl_heldout_loader_kwargs(data_cfg) -> dict:
+    """Build held-out loader kwargs, honoring explicit held-out subject subsets."""
+    kwargs = {"split": "heldout", "multisubject": True}
+    test_subject_ids = getattr(data_cfg, "test_subject_ids", None)
+    if test_subject_ids is not None:
+        kwargs["subject_ids"] = list(test_subject_ids)
+    return kwargs
+
+
 def _run_auto_heldout_finetune(hydra_config, *, model_type, wandb_run, model_dir="/results"):
     """Auto-run held-out subject fine-tuning + eval after multisubject training.
 
@@ -179,7 +188,13 @@ def run_training(hydra_config, wandb_run=None, run_output_dir="/results"):
             "Skipping baseline RL training-subject fit; fitting reserved held-out "
             "subjects directly under heldout/*."
         )
-        heldout_loader = instantiate(hydra_config.data, split="heldout", multisubject=True)
+        heldout_loader_kwargs = _baseline_rl_heldout_loader_kwargs(data_cfg)
+        if "subject_ids" in heldout_loader_kwargs:
+            logger.info(
+                "Baseline RL held-out subject override: %s",
+                heldout_loader_kwargs["subject_ids"],
+            )
+        heldout_loader = instantiate(hydra_config.data, **heldout_loader_kwargs)
         heldout_bundle = heldout_loader.load()
         logger.info("Loaded held-out dataset bundle with metadata: %s", heldout_bundle.metadata)
 
@@ -321,9 +336,13 @@ def run_training(hydra_config, wandb_run=None, run_output_dir="/results"):
         # load it in multisubject mode regardless of the training run's mode.
         heldout_summary = None
         try:
-            heldout_loader = instantiate(
-                hydra_config.data, split="heldout", multisubject=True
-            )
+            heldout_loader_kwargs = _baseline_rl_heldout_loader_kwargs(data_cfg)
+            if "subject_ids" in heldout_loader_kwargs:
+                logger.info(
+                    "Baseline RL held-out subject override: %s",
+                    heldout_loader_kwargs["subject_ids"],
+                )
+            heldout_loader = instantiate(hydra_config.data, **heldout_loader_kwargs)
             heldout_bundle = heldout_loader.load()
             heldout_summary = model_trainer.fit_heldout(heldout_bundle, loggers=loggers)
         except Exception as exc:
