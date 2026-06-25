@@ -149,10 +149,11 @@ model:
     polish: true
   # Re-fit baseline RL on the reserved held-out subjects (per-subject, train/eval
   # split) and log aggregate held-out train/eval likelihood under heldout/*, like
-  # GRU/disRNN. Applies to mice_snapshot (database) runs; set false to skip the
-  # extra per-held-out-subject fitting. Replaces the old transfer-based held-out eval.
+  # GRU/disRNN. Set skip_train_fit=true for a held-out-only baseline that skips
+  # the main training-subject fit. Replaces the old transfer-based held-out eval.
   heldout_refit:
     enabled: true
+    skip_train_fit: false
   seed: ${seed}
   run_name_component: baseline_rl_${.agent_class}_L${.agent_kwargs.number_of_learning_rate}F${.agent_kwargs.number_of_forget_rate}
 

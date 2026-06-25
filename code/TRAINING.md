@@ -177,7 +177,9 @@ evolution — **one agent fit per subject**, independently (no shared model/embe
   held-out eval applies, `run_capsule` loads the reserved held-out subjects as a
   multisubject bundle and `BaselineRLTrainer.fit_heldout` fits a fresh agent per
   held-out subject (train/eval split), logging aggregate
-  `heldout/train_likelihood` + `heldout/eval_likelihood` into the same W&B run
+  `heldout/train_likelihood` + `heldout/eval_likelihood` into the same W&B run.
+  Set `model.heldout_refit.skip_train_fit=true` for held-out-only RL baselines
+  that should not run the main training-subject fit.
   (parity with the NN models) and writing artifacts under `outputs/heldout_test/`.
   This replaces the older transfer-based held-out eval (apply trained params to
   held-out), which is retired from the run path.

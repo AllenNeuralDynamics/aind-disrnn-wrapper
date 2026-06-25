@@ -1471,7 +1471,7 @@ class TestBaselineRLTrainer(unittest.TestCase):
 
     def test_baseline_rl_heldout_refit_gating(self):
         """run_capsule gates baseline_rl held-out re-fit on model.heldout_refit.enabled."""
-        import run_capsule
+        import training_runner
         from omegaconf import OmegaConf
 
         enabled = OmegaConf.create(
@@ -1481,9 +1481,107 @@ class TestBaselineRLTrainer(unittest.TestCase):
             {"model": {"type": "baseline_rl", "heldout_refit": {"enabled": False}}}
         )
         absent = OmegaConf.create({"model": {"type": "baseline_rl"}})
-        self.assertTrue(run_capsule._baseline_rl_heldout_refit_enabled(enabled))
-        self.assertFalse(run_capsule._baseline_rl_heldout_refit_enabled(disabled))
-        self.assertFalse(run_capsule._baseline_rl_heldout_refit_enabled(absent))
+        self.assertTrue(training_runner._baseline_rl_heldout_refit_enabled(enabled))
+        self.assertFalse(training_runner._baseline_rl_heldout_refit_enabled(disabled))
+        self.assertFalse(training_runner._baseline_rl_heldout_refit_enabled(absent))
+
+        skip_train = OmegaConf.create(
+            {
+                "model": {
+                    "type": "baseline_rl",
+                    "heldout_refit": {"enabled": True, "skip_train_fit": True},
+                }
+            }
+        )
+        self.assertTrue(training_runner._baseline_rl_skip_train_fit(skip_train))
+        self.assertFalse(training_runner._baseline_rl_skip_train_fit(enabled))
+        self.assertFalse(training_runner._baseline_rl_skip_train_fit(absent))
+
+    def test_run_training_skip_train_fit_runs_only_heldout_refit(self):
+        """baseline_rl skip_train_fit avoids the main fit and saves heldout/* output."""
+        import training_runner
+        from omegaconf import OmegaConf
+
+        class _FakeTrainer:
+            def __init__(self):
+                self.fit_called = False
+                self.heldout_bundle = None
+
+            def fit(self, *args, **kwargs):
+                self.fit_called = True
+                raise AssertionError("fit should not be called when skip_train_fit=true")
+
+            def fit_heldout(self, bundle, loggers=None):
+                self.heldout_bundle = bundle
+                wandb_run = (loggers or {}).get("wandb")
+                if wandb_run is not None:
+                    wandb_run.summary["heldout/eval_likelihood"] = 0.42
+                return {
+                    "enabled": True,
+                    "fit_strategy_heldout": "refit",
+                    "pooled_eval_trial_likelihood": 0.42,
+                    "test_likelihood": 0.42,
+                }
+
+        class _FakeLoader:
+            def __init__(self, bundle):
+                self.bundle = bundle
+
+            def load(self):
+                return self.bundle
+
+        class _FakeRun:
+            def __init__(self):
+                self.name = "baseline_rl"
+                self.summary = {}
+                self.config = {}
+
+        with tempfile.TemporaryDirectory(prefix="baseline_rl_skip_train_") as tmpdir:
+            config = OmegaConf.create(
+                {
+                    "data": {
+                        "type": "mice_snapshot",
+                        "mature_only": False,
+                        "min_sessions": 10,
+                        "heldout_every_n": 5,
+                    },
+                    "model": {
+                        "type": "baseline_rl",
+                        "output_dir": tmpdir,
+                        "heldout_refit": {
+                            "enabled": True,
+                            "skip_train_fit": True,
+                        },
+                    },
+                    "seed": 0,
+                }
+            )
+            trainer = _FakeTrainer()
+            fake_run = _FakeRun()
+
+            def _fake_instantiate(cfg, *args, **kwargs):
+                if getattr(cfg, "type", None) == "baseline_rl":
+                    self.assertFalse(kwargs)
+                    return trainer
+                self.assertEqual(kwargs.get("split"), "heldout")
+                self.assertTrue(kwargs.get("multisubject"))
+                return _FakeLoader(self.multisubject_bundle)
+
+            with mock.patch.object(
+                training_runner,
+                "instantiate",
+                side_effect=_fake_instantiate,
+            ):
+                output = training_runner.run_training(config, wandb_run=fake_run)
+
+            self.assertFalse(trainer.fit_called)
+            self.assertIs(trainer.heldout_bundle, self.multisubject_bundle)
+            self.assertTrue(output["train_fit_skipped"])
+            self.assertEqual(output["fit_strategy"], "heldout_refit_only")
+            self.assertEqual(output["heldout_test"]["test_likelihood"], 0.42)
+            self.assertEqual(fake_run.summary["heldout/eval_likelihood"], 0.42)
+            self.assertIn("resolved_subject_ids", fake_run.config)
+            self.assertTrue((Path(tmpdir) / "baseline_rl_output.json").exists())
 
 
 if __name__ == "__main__":
