@@ -39,6 +39,10 @@ example_max_subjects: 6                  # >=0; cap subjects used for train/eval
 #   false → return all-stage trials
 mature_only: true
 
+# Pin reads to a dated database snapshot instead of the live (growing) database,
+# so the exact same sessions/subjects are selected on every run. null -> live.
+snapshot: "20260603"
+
 # ── Curricula (task names) to include ────────────────────────────────────
 # Omit (or set to null) to use the three default foraging curricula.
 curricula:

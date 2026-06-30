@@ -86,10 +86,13 @@ def _load_snapshot_selection(
     subject_sample_seed: Optional[int] = None,
     mature_only: bool = True,
     cols_to_retain: Optional[List[str]] = None,
+    snapshot: Optional[str] = None,
 ) -> tuple[pd.DataFrame, list]:
     from utils.load_mice_database import load_mice_from_database  # noqa: PLC0415
 
-    logger.info("Loading %s dataset (mature_only=%s) …", split, mature_only)
+    logger.info(
+        "Loading %s dataset (mature_only=%s, snapshot=%s) …", split, mature_only, snapshot
+    )
     return load_mice_from_database(
         split=split,
         subject_ids=subject_ids,
@@ -100,6 +103,7 @@ def _load_snapshot_selection(
         seed=subject_sample_seed,
         mature_only=mature_only,
         cols_to_retain=_normalize_snapshot_cols_to_retain(cols_to_retain),
+        snapshot=snapshot,
     )
 
 
@@ -289,6 +293,7 @@ def resolve_mice_snapshot_session_split_manifest(
     multisubject: bool = False,
     mature_only: bool = True,
     cols_to_retain: Optional[List[str]] = None,
+    snapshot: Optional[str] = None,
 ) -> dict[str, object]:
     """Rebuild the exact train/eval session membership used during training."""
 
@@ -302,6 +307,7 @@ def resolve_mice_snapshot_session_split_manifest(
         subject_sample_seed=subject_sample_seed,
         mature_only=mature_only,
         cols_to_retain=cols_to_retain,
+        snapshot=snapshot,
     )
 
     if multisubject:
@@ -325,6 +331,7 @@ def resolve_mice_snapshot_session_split_manifest(
         "split": split,
         "multisubject": bool(multisubject),
         "eval_every_n": int(eval_every_n),
+        "snapshot": snapshot,
         "selected_subject_ids": [
             normalize_subject_id(subject_id) for subject_id in selected_subject_ids
         ],
@@ -930,6 +937,9 @@ class MiceSnapshotDatasetLoader(DatasetLoader):
     cols_to_retain:
         Trial-level columns to keep. Falls back to the module default when
         ``None``.
+    snapshot:
+        Pin reads to a dated database snapshot (e.g. ``"20260603"``) instead of
+        the live database, for reproducibility. ``None`` (default) reads live.
     batch_size:
         Batch size for the disRNN dataset iterator.
     batch_mode:
@@ -953,6 +963,7 @@ class MiceSnapshotDatasetLoader(DatasetLoader):
         multisubject: bool = False,
         mature_only: bool = True,
         cols_to_retain: Optional[List[str]] = None,
+        snapshot: Optional[str] = None,
         batch_size: Optional[int] = None,
         batch_mode: Literal["single", "rolling", "random"] = "random",
         seed: Optional[int] = None,
@@ -968,6 +979,7 @@ class MiceSnapshotDatasetLoader(DatasetLoader):
         self.subject_sample_seed = subject_sample_seed
         self.mature_only = mature_only
         self.cols_to_retain = cols_to_retain
+        self.snapshot = snapshot
         self.ignore_policy = ignore_policy
         self.features = dict(features) if features is not None else {}
         self.eval_every_n = eval_every_n
@@ -990,6 +1002,7 @@ class MiceSnapshotDatasetLoader(DatasetLoader):
             subject_sample_seed=self.subject_sample_seed,
             mature_only=self.mature_only,
             cols_to_retain=self.cols_to_retain,
+            snapshot=self.snapshot,
         )
 
         if self.multisubject:
@@ -1004,6 +1017,7 @@ class MiceSnapshotDatasetLoader(DatasetLoader):
                 "curricula": self.curricula,
                 "ignore_policy": self.ignore_policy,
                 "features": self.features,
+                "snapshot": self.snapshot,
             }
             metadata.update(self.extras)
             return _build_multisubject_bundle(
@@ -1045,6 +1059,7 @@ class MiceSnapshotDatasetLoader(DatasetLoader):
             "curricula": self.curricula,
             "ignore_policy": self.ignore_policy,
             "features": self.features,
+            "snapshot": self.snapshot,
             "num_trials": len(df),
             "num_sessions": (
                 int(df["ses_idx"].nunique()) if "ses_idx" in df.columns else None

@@ -711,6 +711,7 @@ def load_disrnn_heldout_subject_data(config_source: Any) -> dict[str, Any]:
         heldout_every_n=heldout_cfg.heldout_every_n,
         mature_only=heldout_cfg.mature_only,
         cols_to_retain=heldout_cfg.cols_to_retain,
+        snapshot=heldout_cfg.snapshot,
     )
     if len(df_test) == 0:
         raise ValueError("Held-out test selection resulted in an empty dataset.")

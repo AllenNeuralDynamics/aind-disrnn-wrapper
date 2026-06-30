@@ -142,6 +142,7 @@ def _heldout_selector_from_data_config(data_cfg: Mapping[str, Any]) -> dict[str,
         "heldout_every_n": _coerce_optional_int(data_cfg.get("heldout_every_n")) or 5,
         "mature_only": bool(data_cfg.get("mature_only", True)),
         "cols_to_retain": data_cfg.get("cols_to_retain"),
+        "snapshot": data_cfg.get("snapshot"),
     }
 
 
@@ -423,6 +424,7 @@ def _load_heldout_snapshot_selection(
         heldout_every_n=int(heldout_selector.get("heldout_every_n", 5)),
         mature_only=bool(heldout_selector.get("mature_only", True)),
         cols_to_retain=heldout_selector.get("cols_to_retain"),
+        snapshot=heldout_selector.get("snapshot"),
     )
     if len(df) == 0:
         raise ValueError("Held-out subject selection resolved to an empty snapshot.")
