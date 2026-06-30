@@ -30,6 +30,7 @@ class HeldoutEvalConfig:
     mature_only: bool = True
     curricula: list[str] | None = None
     cols_to_retain: list[str] | None = None
+    snapshot: str | None = None
     ignore_policy: str = "exclude"
     features: Mapping[str, Any] | None = None
     batch_size: int | None = None
@@ -78,6 +79,7 @@ class HeldoutEvalConfig:
             mature_only=bool(_cfg_get(data_cfg, "mature_only", True)),
             curricula=curricula,
             cols_to_retain=cols_to_retain,
+            snapshot=_cfg_get(data_cfg, "snapshot", None),
             ignore_policy=str(_cfg_get(data_cfg, "ignore_policy", "exclude")),
             features=features,
             batch_size=_cfg_get(data_cfg, "batch_size", None),

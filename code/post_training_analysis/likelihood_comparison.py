@@ -1186,6 +1186,7 @@ def _evaluate_baseline_heldout_split(
         heldout_every_n=int(data_cfg.get("heldout_every_n", 5)),
         mature_only=bool(data_cfg.get("mature_only", True)),
         cols_to_retain=_heldout_cols_to_retain(data_cfg),
+        snapshot=data_cfg.get("snapshot"),
     )
     raw_df = _normalize_raw_dataframe(df_test)
     session_metrics_df = _evaluate_baseline_global_sessions(

@@ -830,6 +830,7 @@ def evaluate_baseline_rl_on_heldout_subjects(
         cols_to_retain=_ensure_curriculum_column(
             getattr(data_cfg, "cols_to_retain", None)
         ),
+        snapshot=getattr(data_cfg, "snapshot", None),
     )
     if len(df_test) == 0:
         raise ValueError("Held-out baseline RL selection resulted in an empty dataset")

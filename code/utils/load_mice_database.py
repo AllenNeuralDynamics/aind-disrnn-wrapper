@@ -308,6 +308,7 @@ def load_mice_from_database(
     mature_only: bool = True,
     cols_to_retain: Optional[List[str]] = None,
     subject_ids: Optional[List] = None,
+    snapshot: Optional[str] = None,
 ) -> Tuple[pd.DataFrame, List[str]]:
     """Load mice behavioral trials from the foraging database.
 
@@ -344,6 +345,10 @@ def load_mice_from_database(
     subject_ids:
         If provided, these subjects are used directly and the selection pipeline
         is bypassed entirely (``split``/``curricula``/``subject_ratio`` ignored).
+    snapshot:
+        Pin reads to a dated database snapshot (``"20260603"``) instead of the
+        live database, for reproducibility. ``None`` (default) reads live. See
+        ``aind_dynamic_foraging_database.use_snapshot``.
 
     Returns
     -------
@@ -369,18 +374,23 @@ def load_mice_from_database(
         logger.info(
             "Using directly specified subject_ids (%d): %s", len(selected_ids), selected_ids
         )
-        df_session = select_sessions(subjects=selected_ids, columns=_SESSION_METADATA_COLS)
+        df_session = select_sessions(
+            subjects=selected_ids, columns=_SESSION_METADATA_COLS, snapshot=snapshot
+        )
     else:
         logger.info(
             "Selecting %s subjects from database (curricula=%s, min_sessions=%d, "
-            "heldout_every_n=%d, seed=%s) …",
+            "heldout_every_n=%d, seed=%s, snapshot=%s) …",
             split,
             curricula,
             min_sessions,
             heldout_every_n,
             seed,
+            snapshot,
         )
-        df_session = select_sessions(subjects=None, columns=_SESSION_METADATA_COLS)
+        df_session = select_sessions(
+            subjects=None, columns=_SESSION_METADATA_COLS, snapshot=snapshot
+        )
         if df_session.empty:
             logger.warning("Session selection returned no rows.")
             return pd.DataFrame(columns=list(cols_to_retain)), []
@@ -422,7 +432,7 @@ def load_mice_from_database(
         valid_sessions["subject_id"].nunique(),
         trial_cols,
     )
-    trials = fetch_trials(valid_sessions, columns=trial_cols or None)
+    trials = fetch_trials(valid_sessions, columns=trial_cols or None, snapshot=snapshot)
     if trials.empty:
         logger.warning("Trial fetch returned no rows.")
         return pd.DataFrame(columns=list(cols_to_retain)), selected_ids

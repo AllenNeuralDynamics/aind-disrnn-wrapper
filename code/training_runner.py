@@ -60,6 +60,22 @@ def _baseline_rl_heldout_refit_enabled(hydra_config) -> bool:
     return bool(getattr(refit_cfg, "enabled", False)) if refit_cfg is not None else False
 
 
+def _baseline_rl_skip_train_fit(hydra_config) -> bool:
+    """True when baseline_rl should run only the held-out re-fit path."""
+    model_cfg = getattr(hydra_config, "model", None)
+    refit_cfg = getattr(model_cfg, "heldout_refit", None) if model_cfg is not None else None
+    return bool(getattr(refit_cfg, "skip_train_fit", False)) if refit_cfg is not None else False
+
+
+def _baseline_rl_heldout_loader_kwargs(data_cfg) -> dict:
+    """Build held-out loader kwargs, honoring explicit held-out subject subsets."""
+    kwargs = {"split": "heldout", "multisubject": True}
+    test_subject_ids = getattr(data_cfg, "test_subject_ids", None)
+    if test_subject_ids is not None:
+        kwargs["subject_ids"] = list(test_subject_ids)
+    return kwargs
+
+
 def _run_auto_heldout_finetune(hydra_config, *, model_type, wandb_run, model_dir="/results"):
     """Auto-run held-out subject fine-tuning + eval after multisubject training.
 
@@ -142,12 +158,94 @@ def run_training(hydra_config, wandb_run=None, run_output_dir="/results"):
     Assumes the config is already prepared and the W&B run already started.
     Returns the trainer's output payload.
     """
+    data_cfg = hydra_config.data
+    model_type = getattr(hydra_config.model, "type", None)
+    heldout_cfg = HeldoutEvalConfig.from_data_cfg(
+        data_cfg,
+        default_example_max_subjects=int(getattr(hydra_config, "example_max_subjects", 6)),
+    )
+
+    if (
+        model_type == "baseline_rl"
+        and hasattr(data_cfg, "mature_only")
+        and heldout_cfg.enabled
+        and _baseline_rl_heldout_refit_enabled(hydra_config)
+        and _baseline_rl_skip_train_fit(hydra_config)
+    ):
+        if hasattr(data_cfg, "mature_only"):
+            logger.info(
+                "Snapshot data loading: mature_only=%s, subject_ids=%s, start=%s, end=%s",
+                data_cfg.mature_only,
+                getattr(data_cfg, "subject_ids", None),
+                getattr(data_cfg, "subject_start", None),
+                getattr(data_cfg, "subject_end", None),
+            )
+
+        model_trainer: ModelTrainer = instantiate(hydra_config.model)
+        loggers = {"wandb": wandb_run} if wandb_run is not None else None
+
+        logger.info(
+            "Skipping baseline RL training-subject fit; fitting reserved held-out "
+            "subjects directly under heldout/*."
+        )
+        heldout_loader_kwargs = _baseline_rl_heldout_loader_kwargs(data_cfg)
+        if "subject_ids" in heldout_loader_kwargs:
+            logger.info(
+                "Baseline RL held-out subject override: %s",
+                heldout_loader_kwargs["subject_ids"],
+            )
+        heldout_loader = instantiate(hydra_config.data, **heldout_loader_kwargs)
+        heldout_bundle = heldout_loader.load()
+        logger.info("Loaded held-out dataset bundle with metadata: %s", heldout_bundle.metadata)
+
+        if wandb_run is not None and bool(heldout_bundle.metadata.get("multisubject", False)):
+            current_name = wandb_run.name or ""
+            if "multisubject" not in current_name.lower():
+                new_name = f"{current_name}_multisubject" if current_name else "multisubject"
+                wandb_run.name = new_name
+                logger.info("Updated wandb run name to reflect multisubject mode: %s", new_name)
+            wandb_run.config.update({"multisubject": True})
+
+        resolved_subject_ids = heldout_bundle.metadata.get("subject_ids")
+        if wandb_run is not None and resolved_subject_ids is not None:
+            n_subj = len(resolved_subject_ids)
+            current_name = wandb_run.name or ""
+            suffix = f"n{n_subj}subj"
+            if suffix not in current_name:
+                new_name = f"{current_name}_{suffix}" if current_name else suffix
+                wandb_run.name = new_name
+                logger.info("Updated wandb run name to: %s", new_name)
+            wandb_run.config.update({"resolved_subject_ids": list(resolved_subject_ids)})
+
+        heldout_summary = model_trainer.fit_heldout(heldout_bundle, loggers=loggers)
+        heldout_test_likelihood = resolve_heldout_test_likelihood(heldout_summary)
+        if heldout_test_likelihood is not None:
+            logger.info(
+                "Held-out re-fit eval likelihood: %.4f", float(heldout_test_likelihood)
+            )
+
+        output = {
+            "type": "baseline_rl",
+            "train_fit_skipped": True,
+            "fit_strategy": "heldout_refit_only",
+            "heldout_test": heldout_summary,
+        }
+        output_path = save_baseline_rl_output(
+            getattr(hydra_config.model, "output_dir", "/results/outputs"),
+            output,
+            indent=4,
+        )
+        logger.info(
+            "Saved baseline RL held-out-only output with held-out re-fit summary at %s",
+            output_path,
+        )
+        return output
+
     # --- Load data ---
     dataset_loader: DatasetLoader = instantiate(hydra_config.data)
 
     # When using snapshot-based loading, surface the key selection parameters
     # so they are clearly visible at the top of the run log.
-    data_cfg = hydra_config.data
     if hasattr(data_cfg, "mature_only"):
         logger.info(
             "Snapshot data loading: mature_only=%s, subject_ids=%s, start=%s, end=%s",
@@ -160,11 +258,6 @@ def run_training(hydra_config, wandb_run=None, run_output_dir="/results"):
     dataset_bundle = dataset_loader.load()
     logger.info("Loaded dataset bundle with metadata: %s", dataset_bundle.metadata)
     is_multisubject_dataset = bool(dataset_bundle.metadata.get("multisubject", False))
-
-    heldout_cfg = HeldoutEvalConfig.from_data_cfg(
-        hydra_config.data,
-        default_example_max_subjects=int(getattr(hydra_config, "example_max_subjects", 6)),
-    )
 
     if wandb_run is not None and is_multisubject_dataset:
         current_name = wandb_run.name or ""
@@ -189,7 +282,6 @@ def run_training(hydra_config, wandb_run=None, run_output_dir="/results"):
         wandb_run.config.update({"resolved_subject_ids": list(resolved_subject_ids)})
 
     heldout_test_data = None
-    model_type = getattr(hydra_config.model, "type", None)
     is_multisubject_personalized_model = _is_multisubject_personalized_run(hydra_config)
     if (
         model_type in {"disrnn", "gru"}
@@ -244,9 +336,13 @@ def run_training(hydra_config, wandb_run=None, run_output_dir="/results"):
         # load it in multisubject mode regardless of the training run's mode.
         heldout_summary = None
         try:
-            heldout_loader = instantiate(
-                hydra_config.data, split="heldout", multisubject=True
-            )
+            heldout_loader_kwargs = _baseline_rl_heldout_loader_kwargs(data_cfg)
+            if "subject_ids" in heldout_loader_kwargs:
+                logger.info(
+                    "Baseline RL held-out subject override: %s",
+                    heldout_loader_kwargs["subject_ids"],
+                )
+            heldout_loader = instantiate(hydra_config.data, **heldout_loader_kwargs)
             heldout_bundle = heldout_loader.load()
             heldout_summary = model_trainer.fit_heldout(heldout_bundle, loggers=loggers)
         except Exception as exc:

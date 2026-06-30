@@ -445,6 +445,7 @@ def load_animal_session_history(
         seed=resolved_run.selection.get("subject_sample_seed"),
         mature_only=resolved_run.mature_only,
         cols_to_retain=snapshot_cols,
+        snapshot=resolved_run.selection.get("snapshot"),
     )
     logger.info(
         "Loaded snapshot selection in %.2fs: %d trial rows across %d selected subject%s",
@@ -1443,6 +1444,7 @@ def _ensure_session_split_manifest(
             "earned_reward",
             "curriculum_name",
         ],
+        snapshot=resolved_run.selection.get("snapshot"),
     )
     resolved_run.session_split_manifest = _normalize_session_split_manifest(split_manifest)
     return resolved_run
@@ -4777,6 +4779,7 @@ def _resolve_split_selection(
         "min_sessions": data_cfg.get("min_sessions", 10),
         "heldout_every_n": data_cfg.get("heldout_every_n", 5),
         "subject_sample_seed": data_cfg.get("subject_sample_seed", data_cfg.get("seed")),
+        "snapshot": data_cfg.get("snapshot"),
     }
 
 
