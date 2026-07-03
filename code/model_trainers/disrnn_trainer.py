@@ -62,7 +62,10 @@ from utils.multisubject import (
     session_regularization_index_arrays_from_session_context,
     subject_embeddings_to_dataframe,
 )
-from utils.run_helpers import resolve_disrnn_penalties
+from utils.run_helpers import (
+    compute_bottleneck_sparsity_metrics,
+    resolve_disrnn_penalties,
+)
 from utils.session_regularized_training import (
     build_zero_mean_session_delta_regularization_apply,
     train_network_with_session_regularization,
@@ -1750,6 +1753,21 @@ class DisrnnTrainer(BaseMultisubjectTrainer):
                         },
                         step=args.n_warmup_steps + int(steps_completed),
                     )
+
+                # Real-time bottleneck-sparsity scalars (total_sigma, per-family
+                # open/closed counts + the isolated update_net_latent channel that
+                # update_net_latent_penalty_multiplier drives). Cheap: reads params,
+                # no forward pass. Returns {} and no-ops on any param-layout issue.
+                if wandb_run is not None and args.checkpoint_log_eval_to_wandb:
+                    sparsity_metrics = compute_bottleneck_sparsity_metrics(params)
+                    if sparsity_metrics:
+                        wandb_run.log(
+                            {
+                                **sparsity_metrics,
+                                "checkpoint/step": int(steps_completed),
+                            },
+                            step=args.n_warmup_steps + int(steps_completed),
+                        )
                 if (
                     wandb_run is not None
                     and eval_distillation_loss_ckpt is not None
@@ -2257,6 +2275,12 @@ class DisrnnTrainer(BaseMultisubjectTrainer):
 
             wandb_run.summary["elapsed_seconds"] = float(training_time)
             wandb_run.summary["warmup_seconds"] = float(warmup_duration)
+
+            # Final bottleneck-sparsity scalars -> wandb.summary so they are
+            # queryable per-run (same route as `likelihood`) for post-hoc analysis.
+            final_sparsity = compute_bottleneck_sparsity_metrics(params)
+            for _k, _v in final_sparsity.items():
+                wandb_run.summary[f"final/{_k}"] = _v
 
             # Upload the whole /results/output folder as an artifact
             # Here I'm using the random id as the name, meaning each run will has its own artifact.

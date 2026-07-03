@@ -343,3 +343,80 @@ def copy_run_to_wandb(run_dir: Path, wandb_dir: Path) -> None:
             shutil.copytree(item, destination, dirs_exist_ok=True)
         else:
             shutil.copy2(item, destination)
+
+
+def compute_bottleneck_sparsity_metrics(
+    params: Any,
+    open_thresh: float = 0.1,
+    closed_thresh: float = 0.9,
+) -> dict[str, float]:
+    """Compute real-time bottleneck-sparsity scalars for a Multisubject DisRNN.
+
+    Wraps the upstream ``multisubject_disrnn.get_auxiliary_metrics`` (which returns
+    ``total_sigma`` plus per-family open/closed *counts*) and augments it with:
+
+    - an isolated ``update_net_latent`` bottleneck breakout (mean sigma + open/closed
+      counts). This is the channel that ``update_net_latent_penalty_multiplier``
+      directly targets, so it is the primary readout for the beta-scan study; the
+      upstream ``update_bottlenecks_*`` aggregates subj+obs+latent and hides it.
+    - a ``bottlenecks/`` W&B namespace and fraction-open values for each family so a
+      run's interaction sparsity is visible in real time on the W&B dashboard.
+
+    Returns a flat dict of floats/ints keyed under ``bottlenecks/*``. On any failure
+    (unexpected param layout, non-multisubject params) it returns ``{}`` so logging
+    never breaks training.
+    """
+    try:
+        import numpy as np
+        from disentangled_rnns.library import disrnn as _disrnn
+        from disentangled_rnns.library import (
+            multisubject_disrnn as _ms_disrnn,
+        )
+
+        out: dict[str, float] = {}
+
+        # Upstream aggregate metrics (total_sigma + per-family open/closed counts).
+        try:
+            aux = _ms_disrnn.get_auxiliary_metrics(
+                params, open_thresh=open_thresh, closed_thresh=closed_thresh
+            )
+            for k, v in aux.items():
+                out[f"bottlenecks/{k}"] = float(v)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("get_auxiliary_metrics failed: %s", exc)
+
+        # Isolated per-family sigmas, incl. the update_net_latent channel the
+        # multiplier drives. Param module key is 'multisubject_dis_rnn'.
+        module_params = None
+        if isinstance(params, dict):
+            module_params = params.get("multisubject_dis_rnn")
+        if module_params is not None:
+            families = {
+                "latent": "latent_sigma_params",
+                "update_net_subj": "update_net_subj_sigma_params",
+                "update_net_obs": "update_net_obs_sigma_params",
+                "update_net_latent": "update_net_latent_sigma_params",
+                "choice_net_subj": "choice_net_subj_sigma_params",
+                "choice_net_latent": "choice_net_latent_sigma_params",
+            }
+            for fam, key in families.items():
+                if key not in module_params:
+                    continue
+                sig = np.array(
+                    _disrnn.reparameterize_sigma(module_params[key])
+                ).ravel()
+                n = int(sig.size)
+                if n == 0:
+                    continue
+                n_open = int(np.sum(sig < open_thresh))
+                n_closed = int(np.sum(sig > closed_thresh))
+                out[f"bottlenecks/{fam}_mean_sigma"] = float(np.mean(sig))
+                out[f"bottlenecks/{fam}_min_sigma"] = float(np.min(sig))
+                out[f"bottlenecks/{fam}_n_open"] = n_open
+                out[f"bottlenecks/{fam}_n_closed"] = n_closed
+                out[f"bottlenecks/{fam}_frac_open"] = float(n_open) / n
+
+        return out
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("compute_bottleneck_sparsity_metrics failed: %s", exc)
+        return {}
