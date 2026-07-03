@@ -224,8 +224,19 @@ def train_network_with_session_regularization(
     report_progress_by: ProgressMode = "print",
     wandb_run: Any | None = None,
     wandb_step_offset: int = 0,
+    bottleneck_sparsity_fn: Callable[[Any], Mapping[str, Any]] | None = None,
 ) -> tuple[Any, optax.OptState, dict[str, np.ndarray]]:
-    """Train an RNN with an exact zero-mean session-delta penalty."""
+    """Train an RNN with an exact zero-mean session-delta penalty.
+
+    ``bottleneck_sparsity_fn``: optional ``params -> {metric: value}`` callable
+    (e.g. ``run_helpers.compute_bottleneck_sparsity_metrics``). When set and
+    logging to W&B, its scalars are logged in the SAME payload as the loss, at
+    the ``log_losses_every`` cadence — so bottleneck sparsity is tracked at loss
+    pace, not only at the (rarer, eval-gated) checkpoint boundaries. It reads
+    only param sigmas (no forward pass), so the added cost is one device->host
+    sync of a few tiny arrays per logged step. Left ``None`` for non-disRNN
+    callers, which have no bottlenecks.
+    """
     resolved_loss = str(loss).strip().lower()
     if resolved_loss not in {"categorical", "penalized_categorical"}:
         raise ValueError(
@@ -392,16 +403,21 @@ def train_network_with_session_regularization(
             elif report_progress_by == "log":
                 logger.info(log_str)
             elif report_progress_by == "wandb" and wandb_run is not None:
-                wandb_run.log(
-                    {
-                        "train/loss": float(loss_value),
-                        "valid/loss": float(validation_value),
-                        "train/session_curriculum_lambda": float(
-                            current_session_curriculum_lambda
-                        ),
-                    },
-                    step=wandb_step_offset + step,
-                )
+                payload = {
+                    "train/loss": float(loss_value),
+                    "valid/loss": float(validation_value),
+                    "train/session_curriculum_lambda": float(
+                        current_session_curriculum_lambda
+                    ),
+                }
+                # Bottleneck-sparsity scalars at loss pace (param sigmas only, no
+                # forward pass). Fails closed: on any issue it returns {} and the
+                # loss log proceeds unchanged.
+                if bottleneck_sparsity_fn is not None:
+                    sparsity = bottleneck_sparsity_fn(params)
+                    if sparsity:
+                        payload.update(sparsity)
+                wandb_run.log(payload, step=wandb_step_offset + step)
 
     return params, opt_state, {
         "training_loss": np.asarray(training_loss, dtype=float),

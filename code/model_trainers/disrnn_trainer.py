@@ -62,7 +62,10 @@ from utils.multisubject import (
     session_regularization_index_arrays_from_session_context,
     subject_embeddings_to_dataframe,
 )
-from utils.run_helpers import resolve_disrnn_penalties
+from utils.run_helpers import (
+    compute_bottleneck_sparsity_metrics,
+    resolve_disrnn_penalties,
+)
 from utils.session_regularized_training import (
     build_zero_mean_session_delta_regularization_apply,
     train_network_with_session_regularization,
@@ -1051,6 +1054,7 @@ class DisrnnTrainer(BaseMultisubjectTrainer):
             optimizer: Any,
             wandb_step_offset: int = 0,
             total_step_offset: int = 0,
+            log_bottleneck_sparsity: bool = False,
         ):
             return train_network_with_session_regularization(
                 make_current_network,
@@ -1075,6 +1079,11 @@ class DisrnnTrainer(BaseMultisubjectTrainer):
                 report_progress_by="wandb",
                 wandb_run=wandb_run,
                 wandb_step_offset=wandb_step_offset,
+                bottleneck_sparsity_fn=(
+                    compute_bottleneck_sparsity_metrics
+                    if log_bottleneck_sparsity
+                    else None
+                ),
             )
 
         def _compute_distillation_metrics(
@@ -1165,6 +1174,19 @@ class DisrnnTrainer(BaseMultisubjectTrainer):
                 optimizer=optax.adam(args.learning_rate),
                 total_step_offset=0,
             )
+            # Step-0 bottleneck-sparsity baseline. The library initializes every
+            # bottleneck sigma from RandomUniform(0, 0.05) -> all bottlenecks OPEN
+            # (frac_open == 1.0) at init. Logging here (at wandb step 0, before
+            # warmup/penalty pressure) captures that baseline so the open->closed
+            # trajectory driven by update_net_latent_penalty_multiplier is visible
+            # rather than jumping straight to the first periodic checkpoint.
+            if wandb_run is not None:
+                init_sparsity = compute_bottleneck_sparsity_metrics(params)
+                if init_sparsity:
+                    wandb_run.log(
+                        {**init_sparsity, "checkpoint/step": 0},
+                        step=0,
+                    )
             initial_evaluations: dict[str, Any] = {}
             if args.initialization_eval_before_warmup:
                 initial_evaluations["before_warmup"] = self._evaluate_initialization_snapshot(
@@ -1309,6 +1331,7 @@ class DisrnnTrainer(BaseMultisubjectTrainer):
                     optimizer=optax.adam(args.learning_rate),
                     wandb_step_offset=args.n_warmup_steps,
                     total_step_offset=int(args.n_warmup_steps),
+                    log_bottleneck_sparsity=True,
                 )
             else:
                 params, opt_state, losses = train_network_with_distillation(
@@ -1377,6 +1400,7 @@ class DisrnnTrainer(BaseMultisubjectTrainer):
                             optimizer=optimizer,
                             wandb_step_offset=args.n_warmup_steps + steps_completed,
                             total_step_offset=int(args.n_warmup_steps + steps_completed),
+                            log_bottleneck_sparsity=True,
                         )
                     )
                 else:
@@ -1750,6 +1774,12 @@ class DisrnnTrainer(BaseMultisubjectTrainer):
                         },
                         step=args.n_warmup_steps + int(steps_completed),
                     )
+
+                # NOTE: bottleneck-sparsity scalars are logged at loss pace inside
+                # the training loop (train_network_with_session_regularization,
+                # log_losses_every), plus a step-0 baseline before warmup, so no
+                # per-checkpoint sparsity log is needed here. The end-of-run
+                # final/bottlenecks/* summary write is still below.
                 if (
                     wandb_run is not None
                     and eval_distillation_loss_ckpt is not None
@@ -2257,6 +2287,12 @@ class DisrnnTrainer(BaseMultisubjectTrainer):
 
             wandb_run.summary["elapsed_seconds"] = float(training_time)
             wandb_run.summary["warmup_seconds"] = float(warmup_duration)
+
+            # Final bottleneck-sparsity scalars -> wandb.summary so they are
+            # queryable per-run (same route as `likelihood`) for post-hoc analysis.
+            final_sparsity = compute_bottleneck_sparsity_metrics(params)
+            for _k, _v in final_sparsity.items():
+                wandb_run.summary[f"final/{_k}"] = _v
 
             # Upload the whole /results/output folder as an artifact
             # Here I'm using the random id as the name, meaning each run will has its own artifact.
