@@ -416,6 +416,43 @@ def compute_bottleneck_sparsity_metrics(
                 out[f"bottlenecks/{fam}_n_closed"] = n_closed
                 out[f"bottlenecks/{fam}_frac_open"] = float(n_open) / n
 
+                # --- Distributional / threshold-free sparsity readouts ---
+                # Sigma convention: small sigma = OPEN (info flows), sigma->1 = CLOSED.
+                # A single hard threshold (frac_open) saturates and hides the shape,
+                # so we also report the sigma distribution and a normalized effective
+                # count of open channels.
+                #
+                # Openness weight per channel: w = clip(1 - sigma, 0, 1) in [0, 1].
+                w = np.clip(1.0 - sig, 0.0, 1.0)
+                sum_w = float(np.sum(w))
+                sum_w2 = float(np.sum(w * w))
+                # n_eff_open = participation ratio of the openness weights
+                #   (sum w)^2 / sum(w^2): effective NUMBER of open channels, smooth &
+                #   threshold-free (equals k when k channels equally open, rest closed).
+                # n_eff_open_frac = n_eff_open / n: the same as a FRACTION of the
+                #   family's channels, so it is comparable ACROSS families of different
+                #   size (5-element latent bottleneck vs the matrix-shaped update-net
+                #   bottleneck). Normalized participation ratio, in [1/n, 1].
+                n_eff_open = (sum_w * sum_w / sum_w2) if sum_w2 > 0.0 else 0.0
+                out[f"bottlenecks/{fam}_n_eff_open"] = float(n_eff_open)
+                out[f"bottlenecks/{fam}_n_eff_open_frac"] = float(n_eff_open) / n
+                # total_openness = sum(1 - sigma): raw information capacity (un-norm).
+                out[f"bottlenecks/{fam}_total_openness"] = sum_w
+                # Distribution quantiles (assumption-free; catch bimodal open/closed).
+                q10, q50, q90 = (float(x) for x in np.percentile(sig, [10, 50, 90]))
+                out[f"bottlenecks/{fam}_sigma_p10"] = q10
+                out[f"bottlenecks/{fam}_sigma_median"] = q50
+                out[f"bottlenecks/{fam}_sigma_p90"] = q90
+                # Multi-threshold frac_open curve (empirical CDF of sigma): subsumes
+                # both the strict (sigma<0.1) metric and the dashboard figure's
+                # permissive convention (a latent is "open" in plot_bottlenecks when
+                # 1-sigma > 0.03, i.e. sigma < 0.97).
+                for thr in (0.03, 0.1, 0.5, 0.9, 0.97):
+                    tag = f"{thr:.2f}".rstrip("0").rstrip(".").replace(".", "p")
+                    out[f"bottlenecks/{fam}_frac_open_s{tag}"] = float(
+                        np.sum(sig < thr)
+                    ) / n
+
         return out
     except Exception as exc:  # noqa: BLE001
         logger.warning("compute_bottleneck_sparsity_metrics failed: %s", exc)

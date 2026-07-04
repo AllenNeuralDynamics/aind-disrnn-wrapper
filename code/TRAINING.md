@@ -118,8 +118,21 @@ second still runs and produces `heldout/final/eval_likelihood`. Full detail in �
 - **disRNN has NO early stopping.** Only `gru_trainer` has opt-in loss-based early
   stopping. A disRNN sweep must **omit** `early_stopping` keys or Hydra errors.
 - **Bottleneck sigma convention:** small σ = **OPEN** (info flows), σ→1 = **CLOSED**.
-  So `frac_open → 0` means the bottleneck *closed* (sparser). At init all
-  bottlenecks are open (`frac_open = 1.0`).
+  So openness *decreases* as σ→1 (sparser). At init all bottlenecks are open.
+- **Reading the sparsity metrics — mind the threshold.** A single hard-threshold
+  `frac_open` is **misleading**: `bottlenecks/<fam>_frac_open` (σ<0.1) *saturates* to
+  0 while channels sit at σ≈0.85 (mostly-but-not-fully closed), whereas the dashboard
+  `plot_bottlenecks` figure calls a latent "open" at the far more permissive σ<0.97
+  (it logs `open latents by bottleneck > 0.03`, i.e. 1−σ>0.03) — so the same run can
+  read `frac_open=0.0` in the scalar and "almost all open" in the figure. They are not
+  contradictory; they are different cutoffs on the same σ distribution. **Prefer the
+  threshold-free readouts** logged alongside: `bottlenecks/<fam>_n_eff_open_frac` (the
+  normalized participation ratio of channel openness `1−σ`, in [1/n,1], **comparable
+  across families of different size** — 5-element latent vs the matrix-shaped
+  update-net bottleneck), plus `sigma_median` / `sigma_p10` / `sigma_p90` (catch a
+  bimodal open/closed split) and `total_openness` (=Σ(1−σ), raw capacity). `frac_open`
+  is kept as a multi-threshold curve (`_frac_open_s0p03/0p1/0p5/0p9/0p97`) so both the
+  strict and figure conventions are visible.
 
 ---
 
@@ -421,6 +434,12 @@ environment.
 > Add a dated entry (newest first) whenever you add or change a feature.
 
 ### 2026-07-04
+- **Threshold-free bottleneck-sparsity metrics.** `compute_bottleneck_sparsity_metrics`
+  now also logs, per family: `n_eff_open` + `n_eff_open_frac` (normalized participation
+  ratio of channel openness `1−σ`, comparable across families of different size),
+  `total_openness` (Σ(1−σ)), `sigma_p10/median/p90`, and a multi-threshold `frac_open`
+  curve (σ<0.03/0.1/0.5/0.9/0.97). Motivated by the single-threshold `frac_open`
+  saturating to 0 (σ<0.1) while the dashboard figure reads "open" (σ<0.97) — see §1.5.
 - **Docs: new §1.5 "Run lifecycle & key switches (read first)".** Consolidates the
   four run phases, the two *different* held-out switches
   (`checkpoint_run_heldout_eval` vs `auto_heldout_finetune.enabled`), and
