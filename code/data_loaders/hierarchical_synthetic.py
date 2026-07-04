@@ -20,9 +20,11 @@ existing disRNN/GRU trainers already consume:
     likelihood of the *generating* policy on the pooled eval sessions, which
     all three trainers read back and log as ``groundtruth_likelihood`` +
     ``likelihood_relative_to_groundtruth`` (the headline recovery score).
-  * A per-(subject, session) ground-truth parameter table (parquet + json),
-    including the resolved per-session RNG seed so any row is independently
-    regenerable from (config, seed) alone -- no frozen dataset required.
+  * A per-(subject, session) ground-truth parameter table (CSV primary, plus
+    parquet when an engine is available, and a JSON summary), including the
+    resolved per-session RNG seed so any row is independently regenerable from
+    (config, seed) alone -- no frozen dataset required. CSV is authoritative
+    because the training conda env may lack pyarrow/fastparquet.
 
 Reproducibility: every (subject, session) is assigned unique deterministic
 seeds via two parallel non-overlapping hierarchies (stride >> max sessions per
@@ -523,19 +525,42 @@ class HierarchicalCognitiveAgents(DatasetLoader):
         self, groundtruth_df: pd.DataFrame, summary: dict[str, Any]
     ) -> dict[str, str]:
         out_dir = self.groundtruth_dir
+        paths: dict[str, str] = {}
         try:
             os.makedirs(out_dir, exist_ok=True)
-            parquet_path = os.path.join(out_dir, "groundtruth_params.parquet")
-            json_path = os.path.join(out_dir, "groundtruth_summary.json")
+        except Exception as exc:  # pragma: no cover - best-effort artifact
+            logger.warning("Could not create ground-truth dir %s: %s", out_dir, exc)
+            return paths
+
+        # CSV is the PRIMARY, dependency-free format the recovery analysis reads
+        # (the training conda env may lack pyarrow/fastparquet). Always write it.
+        csv_path = os.path.join(out_dir, "groundtruth_params.csv")
+        try:
+            groundtruth_df.to_csv(csv_path, index=False)
+            paths["csv"] = csv_path
+        except Exception as exc:  # pragma: no cover
+            logger.warning("Could not write ground-truth CSV to %s: %s", csv_path, exc)
+
+        # Parquet is a bonus (smaller, typed) when an engine is available.
+        parquet_path = os.path.join(out_dir, "groundtruth_params.parquet")
+        try:
             groundtruth_df.to_parquet(parquet_path, index=False)
+            paths["parquet"] = parquet_path
+        except Exception as exc:  # pragma: no cover - optional
+            logger.info("Parquet ground-truth not written (no engine); CSV is authoritative: %s", exc)
+
+        json_path = os.path.join(out_dir, "groundtruth_summary.json")
+        try:
             with open(json_path, "w") as f:
                 json.dump(_jsonable(summary), f, indent=2)
-            logger.info("Wrote ground-truth table: %s (%d rows) + %s",
-                        parquet_path, len(groundtruth_df), json_path)
-            return {"parquet": parquet_path, "json": json_path}
-        except Exception as exc:  # pragma: no cover - best-effort artifact
-            logger.warning("Could not persist ground-truth table to %s: %s", out_dir, exc)
-            return {}
+            paths["json"] = json_path
+        except Exception as exc:  # pragma: no cover
+            logger.warning("Could not write ground-truth summary JSON to %s: %s", json_path, exc)
+
+        if paths:
+            logger.info("Wrote ground-truth table (%d rows): %s",
+                        len(groundtruth_df), ", ".join(f"{k}={v}" for k, v in paths.items()))
+        return paths
 
 
 def _jsonable(value: Any) -> Any:
