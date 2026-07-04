@@ -26,6 +26,15 @@ existing disRNN/GRU trainers already consume:
     (config, seed) alone -- no frozen dataset required. CSV is authoritative
     because the training conda env may lack pyarrow/fastparquet.
 
+Performance: subject simulation is embarrassingly parallel (each subject's
+sessions depend only on their own resolved seeds), so it fans out across a
+``spawn`` multiprocessing pool (``generation_workers``, default auto =
+min(SLURM_CPUS_PER_TASK or cpu_count, num_subjects); env override
+``DISRNN_GEN_WORKERS``; set 1 to force serial). Because every (subject, session)
+draws from its own seed, the merged dataset and ground-truth table are
+byte-identical regardless of worker count. Only the pure-Python/numpy simulation
+runs in workers; the jax dataset assembly + merge stays serial in the parent.
+
 Reproducibility: every (subject, session) is assigned unique deterministic
 seeds via two parallel non-overlapping hierarchies (stride >> max sessions per
 subject), one for the agent and one for the task:
@@ -140,6 +149,91 @@ def _apply_drift(
     raise ValueError(f"Unsupported drift mode {mode!r} for param {param_name!r}.")
 
 
+def _session_dataframe_from_forager(session_id: str, forager: Any, task: Any) -> pd.DataFrame:
+    """Build the per-session trial dataframe from a performed forager (free fn).
+
+    Free function (not a method) so it is usable inside a multiprocessing worker.
+    """
+    choice_history = np.asarray(forager.get_choice_history(), dtype=int)
+    reward_history = np.asarray(forager.get_reward_history(), dtype=float)
+    p_reward = np.asarray(forager.get_p_reward())
+    choice_prob = np.asarray(forager.choice_prob)
+    n_trials = choice_history.shape[0]
+    return pd.DataFrame(
+        {
+            "ses_idx": np.full(n_trials, session_id, dtype=object),
+            "trial": np.arange(n_trials, dtype=int),
+            "animal_response": choice_history.astype(int),
+            "earned_reward": reward_history.astype(float),
+            "reward_baiting": bool(getattr(task, "reward_baiting", False)),
+            "p_reward_left": p_reward[0, :],
+            "p_reward_right": p_reward[1, :],
+            "choice_prob_left": choice_prob[0, :],
+            "choice_prob_right": choice_prob[1, :],
+        }
+    )
+
+
+def _simulate_subject(work: dict[str, Any]) -> dict[str, Any]:
+    """Simulate all sessions for ONE subject. Runs in a worker process.
+
+    Pure Python + numpy (foragers + task); no jax. Deterministic from the seeds
+    already resolved by the parent, so any worker count yields identical output.
+    Returns picklable numpy/pandas payloads (no jax dataset objects -- those are
+    assembled serially in the parent).
+
+    ``work`` keys: subject_idx, subject_id, task_type_key, task_cfg,
+    agent_class_name, agent_kwargs, num_trials, sessions (list of dicts with
+    session_id, session_params, session_seed, session_task_seed, is_eval).
+    """
+    task_class = _TASK_LOOKUP[work["task_type_key"]]
+    agent_class = getattr(generative_model, work["agent_class_name"])
+    agent_kwargs = work["agent_kwargs"]
+    num_trials = work["num_trials"]
+
+    session_frames: list[pd.DataFrame] = []
+    ordered_session_ids: list[str] = []
+    eval_choices_chunks: list[np.ndarray] = []
+    eval_logits_chunks: list[np.ndarray] = []
+
+    for sess in work["sessions"]:
+        task_kwargs = copy.deepcopy(work["task_cfg"])
+        task_kwargs["seed"] = sess["session_task_seed"]
+        task_kwargs.setdefault("num_trials", num_trials)
+        task_instance = task_class(**task_kwargs)
+
+        forager_kwargs = copy.deepcopy(agent_kwargs)
+        forager_kwargs["seed"] = sess["session_seed"]
+        forager = agent_class(**forager_kwargs)
+        forager.set_params(**sess["session_params"])
+        forager.perform(task_instance)
+
+        session_id = sess["session_id"]
+        ordered_session_ids.append(session_id)
+        session_frames.append(
+            _session_dataframe_from_forager(session_id, forager, task_instance)
+        )
+
+        # Ground-truth likelihood inputs, EXACTLY mirroring synthetic.py:
+        # choices (T,1,1), logits (T,1,2), no ignore-masking.
+        choices = np.asarray(forager.choice_history)[:, np.newaxis, np.newaxis]
+        probs = np.asarray(forager.choice_prob).T
+        logits = np.log(probs + 1e-10)[:, np.newaxis, :]
+        if sess["is_eval"]:
+            eval_choices_chunks.append(choices)
+            eval_logits_chunks.append(logits)
+
+    subject_df = pd.concat(session_frames, ignore_index=True)
+    return {
+        "subject_idx": work["subject_idx"],
+        "subject_id": work["subject_id"],
+        "df": subject_df,
+        "ordered_session_ids": ordered_session_ids,
+        "eval_choices": eval_choices_chunks,
+        "eval_logits": eval_logits_chunks,
+    }
+
+
 class HierarchicalCognitiveAgents(DatasetLoader):
     """Generate hierarchical multisubject synthetic data with ground truth.
 
@@ -167,6 +261,7 @@ class HierarchicalCognitiveAgents(DatasetLoader):
         batch_mode: Literal["single", "rolling", "random"] = "random",
         subject_seed_stride: int = 100_000,
         groundtruth_dir: str | None = None,
+        generation_workers: int | None = None,
         **metadata: object,
     ) -> None:
         super().__init__()
@@ -179,6 +274,14 @@ class HierarchicalCognitiveAgents(DatasetLoader):
         self.batch_size = batch_size
         self.batch_mode = batch_mode
         self.subject_seed_stride = int(subject_seed_stride)
+        # Parallel subject simulation. None/<=0 => auto (min(cpu_count, num_subjects),
+        # overridable via DISRNN_GEN_WORKERS). 1 => serial (no pool). Simulation is
+        # embarrassingly parallel across subjects and deterministic per (subject,
+        # session) seed, so any worker count yields byte-identical output.
+        if generation_workers is None:
+            env_workers = os.environ.get("DISRNN_GEN_WORKERS")
+            generation_workers = int(env_workers) if env_workers else 0
+        self.generation_workers = int(generation_workers)
         # Where to write the ground-truth table; default to the run output dir.
         self.groundtruth_dir = groundtruth_dir or os.environ.get(
             "DISRNN_OUTPUT_DIR", "/results"
@@ -200,6 +303,22 @@ class HierarchicalCognitiveAgents(DatasetLoader):
         (subject, session) pairs share a seed within one base stream.
         """
         return self._subject_seed(base, subject_idx) + 1 + int(session_idx)
+
+    def _resolve_workers(self) -> int:
+        """Number of simulation worker processes to use.
+
+        ``generation_workers``: 1 => serial; >1 => that many; <=0 => auto. Auto
+        prefers SLURM_CPUS_PER_TASK (the cores the scheduler actually gave us),
+        else os.cpu_count(), capped at num_subjects. Any count is deterministic.
+        """
+        if self.generation_workers == 1:
+            return 1
+        if self.generation_workers > 1:
+            return min(self.generation_workers, self.num_subjects)
+        # auto
+        slurm_cpus = os.environ.get("SLURM_CPUS_PER_TASK")
+        cpu_budget = int(slurm_cpus) if slurm_cpus else (os.cpu_count() or 1)
+        return max(1, min(cpu_budget, self.num_subjects))
 
     # ------------------------------------------------------------------ #
     # Per-(subject, session) parameter resolution
@@ -270,69 +389,40 @@ class HierarchicalCognitiveAgents(DatasetLoader):
         if n_sessions < 2:
             raise ValueError("num_sessions_per_subject must be >= 2 for a train/eval split.")
 
-        # Per-subject accumulators (mirrors data_loaders/mice.py multisubject path).
-        prepared: list[dict[str, Any]] = []
+        # --- Resolve all per-(subject, session) params + seeds up front. This is
+        # cheap (numpy RNG only) and lets simulation fan out across processes. The
+        # ground-truth table is built here so it is independent of worker order.
         groundtruth_rows: list[dict[str, Any]] = []
-        # Per-session simulated choices/logits for the ground-truth likelihood.
-        eval_choices_chunks: list[np.ndarray] = []
-        eval_logits_chunks: list[np.ndarray] = []
-
+        work_items: list[dict[str, Any]] = []
         for subject_idx in range(self.num_subjects):
             subject_seed = self._subject_seed(base_seed, subject_idx)
             subject_id = f"synth{subject_idx:03d}"
             centroid = self._subject_centroid(subject_seed, subject_param_dist)
 
-            session_frames: list[pd.DataFrame] = []
-            ordered_session_ids: list[str] = []
-
+            sessions: list[dict[str, Any]] = []
             for session_idx in range(n_sessions):
                 # Non-overlapping seed hierarchy (stride >> n_sessions), one
                 # stream for the agent, one for the task.
                 session_seed = self._session_seed(base_seed, subject_idx, session_idx)
                 session_task_seed = self._session_seed(base_task_seed, subject_idx, session_idx)
                 session_frac = 0.0 if n_sessions == 1 else session_idx / (n_sessions - 1)
-
                 session_params = self._session_params(
                     centroid, base_params, drift, session_noise, session_frac, session_seed
                 )
-
-                task_kwargs = copy.deepcopy(task_cfg)
-                task_kwargs["seed"] = session_task_seed
-                task_kwargs.setdefault("num_trials", self.num_trials)
-                task_instance = task_class(**task_kwargs)
-
-                forager_kwargs = copy.deepcopy(agent_kwargs)
-                forager_kwargs["seed"] = session_seed
-                forager = agent_class(**forager_kwargs)
-                forager.set_params(**session_params)
-                forager.perform(task_instance)
-
+                # eval sessions per subject follow the same eval_every_n rule the
+                # split uses (verified identical to compute_train_eval_session_ids).
+                is_eval = ((session_idx + 1) % self.eval_every_n) == 0
                 session_id = f"{subject_id}_s{session_idx:03d}"
-                ordered_session_ids.append(session_id)
-                session_frames.append(
-                    self._session_dataframe(session_id, forager, task_instance)
+                sessions.append(
+                    {
+                        "session_id": session_id,
+                        "session_params": session_params,
+                        "session_seed": int(session_seed),
+                        "session_task_seed": int(session_task_seed),
+                        "is_eval": bool(is_eval),
+                    }
                 )
 
-                # Store simulated choices/logits for ground-truth likelihood,
-                # EXACTLY mirroring data_loaders/synthetic.py: choices (T,1,1),
-                # logits (T,1,2), no ignore-masking. normalized_likelihood masks
-                # only NEGATIVE labels; the softmax foragers never emit choice==2,
-                # so pooling all trials matches both the single-subject loader and
-                # the trainer's model-NL computation, keeping
-                # likelihood_relative_to_groundtruth an apples-to-apples ratio.
-                choices = np.asarray(forager.choice_history)[:, np.newaxis, np.newaxis]
-                probs = np.asarray(forager.choice_prob).T
-                logits = np.log(probs + 1e-10)[:, np.newaxis, :]
-
-                # eval sessions per subject follow the same eval_every_n rule the
-                # split uses: 1-based index positions (eval_every_n-1, 2*..-1, ...),
-                # verified identical to compute_train_eval_session_ids.
-                is_eval = ((session_idx + 1) % self.eval_every_n) == 0
-                if is_eval:
-                    eval_choices_chunks.append(choices)
-                    eval_logits_chunks.append(logits)
-
-                # Resolved ground-truth row (independently regenerable).
                 gt_row = {
                     "subject_index": subject_idx,
                     "subject_id": subject_id,
@@ -350,14 +440,50 @@ class HierarchicalCognitiveAgents(DatasetLoader):
                     gt_row[f"centroid_{pname}"] = float(pval)
                 groundtruth_rows.append(gt_row)
 
-            subject_df = pd.concat(session_frames, ignore_index=True)
-            prepared.append(
+            work_items.append(
                 {
+                    "subject_idx": subject_idx,
                     "subject_id": subject_id,
-                    "df": subject_df,
-                    "ordered_session_ids": ordered_session_ids,
+                    "task_type_key": task_type_key,
+                    "task_cfg": task_cfg,
+                    "agent_class_name": agent_class_name,
+                    "agent_kwargs": agent_kwargs,
+                    "num_trials": self.num_trials,
+                    "sessions": sessions,
                 }
             )
+
+        # --- Simulate subjects (embarrassingly parallel; deterministic per seed) ---
+        n_workers = self._resolve_workers()
+        if n_workers <= 1 or self.num_subjects <= 1:
+            results = [_simulate_subject(w) for w in work_items]
+        else:
+            import multiprocessing as mp
+
+            logger.info(
+                "Simulating %d subjects with %d worker processes.",
+                self.num_subjects, n_workers,
+            )
+            ctx = mp.get_context("spawn")
+            with ctx.Pool(processes=n_workers) as pool:
+                # chunksize=1 keeps memory bounded (each result carries a subject df)
+                results = pool.map(_simulate_subject, work_items, chunksize=1)
+
+        # Reassemble in deterministic subject order (results may return unordered).
+        results.sort(key=lambda r: r["subject_idx"])
+        prepared: list[dict[str, Any]] = []
+        eval_choices_chunks: list[np.ndarray] = []
+        eval_logits_chunks: list[np.ndarray] = []
+        for res in results:
+            prepared.append(
+                {
+                    "subject_id": res["subject_id"],
+                    "df": res["df"],
+                    "ordered_session_ids": res["ordered_session_ids"],
+                }
+            )
+            eval_choices_chunks.extend(res["eval_choices"])
+            eval_logits_chunks.extend(res["eval_logits"])
 
         # --- Build dense subject-index maps ---
         ordered_subject_ids, subject_id_to_index, index_to_subject_id = build_subject_index_maps(
@@ -502,24 +628,9 @@ class HierarchicalCognitiveAgents(DatasetLoader):
     # Helpers
     # ------------------------------------------------------------------ #
     def _session_dataframe(self, session_id: str, forager: Any, task: Any) -> pd.DataFrame:
-        choice_history = np.asarray(forager.get_choice_history(), dtype=int)
-        reward_history = np.asarray(forager.get_reward_history(), dtype=float)
-        p_reward = np.asarray(forager.get_p_reward())
-        choice_prob = np.asarray(forager.choice_prob)
-        n_trials = choice_history.shape[0]
-        return pd.DataFrame(
-            {
-                "ses_idx": np.full(n_trials, session_id, dtype=object),
-                "trial": np.arange(n_trials, dtype=int),
-                "animal_response": choice_history.astype(int),
-                "earned_reward": reward_history.astype(float),
-                "reward_baiting": bool(getattr(task, "reward_baiting", False)),
-                "p_reward_left": p_reward[0, :],
-                "p_reward_right": p_reward[1, :],
-                "choice_prob_left": choice_prob[0, :],
-                "choice_prob_right": choice_prob[1, :],
-            }
-        )
+        # Thin wrapper over the module-level free function (single source of truth;
+        # the free function is what the multiprocessing workers use).
+        return _session_dataframe_from_forager(session_id, forager, task)
 
     def _write_groundtruth(
         self, groundtruth_df: pd.DataFrame, summary: dict[str, Any]
