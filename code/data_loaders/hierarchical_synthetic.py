@@ -505,6 +505,10 @@ class HierarchicalCognitiveAgents(DatasetLoader):
             subject_index = subject_id_to_index[subject_id]
             subject_df = item["df"].copy()
             subject_df["subject_index"] = int(subject_index)
+            # baseline_rl reads bundle.raw directly and requires a subject_id
+            # column (GRU/disRNN build from the merged tensor, which already
+            # carries Subject ID, so they don't need it -- but it's harmless there).
+            subject_df["subject_id"] = normalize_subject_id(subject_id)
 
             dataset = dl.create_disrnn_dataset(
                 subject_df,
