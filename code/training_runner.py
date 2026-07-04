@@ -301,8 +301,10 @@ def run_training(hydra_config, wandb_run=None, run_output_dir="/results"):
             )
     elif is_multisubject_personalized_model and heldout_cfg.enabled:
         logger.info(
-            "Skipping held-out preload for multisubject %s; v1 supports seen-subject "
-            "personalization only.",
+            "Skipping held-out test-data PRELOAD (only used by the per-checkpoint "
+            "held-out eval) for multisubject %s; v1 supports seen-subject personalization "
+            "only. The end-of-training held-out fine-tune (auto_heldout_finetune) loads "
+            "its own held-out set from inputs.yaml and is unaffected.",
             str(model_type).upper(),
         )
 
@@ -584,8 +586,11 @@ def run_training(hydra_config, wandb_run=None, run_output_dir="/results"):
                 output["heldout_finetune"] = auto_summary
         else:
             logger.info(
-                "Skipping final held-out evaluation for multisubject %s; v1 supports "
-                "seen-subject personalization only.",
+                "Skipping end-of-training held-out fine-tune for multisubject %s: "
+                "auto_heldout_finetune.enabled is FALSE (this run logs seen-subject "
+                "metrics only, NO heldout/* metrics). Set "
+                "model.training.auto_heldout_finetune.enabled=true to get held-out-mouse "
+                "transfer likelihood.",
                 str(model_type).upper(),
             )
 
