@@ -366,6 +366,20 @@ short-session batches run far fewer sequential steps. Correctness: trimming only
 all-padding rows (real length ≤ bucket length), so loss/mask are unchanged. Cost: one JAX
 recompile per distinct bucket length (≈`T_max/grid` ≈ 12 shapes), amortized over training.
 
+**Measured (2026-07): ~1.86× throughput on disRNN.** Matched runs (100-mice snapshot,
+`lr=1e-3`, `beta=1e-3`, L40s/g6e, `random`/2048 batch — the *only* difference is bucketing),
+from W&B `_step`/`_timestamp`:
+
+| | ms/step | steps/s |
+|---|---:|---:|
+| No bucketing | 2015 | 0.496 |
+| `length_bucketing`, grid=128 | 1083 | 0.924 |
+
+The bucketed figure is measured over steps 0–1499, so it *includes* the per-bucket JIT
+compiles — steady-state is marginally better. This is the one lever that actually moved
+disRNN throughput (batch size and GPU packing both plateaued near 1.15×), because our
+session-length distribution is wide, so most of each step's compute was padding rows.
+
 - **Where it runs — the TRAINING loop, not rollout/generation.** The trim happens in
   `_sample_batch` (`utils/session_regularized_training.py`), called each step inside
   `train_network_with_session_regularization` immediately before the gradient `train_step`
