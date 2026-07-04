@@ -115,7 +115,7 @@ def test_end_to_end_static_stage1(tmp_path):
     task, agent = _tiny_config()
     loader = HierarchicalCognitiveAgents(
         task=task, agent=agent, num_trials=80, num_subjects=4,
-        num_sessions_per_subject=6, eval_every_n=2, batch_size=None,
+        num_sessions_per_subject=6, eval_every_n=2, batch_size=32,
         groundtruth_dir=str(tmp_path),
     )
     bundle = loader.load()
@@ -164,7 +164,7 @@ def test_end_to_end_drift_stage2(tmp_path):
     }
     loader = HierarchicalCognitiveAgents(
         task=task, agent=agent, num_trials=80, num_subjects=3,
-        num_sessions_per_subject=8, eval_every_n=2, batch_size=None,
+        num_sessions_per_subject=8, eval_every_n=2, batch_size=32,
         groundtruth_dir=str(tmp_path),
     )
     gtab = loader.load().extras["groundtruth_table"]
@@ -184,7 +184,7 @@ def test_end_to_end_determinism(tmp_path):
 
     task, agent = _tiny_config()
     kw = dict(task=task, agent=agent, num_trials=80, num_subjects=3,
-              num_sessions_per_subject=6, eval_every_n=2, batch_size=None)
+              num_sessions_per_subject=6, eval_every_n=2, batch_size=32)
     b1 = HierarchicalCognitiveAgents(groundtruth_dir=str(tmp_path / "a"), **kw).load()
     b2 = HierarchicalCognitiveAgents(groundtruth_dir=str(tmp_path / "b"), **kw).load()
     xs1 = b1.extras["dataset"].get_all()["xs"]
@@ -208,7 +208,7 @@ def test_end_to_end_serial_equals_parallel(tmp_path):
 
     task, agent = _tiny_config()
     kw = dict(task=task, agent=agent, num_trials=80, num_subjects=6,
-              num_sessions_per_subject=6, eval_every_n=2, batch_size=None)
+              num_sessions_per_subject=6, eval_every_n=2, batch_size=32)
     serial = HierarchicalCognitiveAgents(
         groundtruth_dir=str(tmp_path / "s"), generation_workers=1, **kw
     ).load()
