@@ -199,3 +199,51 @@ def test_end_to_end_determinism(tmp_path):
     import pandas.testing as pdt
     pdt.assert_frame_equal(g1, g2)
     assert b1.metadata["avg_eval_likelihood_groundtruth"] == b2.metadata["avg_eval_likelihood_groundtruth"]
+
+
+@requires_stack
+def test_end_to_end_serial_equals_parallel(tmp_path):
+    """Parallel generation (workers>1) is byte-identical to serial (workers=1)."""
+    from data_loaders.hierarchical_synthetic import HierarchicalCognitiveAgents
+
+    task, agent = _tiny_config()
+    kw = dict(task=task, agent=agent, num_trials=80, num_subjects=6,
+              num_sessions_per_subject=6, eval_every_n=2, batch_size=None)
+    serial = HierarchicalCognitiveAgents(
+        groundtruth_dir=str(tmp_path / "s"), generation_workers=1, **kw
+    ).load()
+    parallel = HierarchicalCognitiveAgents(
+        groundtruth_dir=str(tmp_path / "p"), generation_workers=3, **kw
+    ).load()
+    xs_s = serial.extras["dataset"].get_all()["xs"]
+    xs_p = parallel.extras["dataset"].get_all()["xs"]
+    ys_s = serial.extras["dataset"].get_all()["ys"]
+    ys_p = parallel.extras["dataset"].get_all()["ys"]
+    assert np.array_equal(xs_s, xs_p), "parallel xs differ from serial"
+    assert np.array_equal(ys_s, ys_p), "parallel ys differ from serial"
+    import pandas.testing as pdt
+    pdt.assert_frame_equal(
+        serial.extras["groundtruth_table"].reset_index(drop=True),
+        parallel.extras["groundtruth_table"].reset_index(drop=True),
+    )
+    assert (serial.metadata["avg_eval_likelihood_groundtruth"]
+            == parallel.metadata["avg_eval_likelihood_groundtruth"])
+
+
+def test_resolve_workers_logic(tmp_path):
+    """_resolve_workers honors explicit counts and caps at num_subjects."""
+    import importlib.util
+    if importlib.util.find_spec("jax") is None:
+        import pytest as _pytest
+        _pytest.skip("module import needs stack")
+    from data_loaders.hierarchical_synthetic import HierarchicalCognitiveAgents
+
+    task, agent = _tiny_config()
+    mk = lambda w, n: HierarchicalCognitiveAgents(
+        task=task, agent=agent, num_trials=10, num_subjects=n,
+        num_sessions_per_subject=2, generation_workers=w,
+        groundtruth_dir=str(tmp_path),
+    )
+    assert mk(1, 10)._resolve_workers() == 1          # forced serial
+    assert mk(4, 10)._resolve_workers() == 4          # explicit
+    assert mk(50, 10)._resolve_workers() == 10        # capped at num_subjects
