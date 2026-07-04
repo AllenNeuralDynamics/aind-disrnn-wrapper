@@ -143,6 +143,9 @@ def test_end_to_end_static_stage1(tmp_path):
         assert sub_rows["param_learn_rate"].nunique() == 1
         assert sub_rows["param_biasL"].nunique() == 1
     # session_context present with per-subject 1-based ordering
+    # bundle.raw carries subject_id + ses_idx (baseline_rl reads raw directly)
+    assert {"subject_id", "ses_idx", "trial", "animal_response", "earned_reward"} <= set(bundle.raw.columns)
+    assert bundle.raw["subject_id"].nunique() == 4
     assert md["session_context"]["indexing"] == "1_based"
     assert len(md["session_context"]["per_subject"]) == 4
     # Seed hierarchy is collision-free -- asserted on the ACTUAL seeds the
