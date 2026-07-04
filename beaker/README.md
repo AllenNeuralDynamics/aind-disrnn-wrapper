@@ -354,6 +354,33 @@ that work make kernels **fatter or concurrent**:
   cuts the deep-chain launch overhead.
 - **MPS** — lets separate processes' kernels share SMs (would rescue packing).
 
+**Length-bucketed batching — shortens the deep chain (opt-in, `training.length_bucketing`).**
+A separate lever from the three above: it doesn't make kernels *fatter*, it makes the
+*sequential chain shorter*. Sessions are RNN-unrolled over the trial axis, padded to the
+global `T_max` (≈1488 trials for the 100-mice snapshot), but real session lengths vary
+widely (≈438–857). Every padding row is a full recurrent step — pure wasted compute on the
+deep/sequential axis that dominates our runtime. With bucketing on, each `random`-mode batch
+is drawn from a **single length bucket** (sessions grouped by real length rounded up to
+`length_bucket_grid`, default 128) and the unroll is **trimmed** to that bucket's length, so
+short-session batches run far fewer sequential steps. Correctness: trimming only drops
+all-padding rows (real length ≤ bucket length), so loss/mask are unchanged. Cost: one JAX
+recompile per distinct bucket length (≈`T_max/grid` ≈ 12 shapes), amortized over training.
+
+- **Where it runs — the TRAINING loop, not rollout/generation.** The trim happens in
+  `_sample_batch` (`utils/session_regularized_training.py`), called each step inside
+  `train_network_with_session_regularization` immediately before the gradient `train_step`
+  — the shared training loop used by **both** the GRU and disRNN trainers. It is *not* a
+  generative-rollout or distillation feature (those have their own batching). So bucketing
+  reduces the compute of every gradient step, at both trainers' train time.
+- **Requires `batch_mode: random`** (the bucketed branch only fires there) and a set
+  `batch_size`. No-op under `single`/full-batch. Wired per-trainer by setting
+  `dataset_train.length_bucketing` — `gru_trainer.py` (long-standing) and `disrnn_trainer.py`
+  (added 2026-07) both do this from the `training.length_bucketing` config key.
+- **Caveat:** each batch is length-homogeneous, so the per-step gradient is over sessions of
+  similar length rather than a uniform draw across all lengths; per-bucket sampling weights
+  keep it ≈uniform over sessions in expectation. Keep the setting fixed across a grid so
+  cells stay comparable.
+
 **Decision (current): `vmap` is shelved.** `replicas` across GPUs (done) plus a bigger
 `batch_size`/`num_sessions` (free, science permitting) capture most of the per-GPU
 headroom; `vmap` is a costly, correctness-sensitive core rewrite (the loss is a closure
