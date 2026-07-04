@@ -762,6 +762,25 @@ class DisrnnTrainer(BaseMultisubjectTrainer):
             metadata=metadata,
         )
 
+        # --- Length-bucketed batching (opt-in via training.length_bucketing) ---
+        # Trim the per-batch unroll to the batch's session length instead of the
+        # global T_max, cutting padding compute. The bucketed-sampling logic lives
+        # in the shared _sample_batch (utils/session_regularized_training.py); it
+        # only fires when the train dataset carries `length_bucketing=True` and
+        # batch_mode == "random". Mirrors gru_trainer.py's wiring so both trainers
+        # share one implementation. Set on the train dataset that session-
+        # regularized training samples from (after the session-index prepend so
+        # feature-0 padding markers are already in place).
+        if bool(self.training.get("length_bucketing", False)):
+            dataset_train.length_bucketing = True
+            dataset_train.length_bucket_grid = int(
+                self.training.get("length_bucket_grid", 128)
+            )
+            logger.info(
+                "Length-bucketed batching enabled (grid=%s)",
+                dataset_train.length_bucket_grid,
+            )
+
         total_session_curriculum_steps = int(self.training.get("n_warmup_steps", 0)) + int(
             self.training.get("n_steps", 0)
         )

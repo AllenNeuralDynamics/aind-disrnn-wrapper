@@ -279,6 +279,34 @@ Consequences:
 - **Rebuild only on dependency changes** (`pyproject.toml` / pinned git deps).
   Symptom: a run fails with `ImportError` / `ModuleNotFoundError` after a pull.
 
+## 3b. Staged horizons — "extend later" (continue from a prior run)
+
+Two resume mechanisms exist; they compose:
+
+- **Preemption resume (automatic, within one experiment).** A preempted
+  low-priority task restarts as the *same* task with the *same* `/results`
+  dataset; the trainer re-finds `outputs/checkpoints/step_<N>/train_state.pkl`
+  (`checkpoint_resume.find_latest_resumable_state`) and continues, skipping
+  warmup. Requires `checkpoint_every_n_steps > 0` and `auto_resume: true`
+  (default). W&B continuity via a deterministic `WANDB_RUN_ID` + `WANDB_RESUME`.
+
+- **Extend later (opt-in, across experiments).** Launch a grid at a *short*
+  `n_steps` to get all cells to an interpretable point fast, then relaunch a
+  *continuation* experiment at a larger `n_steps` that **continues each cell
+  from the short run's checkpoint** instead of restarting. Set
+  **`model.training.restore_from_run_id`** (or env `DISRNN_RESTORE_FROM_RUN_ID`
+  — env wins, so a sweep can pass a per-cell id) to the source run's W&B id.
+  Before training, `run_hpc.py` downloads that run's `training-output` artifact
+  (`<mtype>-output-<run_id>`; `mtype` ∈ {`disrnn`,`gru`}) into this run's
+  `outputs/`, so its `checkpoints/` land where the trainer resumes from — warmup
+  is skipped. **Trainer-agnostic:** both disRNN and GRU upload the whole
+  `output_dir` and resume via the shared `checkpoint_resume`, so the same knob
+  works for either. Only seeds when no local checkpoint exists yet (a preemption
+  restart of the continuation run keeps its fresher local state). Fails **loudly**
+  if the source artifact is missing — it never silently restarts from scratch.
+  The larger `n_steps` must exceed the source's, since the trainer loops
+  `while steps_completed < n_steps`.
+
 ## 4. Where to change what
 
 | Want to change… | Edit | Rebuild image? |
@@ -325,6 +353,47 @@ that work make kernels **fatter or concurrent**:
   (each run keeps its own batch). Also needs `lax.scan`-ing the step loop, which on its own
   cuts the deep-chain launch overhead.
 - **MPS** — lets separate processes' kernels share SMs (would rescue packing).
+
+**Length-bucketed batching — shortens the deep chain (opt-in, `training.length_bucketing`).**
+A separate lever from the three above: it doesn't make kernels *fatter*, it makes the
+*sequential chain shorter*. Sessions are RNN-unrolled over the trial axis, padded to the
+global `T_max` (≈1488 trials for the 100-mice snapshot), but real session lengths vary
+widely (≈438–857). Every padding row is a full recurrent step — pure wasted compute on the
+deep/sequential axis that dominates our runtime. With bucketing on, each `random`-mode batch
+is drawn from a **single length bucket** (sessions grouped by real length rounded up to
+`length_bucket_grid`, default 128) and the unroll is **trimmed** to that bucket's length, so
+short-session batches run far fewer sequential steps. Correctness: trimming only drops
+all-padding rows (real length ≤ bucket length), so loss/mask are unchanged. Cost: one JAX
+recompile per distinct bucket length (≈`T_max/grid` ≈ 12 shapes), amortized over training.
+
+**Measured (2026-07): ~1.86× throughput on disRNN.** Matched runs (100-mice snapshot,
+`lr=1e-3`, `beta=1e-3`, L40s/g6e, `random`/2048 batch — the *only* difference is bucketing),
+from W&B `_step`/`_timestamp`:
+
+| | ms/step | steps/s |
+|---|---:|---:|
+| No bucketing | 2015 | 0.496 |
+| `length_bucketing`, grid=128 | 1083 | 0.924 |
+
+The bucketed figure is measured over steps 0–1499, so it *includes* the per-bucket JIT
+compiles — steady-state is marginally better. This is the one lever that actually moved
+disRNN throughput (batch size and GPU packing both plateaued near 1.15×), because our
+session-length distribution is wide, so most of each step's compute was padding rows.
+
+- **Where it runs — the TRAINING loop, not rollout/generation.** The trim happens in
+  `_sample_batch` (`utils/session_regularized_training.py`), called each step inside
+  `train_network_with_session_regularization` immediately before the gradient `train_step`
+  — the shared training loop used by **both** the GRU and disRNN trainers. It is *not* a
+  generative-rollout or distillation feature (those have their own batching). So bucketing
+  reduces the compute of every gradient step, at both trainers' train time.
+- **Requires `batch_mode: random`** (the bucketed branch only fires there) and a set
+  `batch_size`. No-op under `single`/full-batch. Wired per-trainer by setting
+  `dataset_train.length_bucketing` — `gru_trainer.py` (long-standing) and `disrnn_trainer.py`
+  (added 2026-07) both do this from the `training.length_bucketing` config key.
+- **Caveat:** each batch is length-homogeneous, so the per-step gradient is over sessions of
+  similar length rather than a uniform draw across all lengths; per-bucket sampling weights
+  keep it ≈uniform over sessions in expectation. Keep the setting fixed across a grid so
+  cells stay comparable.
 
 **Decision (current): `vmap` is shelved.** `replicas` across GPUs (done) plus a bigger
 `batch_size`/`num_sessions` (free, science permitting) capture most of the per-GPU

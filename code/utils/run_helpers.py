@@ -420,3 +420,109 @@ def compute_bottleneck_sparsity_metrics(
     except Exception as exc:  # noqa: BLE001
         logger.warning("compute_bottleneck_sparsity_metrics failed: %s", exc)
         return {}
+
+
+def maybe_restore_checkpoint_from_wandb(
+    hydra_config: DictConfig,
+    run_output_base: Path,
+) -> None:
+    """Seed a NEW run's output dir from a prior run's W&B checkpoint artifact.
+
+    Enables a *staged-horizon* / *extend-later* workflow: launch a grid at a
+    short ``n_steps``, then relaunch a continuation experiment with a larger
+    ``n_steps`` that CONTINUES each cell from where the short run stopped instead
+    of restarting from scratch.
+
+    Mechanism (trainer-agnostic — works for disRNN and GRU, since both upload the
+    whole ``output_dir`` as artifact ``<mtype>-output-<run_id>`` via
+    ``add_dir`` and both resume from ``<output_dir>/checkpoints`` via the shared
+    ``checkpoint_resume.find_latest_resumable_state``):
+
+      1. Read the source run id from ``training.restore_from_run_id`` (or the
+         ``DISRNN_RESTORE_FROM_RUN_ID`` env var — env wins, so a sweep can pass
+         a per-cell id without editing config).
+      2. Download artifact ``<entity>/<project>/<mtype>-output-<run_id>:latest``
+         into ``<run_output_base>/outputs`` so its ``checkpoints/step_<N>/``
+         subtree lands exactly where the trainer looks. Resume then SKIPS warmup
+         (warmup is folded into the checkpointed params).
+
+    SAFETY — only seeds when there is NO local checkpoint yet. On a preemption
+    restart of the *continuation* run, the local ``checkpoints/`` are FRESHER
+    than the seed artifact, so we must not overwrite them; this makes the restore
+    a one-time seed that composes correctly with Beaker autoResume.
+
+    Fails LOUDLY (raises) when a restore is requested but the artifact cannot be
+    found/downloaded — a silent restart-from-scratch would waste the whole point.
+    A no-op when no ``restore_from_run_id`` is set.
+    """
+    run_id = os.environ.get("DISRNN_RESTORE_FROM_RUN_ID")
+    if not run_id:
+        try:
+            run_id = hydra_config.model.training.get("restore_from_run_id")
+        except Exception:  # noqa: BLE001
+            run_id = None
+    if not run_id:
+        return  # extend-later not requested; normal fresh run
+
+    run_id = str(run_id).strip()
+    outputs_dir = Path(run_output_base) / "outputs"
+    checkpoints_dir = outputs_dir / "checkpoints"
+
+    # Preemption-restart guard: a local checkpoint already exists (this run has
+    # made progress), so autoResume owns the state -- do NOT re-seed.
+    if checkpoints_dir.is_dir() and any(checkpoints_dir.glob("step_*")):
+        logger.info(
+            "restore_from_run_id=%s requested, but local checkpoints already "
+            "exist at %s -- skipping restore (autoResume owns the state).",
+            run_id,
+            checkpoints_dir,
+        )
+        return
+
+    entity = None
+    project = None
+    try:
+        entity = hydra_config.wandb.get("entity")
+        project = hydra_config.wandb.get("project")
+    except Exception:  # noqa: BLE001
+        pass
+    if not entity or not project:
+        raise ValueError(
+            "restore_from_run_id set but wandb.entity/wandb.project are missing; "
+            "cannot locate the source checkpoint artifact."
+        )
+
+    mtype = str(hydra_config.model.type)
+    artifact_ref = f"{entity}/{project}/{mtype}-output-{run_id}:latest"
+    logger.info(
+        "Extend-later: restoring checkpoint from artifact %s into %s",
+        artifact_ref,
+        outputs_dir,
+    )
+    outputs_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        api = wandb.Api()
+        artifact = api.artifact(artifact_ref, type="training-output")
+        artifact.download(root=str(outputs_dir))
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(
+            f"Extend-later restore FAILED for artifact {artifact_ref!r}: {exc}. "
+            "Refusing to silently restart from scratch. Check the source run id, "
+            "that its run finished uploading its training-output artifact, and "
+            "that wandb.entity/project match the source project."
+        ) from exc
+
+    steps = sorted(checkpoints_dir.glob("step_*")) if checkpoints_dir.is_dir() else []
+    if not steps:
+        raise RuntimeError(
+            f"Extend-later restore downloaded {artifact_ref!r} but found no "
+            f"checkpoints/step_* under {outputs_dir}. The source artifact may not "
+            "contain resumable state (needs checkpoint_every_n_steps>0 on the "
+            "source run)."
+        )
+    logger.info(
+        "Extend-later: restored %d checkpoint(s); latest=%s. Training will "
+        "resume from it and skip warmup.",
+        len(steps),
+        steps[-1].name,
+    )
