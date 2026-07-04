@@ -279,6 +279,34 @@ Consequences:
 - **Rebuild only on dependency changes** (`pyproject.toml` / pinned git deps).
   Symptom: a run fails with `ImportError` / `ModuleNotFoundError` after a pull.
 
+## 3b. Staged horizons — "extend later" (continue from a prior run)
+
+Two resume mechanisms exist; they compose:
+
+- **Preemption resume (automatic, within one experiment).** A preempted
+  low-priority task restarts as the *same* task with the *same* `/results`
+  dataset; the trainer re-finds `outputs/checkpoints/step_<N>/train_state.pkl`
+  (`checkpoint_resume.find_latest_resumable_state`) and continues, skipping
+  warmup. Requires `checkpoint_every_n_steps > 0` and `auto_resume: true`
+  (default). W&B continuity via a deterministic `WANDB_RUN_ID` + `WANDB_RESUME`.
+
+- **Extend later (opt-in, across experiments).** Launch a grid at a *short*
+  `n_steps` to get all cells to an interpretable point fast, then relaunch a
+  *continuation* experiment at a larger `n_steps` that **continues each cell
+  from the short run's checkpoint** instead of restarting. Set
+  **`model.training.restore_from_run_id`** (or env `DISRNN_RESTORE_FROM_RUN_ID`
+  — env wins, so a sweep can pass a per-cell id) to the source run's W&B id.
+  Before training, `run_hpc.py` downloads that run's `training-output` artifact
+  (`<mtype>-output-<run_id>`; `mtype` ∈ {`disrnn`,`gru`}) into this run's
+  `outputs/`, so its `checkpoints/` land where the trainer resumes from — warmup
+  is skipped. **Trainer-agnostic:** both disRNN and GRU upload the whole
+  `output_dir` and resume via the shared `checkpoint_resume`, so the same knob
+  works for either. Only seeds when no local checkpoint exists yet (a preemption
+  restart of the continuation run keeps its fresher local state). Fails **loudly**
+  if the source artifact is missing — it never silently restarts from scratch.
+  The larger `n_steps` must exceed the source's, since the trainer loops
+  `while steps_completed < n_steps`.
+
 ## 4. Where to change what
 
 | Want to change… | Edit | Rebuild image? |

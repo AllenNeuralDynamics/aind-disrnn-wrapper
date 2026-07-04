@@ -23,6 +23,7 @@ from utils.run_helpers import (
     configure_sys_logger,
     copy_inputs_for_run,
     copy_run_to_wandb,
+    maybe_restore_checkpoint_from_wandb,
     save_resolved_config,
     start_wandb_run,
 )
@@ -91,6 +92,13 @@ def main(hydra_config: DictConfig) -> None:
     if hasattr(hydra_config, "model") and "output_dir" in hydra_config.model:
         hydra_config.model.output_dir = str(run_output_base / "outputs")
         logger.info("Model output_dir set to %s", hydra_config.model.output_dir)
+
+    # Extend-later: if training.restore_from_run_id (or DISRNN_RESTORE_FROM_RUN_ID)
+    # is set, seed this run's output dir from that prior run's W&B checkpoint
+    # artifact so the trainer continues from it (skips warmup) instead of starting
+    # fresh. Trainer-agnostic; no-op when not requested; only seeds when no local
+    # checkpoint exists yet (preemption-restart safe). See run_helpers docstring.
+    maybe_restore_checkpoint_from_wandb(hydra_config, run_output_base)
 
     resolved_yaml = OmegaConf.to_yaml(hydra_config, resolve=True)
     logger.info("Hydra config (resolved):\n%s", resolved_yaml)
