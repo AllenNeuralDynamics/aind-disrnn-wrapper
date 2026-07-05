@@ -23,7 +23,6 @@ from utils.run_helpers import (
     configure_sys_logger,
     copy_inputs_for_run,
     copy_run_to_wandb,
-    maybe_restore_checkpoint_from_wandb,
     save_resolved_config,
     start_wandb_run,
 )
@@ -93,12 +92,17 @@ def main(hydra_config: DictConfig) -> None:
         hydra_config.model.output_dir = str(run_output_base / "outputs")
         logger.info("Model output_dir set to %s", hydra_config.model.output_dir)
 
-    # Extend-later: if training.restore_from_run_id (or DISRNN_RESTORE_FROM_RUN_ID)
-    # is set, seed this run's output dir from that prior run's W&B checkpoint
-    # artifact so the trainer continues from it (skips warmup) instead of starting
-    # fresh. Trainer-agnostic; no-op when not requested; only seeds when no local
-    # checkpoint exists yet (preemption-restart safe). See run_helpers docstring.
-    maybe_restore_checkpoint_from_wandb(hydra_config, run_output_base)
+    # Ground-truth params table -> the PER-RUN output dir (same dir the trainer
+    # uploads to W&B as the training-output artifact). This (a) avoids the
+    # shared-scratch collision that a fixed groundtruth_dir="." causes when
+    # concurrent HPC cells share a cwd, and (b) makes the human-readable GT CSV
+    # ride into W&B automatically for BOTH HPC and Beaker runs (Beaker never
+    # touches HPC scratch, so W&B is the only place its GT can live). The GT is
+    # also regenerable byte-identically from seed+config, so this file is a
+    # convenience layer, not the source of truth.
+    if hasattr(hydra_config, "data") and "groundtruth_dir" in hydra_config.data:
+        hydra_config.data.groundtruth_dir = str(run_output_base / "outputs")
+        logger.info("Ground-truth dir set to %s", hydra_config.data.groundtruth_dir)
 
     resolved_yaml = OmegaConf.to_yaml(hydra_config, resolve=True)
     logger.info("Hydra config (resolved):\n%s", resolved_yaml)
