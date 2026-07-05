@@ -382,7 +382,14 @@ def _resolve_output_run_dir(
     heldout_selector: Mapping[str, Any],
 ) -> Path:
     output_root = Path(resolved_config["output"]["output_root"]).expanduser().resolve()
-    source_run_slug = _safe_slug(Path(source_run.model_dir).name)
+    # NOTE: under the W&B run-<id>/files layout, model_dir.name is the constant
+    # "files", so every concurrent cell would build the SAME held-out output dir and
+    # collide on shared scratch (HPC). Fold the unique run-<id> parent into the slug.
+    _model_dir_path = Path(source_run.model_dir)
+    _run_name = _model_dir_path.name
+    if _run_name in {"files", "results", "outputs", ""} and _model_dir_path.parent.name:
+        _run_name = f"{_model_dir_path.parent.name}_{_run_name}"
+    source_run_slug = _safe_slug(_run_name)
     checkpoint_component = (
         f"{_safe_slug(source_run.checkpoint_policy)}_{_safe_slug(source_run.checkpoint_label)}"
     )
