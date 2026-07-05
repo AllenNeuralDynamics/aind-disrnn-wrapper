@@ -444,6 +444,67 @@ class HierarchicalCognitiveAgents(DatasetLoader):
     # ------------------------------------------------------------------ #
     # Main entry
     # ------------------------------------------------------------------ #
+    def groundtruth_table(self) -> "pd.DataFrame":
+        """Regenerate ONLY the ground-truth parameter table (per-subject centroids
+        + per-session drifted/noised params + is_eval flags), WITHOUT simulating any
+        trials. Pure numpy RNG (~1s for 200x40), byte-identical to the table load()
+        writes because it makes the same RNG draws in the same order.
+
+        NOT the primary path for recovery analysis: since run_hpc now logs the
+        groundtruth_params.csv into each run's W&B output artifact, the analysis reads
+        that CSV directly. This method is the FALLBACK + AUDIT tool: (1) score runs
+        whose W&B CSV is missing/contaminated (e.g. any launched before the per-run
+        groundtruth_dir fix), and (2) cheaply verify a stored CSV still equals what its
+        config regenerates (the guarantee behind trusting the CSV).
+        """
+        agent_cfg = copy.deepcopy(self.agent_config)
+        subject_param_dist = copy.deepcopy(agent_cfg.get("subject_param_dist", {}))
+        base_params = copy.deepcopy(agent_cfg.get("agent_params", {}))
+        drift = copy.deepcopy(agent_cfg.get("drift", {})) or {}
+        session_noise = copy.deepcopy(agent_cfg.get("session_noise", {})) or {}
+        base_seed = agent_cfg.get("seed")
+        base_seed = 0 if base_seed is None else int(base_seed)
+        base_task_seed = self.task_config.get("seed")
+        base_task_seed = base_seed if base_task_seed is None else int(base_task_seed)
+        if not subject_param_dist:
+            raise ValueError(
+                "HierarchicalCognitiveAgents requires agent.subject_param_dist."
+            )
+        n_sessions = self.num_sessions_per_subject
+        if n_sessions < 2:
+            raise ValueError("num_sessions_per_subject must be >= 2 for a train/eval split.")
+        if self.heldout_session_mode == "tail":
+            _eval_idx_set = set(_tail_eval_indices(n_sessions, self.heldout_frac))
+        else:
+            _eval_idx_set = set(range(self.eval_every_n - 1, n_sessions, self.eval_every_n))
+
+        rows: list[dict[str, Any]] = []
+        for subject_idx in range(self.num_subjects):
+            subject_seed = self._subject_seed(base_seed, subject_idx)
+            subject_id = f"synth{subject_idx:03d}"
+            centroid = self._subject_centroid(subject_seed, subject_param_dist)
+            for session_idx in range(n_sessions):
+                session_seed = self._session_seed(base_seed, subject_idx, session_idx)
+                session_task_seed = self._session_seed(base_task_seed, subject_idx, session_idx)
+                session_frac = 0.0 if n_sessions == 1 else session_idx / (n_sessions - 1)
+                session_params = self._session_params(
+                    centroid, base_params, drift, session_noise, session_frac, session_seed
+                )
+                is_eval = session_idx in _eval_idx_set
+                row = {
+                    "subject_index": subject_idx, "subject_id": subject_id,
+                    "session_index_0based": session_idx, "session_index_1based": session_idx + 1,
+                    "session_id": f"{subject_id}_s{session_idx:03d}",
+                    "is_eval": bool(is_eval), "session_frac": float(session_frac),
+                    "session_seed": int(session_seed), "task_seed": int(session_task_seed),
+                }
+                for pname, pval in session_params.items():
+                    row[f"param_{pname}"] = float(pval)
+                for pname, pval in centroid.items():
+                    row[f"centroid_{pname}"] = float(pval)
+                rows.append(row)
+        return pd.DataFrame(rows)
+
     def load(self) -> DatasetBundle:
         task_cfg = copy.deepcopy(self.task_config)
         task_type_key = str(task_cfg.pop("type", "")).lower()
