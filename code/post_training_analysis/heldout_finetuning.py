@@ -382,7 +382,19 @@ def _resolve_output_run_dir(
     heldout_selector: Mapping[str, Any],
 ) -> Path:
     output_root = Path(resolved_config["output"]["output_root"]).expanduser().resolve()
-    source_run_slug = _safe_slug(Path(source_run.model_dir).name)
+    # The source model_dir follows the W&B layout ``.../run-<id>/files``, so
+    # ``Path(model_dir).name`` is the constant string "files" (likewise "results"/
+    # "outputs" for other layouts) and the unique run id lives in the PARENT dir.
+    # Using only .name made every concurrent grid cell share one held-out output
+    # path on a shared filesystem (HPC scratch), so a second cell's rebuild could
+    # read a first cell's config -> architecture/shape mismatch. Fold in the parent
+    # dir name so the slug is unique per source run. (Beaker isolates /results per
+    # task, so it never collided there.)
+    _model_dir_path = Path(source_run.model_dir)
+    _run_name = _model_dir_path.name
+    if _run_name in {"files", "results", "outputs", ""} and _model_dir_path.parent.name:
+        _run_name = f"{_model_dir_path.parent.name}_{_run_name}"
+    source_run_slug = _safe_slug(_run_name)
     checkpoint_component = (
         f"{_safe_slug(source_run.checkpoint_policy)}_{_safe_slug(source_run.checkpoint_label)}"
     )
