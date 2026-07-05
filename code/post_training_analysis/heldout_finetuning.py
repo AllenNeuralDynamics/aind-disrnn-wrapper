@@ -29,7 +29,7 @@ from base.types import DatasetBundle
 from data_loaders import mice as mice_loader
 from disentangled_rnns.library import rnn_utils
 from model_trainers.disrnn_trainer import DisrnnTrainer
-from model_trainers.gru_trainer import GruTrainer
+from model_trainers.gru_trainer import GruTrainer, _threeway_likelihood_decomposition
 from models.gru_network import make_gru_network
 from models.session_conditioning import resolve_session_conditioning_from_architecture
 from post_training_analysis.generative_analysis import resolve_model_run
@@ -1278,6 +1278,16 @@ def _evaluate_checkpoint(
         "train_likelihood": float(train_likelihood),
         "eval_likelihood": float(eval_likelihood),
     }
+    # For the 3-way (ignore-included) head, also record the engagement-conditional
+    # L/R held-out likelihood (comparable to the 2-way study's held-out number) and
+    # the engage-vs-ignore held-out calibration. No-op for a 2-way head.
+    eval_likelihood_decomp = _threeway_likelihood_decomposition(
+        ys_eval,
+        np.asarray(yhat_eval_eval)[:, :, :eval_n_action_logits],
+        n_action_logits=eval_n_action_logits,
+    )
+    for _decomp_key, _decomp_val in eval_likelihood_decomp.items():
+        record[_decomp_key] = float(_decomp_val)
     record["per_subject_likelihood"] = _compute_per_subject_eval_likelihood(
         ys_eval=ys_eval,
         yhat_eval=np.asarray(yhat_eval_eval)[:, :, :eval_n_action_logits],
@@ -1403,12 +1413,18 @@ def _final_metrics_summary(checkpoint_records: Sequence[Mapping[str, Any]]) -> d
     if not checkpoint_records:
         return {}
     final_record = checkpoint_records[-1]
-    return {
+    summary = {
         "train_loss": float(final_record["train_loss"]),
         "eval_loss": float(final_record["eval_loss"]),
         "train_likelihood": float(final_record["train_likelihood"]),
         "eval_likelihood": float(final_record["eval_likelihood"]),
     }
+    # Propagate the 3-way decomposition (engagement-conditional L/R, engage-vs-
+    # ignore) to heldout/final/* if present. No-op for a 2-way head.
+    for _k in ("eval_likelihood_LR_engaged", "eval_likelihood_engage"):
+        if _k in final_record:
+            summary[_k] = float(final_record[_k])
+    return summary
 
 
 def run_heldout_subject_finetuning_from_config(
@@ -1681,6 +1697,14 @@ def run_heldout_subject_finetuning_from_config(
                             checkpoint_record["eval_likelihood"]
                         ),
                         f"{wandb_log_key_prefix}/step": int(step),
+                        **{
+                            f"{wandb_log_key_prefix}/{_k}": float(checkpoint_record[_k])
+                            for _k in (
+                                "eval_likelihood_LR_engaged",
+                                "eval_likelihood_engage",
+                            )
+                            if _k in checkpoint_record
+                        },
                     },
                     step=checkpoint_wandb_step,
                 )
