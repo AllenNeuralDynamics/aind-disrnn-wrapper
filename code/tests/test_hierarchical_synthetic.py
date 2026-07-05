@@ -61,6 +61,23 @@ def test_pure_logic_clamp_and_drift():
     assert abs(hs._apply_drift("biasL", 2.0, {"mode": "toward_zero", "frac": 0.5}, 1.0) - 1.0) < 1e-9
 
 
+@pytest.mark.skipif(not HAS_STACK, reason="module import needs stack for top-level imports")
+def test_pure_logic_nonmonotonic_drift():
+    """Stage-2b non-monotonic modes: sinusoidal, inverted_u, piecewise."""
+    from data_loaders import hierarchical_synthetic as hs
+    # sinusoidal: one full cycle returns to centroid at frac 0, 0.5, 1.0; peak at 0.25
+    assert abs(hs._apply_drift("softmax_inverse_temperature", 6.0, {"mode": "sinusoidal", "amp": 3.0, "cycles": 1.0}, 0.0) - 6.0) < 1e-9
+    assert abs(hs._apply_drift("softmax_inverse_temperature", 6.0, {"mode": "sinusoidal", "amp": 3.0, "cycles": 1.0}, 0.25) - 9.0) < 1e-9
+    assert abs(hs._apply_drift("softmax_inverse_temperature", 6.0, {"mode": "sinusoidal", "amp": 3.0, "cycles": 1.0}, 1.0) - 6.0) < 1e-9
+    # inverted_u: 0 at both ends, peak +amp at frac=0.5 (non-monotonic)
+    assert abs(hs._apply_drift("learn_rate", 0.3, {"mode": "inverted_u", "amp": 0.4}, 0.0) - 0.3) < 1e-9
+    assert abs(hs._apply_drift("learn_rate", 0.3, {"mode": "inverted_u", "amp": 0.4}, 0.5) - 0.7) < 1e-9
+    assert abs(hs._apply_drift("learn_rate", 0.3, {"mode": "inverted_u", "amp": 0.4}, 1.0) - 0.3) < 1e-9
+    # piecewise tent: rises to centroid+delta at peak, returns to centroid at frac=1
+    assert abs(hs._apply_drift("learn_rate", 0.3, {"mode": "piecewise", "delta": 0.5, "peak": 0.5}, 0.5) - 0.8) < 1e-9
+    assert abs(hs._apply_drift("learn_rate", 0.3, {"mode": "piecewise", "delta": 0.5, "peak": 0.5}, 1.0) - 0.3) < 1e-9
+
+
 # --------------------------------------------------------------------------- #
 # Tier 2: end-to-end generation (requires the stack)
 # --------------------------------------------------------------------------- #
