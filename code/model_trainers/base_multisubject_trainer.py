@@ -756,6 +756,14 @@ class BaseMultisubjectTrainer(ModelTrainer):
             image_payload[f"{wandb_key_prefix}/heldout/latents_in_space_examples"] = [
                 wandb.Image(str(path)) for path in space_plot_paths
             ]
+        engage_plot_paths = heldout_summary.get("plots", {}).get(
+            "latents_in_space_engage_examples",
+            [],
+        )
+        if engage_plot_paths:
+            image_payload[
+                f"{wandb_key_prefix}/heldout/latents_in_space_engage_examples"
+            ] = [wandb.Image(str(path)) for path in engage_plot_paths]
         if image_payload:
             if wandb_step is None:
                 wandb_run.log(image_payload)
@@ -997,6 +1005,16 @@ class BaseMultisubjectTrainer(ModelTrainer):
                         )
                     ],
                 }
+                # 3-way (ignore-included) head: also log the P(ignore)-colored
+                # engagement panel when the split plotter produced it. Absent for a
+                # 2-way head, so the key is only added when non-empty.
+                engage_paths = split_summary.get("plots", {}).get(
+                    "latents_in_space_engage_examples", []
+                )
+                if engage_paths:
+                    payload[f"{key_prefix}/latents_in_space_engage_examples"] = [
+                        wandb.Image(str(path)) for path in engage_paths
+                    ]
                 if wandb_step is None:
                     wandb_run.log(payload)
                 else:
