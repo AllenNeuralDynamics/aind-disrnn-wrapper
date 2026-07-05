@@ -133,10 +133,23 @@ def _apply_drift(
     """Return the drifted (pre-noise) value at a normalized session position.
 
     ``session_frac`` is in [0, 1]: 0 for the first session, 1 for the last.
-    Modes:
-      * linear      -> value = centroid + delta * frac
-      * toward_zero -> value = centroid * (1 - frac * frac_shrink)   (|value| shrinks)
+
+    MONOTONIC modes (Stage 2):
+      * linear         -> value = centroid + delta * frac
+      * toward_zero    -> value = centroid * (1 - frac * frac_shrink)  (|value| shrinks)
       * multiplicative -> value = centroid * (1 + rel * frac)
+
+    NON-MONOTONIC modes (Stage 2b): a smooth monotonic ramp can be absorbed into a
+    static per-subject fit's session-average, so it costs little likelihood. A
+    trajectory that reverses cannot be absorbed -> it is the sensitive stressor for
+    session conditioning.
+      * sinusoidal -> value = centroid + amp * sin(2*pi*cycles*frac + phase)
+                      (oscillates ``cycles`` times over the subject's sessions)
+      * inverted_u -> value = centroid + amp * 4 * frac * (1 - frac)
+                      (0 at both ends, peak +amp at frac=0.5; ``amp`` may be negative
+                      for a U shape)
+      * piecewise  -> rises by ``delta`` up to frac=``peak`` (default 0.5), then
+                      returns toward the centroid by frac=1 (tent / up-then-down)
     """
     mode = str(spec.get("mode", "linear")).lower()
     if mode == "linear":
@@ -146,7 +159,66 @@ def _apply_drift(
         return centroid_value * (1.0 - frac_shrink * session_frac)
     if mode == "multiplicative":
         return centroid_value * (1.0 + float(spec.get("rel", 0.0)) * session_frac)
+    if mode == "sinusoidal":
+        amp = float(spec.get("amp", 0.0))
+        cycles = float(spec.get("cycles", 1.0))
+        phase = float(spec.get("phase", 0.0))
+        return centroid_value + amp * float(np.sin(2.0 * np.pi * cycles * session_frac + phase))
+    if mode == "inverted_u":
+        amp = float(spec.get("amp", 0.0))
+        return centroid_value + amp * 4.0 * session_frac * (1.0 - session_frac)
+    if mode == "piecewise":
+        delta = float(spec.get("delta", 0.0))
+        peak = float(spec.get("peak", 0.5))
+        if session_frac <= peak:
+            rise = (session_frac / peak) if peak > 0 else 0.0
+        else:
+            rise = ((1.0 - session_frac) / (1.0 - peak)) if peak < 1 else 0.0
+        return centroid_value + delta * rise
     raise ValueError(f"Unsupported drift mode {mode!r} for param {param_name!r}.")
+
+
+def _tail_eval_indices(n_sessions: int, heldout_frac: float) -> list[int]:
+    """Contiguous TAIL held-out split: the last ``heldout_frac`` fraction of a
+    subject's sessions are eval, the rest train. At least 1 eval + 1 train session.
+    The model must EXTRAPOLATE drift into unseen later sessions (extrapolation),
+    unlike the interleaved split which permits interpolation."""
+    if n_sessions < 2:
+        raise ValueError("Need >=2 sessions to split.")
+    n_eval = max(1, min(n_sessions - 1, int(round(heldout_frac * n_sessions))))
+    return list(range(n_sessions - n_eval, n_sessions))
+
+
+def _split_dataset_tail(dataset: Any, heldout_frac: float) -> tuple[Any, Any]:
+    """Tail-holdout analogue of rnn_utils.split_dataset (session axis = axis 1)."""
+    from disentangled_rnns.library.rnn_utils import DatasetRNN
+
+    data = dataset.get_all()
+    xs, ys = data["xs"], data["ys"]
+    n_sessions = xs.shape[1]
+    eval_idx = set(_tail_eval_indices(n_sessions, heldout_frac))
+    train_mask = np.array([i not in eval_idx for i in range(n_sessions)], dtype=bool)
+    eval_mask = np.logical_not(train_mask)
+
+    def _mk(mask: np.ndarray) -> Any:
+        return DatasetRNN(
+            xs[:, mask, :], ys[:, mask, :], x_names=dataset.x_names,
+            y_names=dataset.y_names, y_type=dataset.y_type, n_classes=dataset.n_classes,
+            batch_size=dataset.batch_size, batch_mode=dataset.batch_mode, rng=dataset.rng,
+        )
+
+    return _mk(train_mask), _mk(eval_mask)
+
+
+def _tail_train_eval_session_ids(
+    session_ids: Sequence[Any], heldout_frac: float
+) -> tuple[list[Any], list[Any]]:
+    """Session-id partition matching _split_dataset_tail (last frac -> eval)."""
+    ordered = list(session_ids)
+    eval_idx = set(_tail_eval_indices(len(ordered), heldout_frac))
+    train_ids = [s for i, s in enumerate(ordered) if i not in eval_idx]
+    eval_ids = [s for i, s in enumerate(ordered) if i in eval_idx]
+    return train_ids, eval_ids
 
 
 def _session_dataframe_from_forager(session_id: str, forager: Any, task: Any) -> pd.DataFrame:
@@ -262,6 +334,8 @@ class HierarchicalCognitiveAgents(DatasetLoader):
         subject_seed_stride: int = 100_000,
         groundtruth_dir: str | None = None,
         generation_workers: int | None = None,
+        heldout_session_mode: Literal["interleaved", "tail"] = "interleaved",
+        heldout_frac: float = 0.2,
         **metadata: object,
     ) -> None:
         super().__init__()
@@ -271,6 +345,16 @@ class HierarchicalCognitiveAgents(DatasetLoader):
         self.num_subjects = int(num_subjects)
         self.num_sessions_per_subject = int(num_sessions_per_subject)
         self.eval_every_n = int(eval_every_n)
+        # Held-out-session split mode (Stage 2b+, Han 2026-07-05):
+        #   interleaved -> every eval_every_n-th session is eval (default; the model
+        #     sees sessions on BOTH sides of each eval session -> it can INTERPOLATE
+        #     drift, so a static fit pays little -> insensitive to drift).
+        #   tail -> the LAST heldout_frac fraction of each subject's sessions are the
+        #     held-out eval block (contiguous). The model trains only on earlier
+        #     sessions and must EXTRAPOLATE the drift -> the fair, sensitive model-
+        #     comparison split for drifting/mixture generators.
+        self.heldout_session_mode = str(heldout_session_mode)
+        self.heldout_frac = float(heldout_frac)
         self.batch_size = batch_size
         self.batch_mode = batch_mode
         self.subject_seed_stride = int(subject_seed_stride)
@@ -389,6 +473,14 @@ class HierarchicalCognitiveAgents(DatasetLoader):
         if n_sessions < 2:
             raise ValueError("num_sessions_per_subject must be >= 2 for a train/eval split.")
 
+        # Precompute the eval-session index set so the ground-truth table's is_eval
+        # column matches the actual train/eval split for BOTH modes (all subjects
+        # share n_sessions, so this is the same set per subject).
+        if self.heldout_session_mode == "tail":
+            _eval_idx_set = set(_tail_eval_indices(n_sessions, self.heldout_frac))
+        else:
+            _eval_idx_set = set(range(self.eval_every_n - 1, n_sessions, self.eval_every_n))
+
         # --- Resolve all per-(subject, session) params + seeds up front. This is
         # cheap (numpy RNG only) and lets simulation fan out across processes. The
         # ground-truth table is built here so it is independent of worker order.
@@ -409,9 +501,9 @@ class HierarchicalCognitiveAgents(DatasetLoader):
                 session_params = self._session_params(
                     centroid, base_params, drift, session_noise, session_frac, session_seed
                 )
-                # eval sessions per subject follow the same eval_every_n rule the
-                # split uses (verified identical to compute_train_eval_session_ids).
-                is_eval = ((session_idx + 1) % self.eval_every_n) == 0
+                # eval-session flag matches the actual split (interleaved OR tail);
+                # _eval_idx_set was precomputed above to mirror the split site.
+                is_eval = session_idx in _eval_idx_set
                 session_id = f"{subject_id}_s{session_idx:03d}"
                 sessions.append(
                     {
@@ -516,13 +608,21 @@ class HierarchicalCognitiveAgents(DatasetLoader):
                 batch_size=self.batch_size,
                 batch_mode=("single" if self.batch_size is None else self.batch_mode),
             )
-            dataset_train, dataset_eval = rnn_utils.split_dataset(
-                dataset, eval_every_n=self.eval_every_n
-            )
             sub_full_ids = item["ordered_session_ids"]
-            sub_train_ids, sub_eval_ids = compute_train_eval_session_ids(
-                sub_full_ids, eval_every_n=self.eval_every_n
-            )
+            if self.heldout_session_mode == "tail":
+                dataset_train, dataset_eval = _split_dataset_tail(
+                    dataset, self.heldout_frac
+                )
+                sub_train_ids, sub_eval_ids = _tail_train_eval_session_ids(
+                    sub_full_ids, self.heldout_frac
+                )
+            else:
+                dataset_train, dataset_eval = rnn_utils.split_dataset(
+                    dataset, eval_every_n=self.eval_every_n
+                )
+                sub_train_ids, sub_eval_ids = compute_train_eval_session_ids(
+                    sub_full_ids, eval_every_n=self.eval_every_n
+                )
 
             full_datasets.append(dataset)
             train_datasets.append(dataset_train)
