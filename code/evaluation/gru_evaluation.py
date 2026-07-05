@@ -319,7 +319,6 @@ def plot_gru_examples_for_split(
                 axis_label_prefix="PC",
             )
             fig_space.suptitle(str(_normalize_identifier(session_ids[0])), fontsize=14)
-            fig_space.subplots_adjust(top=0.93)
             subject_space_plot_path = save_figure(
                 fig_space,
                 split_dir / f"latents_in_space_subject_{_safe_filename_component(subject_id)}.png",
@@ -339,7 +338,6 @@ def plot_gru_examples_for_split(
                     axis_label_prefix="PC",
                 )
                 fig_engage.suptitle(str(_normalize_identifier(session_ids[0])), fontsize=14)
-                fig_engage.subplots_adjust(top=0.93)
                 subject_engage_plot_path = save_figure(
                     fig_engage,
                     split_dir
@@ -708,7 +706,6 @@ def evaluate_gru_on_heldout_subjects(
                 str(_normalize_identifier(example_session_id)),
                 fontsize=14,
             )
-            fig_space.subplots_adjust(top=0.93)
             subject_space_plot_path = save_figure(
                 fig_space,
                 plot_dir
@@ -731,7 +728,6 @@ def evaluate_gru_on_heldout_subjects(
                     str(_normalize_identifier(example_session_id)),
                     fontsize=14,
                 )
-                fig_engage.subplots_adjust(top=0.93)
                 subject_engage_plot_path = save_figure(
                     fig_engage,
                     plot_dir

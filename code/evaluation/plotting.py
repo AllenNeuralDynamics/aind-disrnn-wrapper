@@ -296,7 +296,10 @@ def plot_latents_in_space(
 
                 ax_id += 1
 
-    fig.tight_layout()
+    # Reserve headroom so a caller-added suptitle (e.g. the session id) does not
+    # overlap the per-axis "Latent space trajectory" titles. tight_layout with a
+    # rect top < 1 packs the axes below the reserved band.
+    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.92))
     return fig
 
 
