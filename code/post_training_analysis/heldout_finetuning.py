@@ -1432,8 +1432,19 @@ def _final_metrics_summary(checkpoint_records: Sequence[Mapping[str, Any]]) -> d
         "eval_likelihood": float(final_record["eval_likelihood"]),
     }
     # Propagate the 3-way decomposition (engagement-conditional L/R, engage-vs-
-    # ignore) to heldout/final/* if present. No-op for a 2-way head.
-    for _k in ("eval_likelihood_LR_engaged", "eval_likelihood_engage"):
+    # ignore) plus the ignore-class classification metrics (precision/recall/F1/
+    # PR-AUC at the ~5% ignore base rate) to heldout/final/* if present. No-op
+    # for a 2-way head.
+    _decomp_keys = (
+        "eval_likelihood_LR_engaged",
+        "eval_likelihood_engage",
+        "engage_ignore_base_rate",
+        "engage_ignore_precision",
+        "engage_ignore_recall",
+        "engage_ignore_f1",
+        "engage_ignore_pr_auc",
+    )
+    for _k in _decomp_keys:
         if _k in final_record:
             summary[_k] = float(final_record[_k])
     return summary
@@ -1714,6 +1725,11 @@ def run_heldout_subject_finetuning_from_config(
                             for _k in (
                                 "eval_likelihood_LR_engaged",
                                 "eval_likelihood_engage",
+                                "engage_ignore_base_rate",
+                                "engage_ignore_precision",
+                                "engage_ignore_recall",
+                                "engage_ignore_f1",
+                                "engage_ignore_pr_auc",
                             )
                             if _k in checkpoint_record
                         },
