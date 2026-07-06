@@ -250,6 +250,123 @@ def test_end_to_end_serial_equals_parallel(tmp_path):
             == parallel.metadata["avg_eval_likelihood_groundtruth"])
 
 
+def _stage3_presets():
+    """Two-preset mixture: Rescorla-Wagner (eps-greedy) vs Hattori (2-lr softmax)."""
+    return {
+        "assignment": "balanced",
+        "presets": [
+            {
+                "name": "RescorlaWagner",
+                "agent_class": "ForagerQLearning",
+                "agent_kwargs": {
+                    "number_of_learning_rate": 1, "number_of_forget_rate": 0,
+                    "choice_kernel": "none", "action_selection": "epsilon-greedy",
+                },
+                "agent_params": {},
+                "subject_param_dist": {
+                    "learn_rate": {"type": "uniform", "min": 0.2, "max": 0.8},
+                    "biasL": {"type": "uniform", "min": -1.0, "max": 1.0},
+                    "epsilon": {"type": "uniform", "min": 0.05, "max": 0.3},
+                },
+            },
+            {
+                "name": "Hattori2019",
+                "agent_class": "ForagerQLearning",
+                "agent_kwargs": {
+                    "number_of_learning_rate": 2, "number_of_forget_rate": 1,
+                    "choice_kernel": "none", "action_selection": "softmax",
+                },
+                "agent_params": {},
+                "subject_param_dist": {
+                    "learn_rate_rew": {"type": "uniform", "min": 0.2, "max": 0.8},
+                    "learn_rate_unrew": {"type": "uniform", "min": 0.1, "max": 0.6},
+                    "forget_rate_unchosen": {"type": "uniform", "min": 0.0, "max": 0.3},
+                    "biasL": {"type": "uniform", "min": -1.0, "max": 1.0},
+                    "softmax_inverse_temperature": {"type": "uniform", "min": 3.0, "max": 12.0},
+                },
+            },
+        ],
+    }
+
+
+@requires_stack
+def test_backward_compat_no_presets_identical(tmp_path):
+    """The single-class fallback (no subject_presets) must be byte-identical to the
+    pre-preset behavior: same params + same merged tensors, just with additive
+    preset_index/preset_name/agent_class columns all pointing at the one class."""
+    from data_loaders.hierarchical_synthetic import HierarchicalCognitiveAgents
+
+    task, agent = _tiny_config()
+    agent["drift"] = {"learn_rate": {"mode": "linear", "delta": 0.3}}
+    loader = HierarchicalCognitiveAgents(
+        task=task, agent=agent, num_trials=80, num_subjects=4,
+        num_sessions_per_subject=6, eval_every_n=2, batch_size=32,
+        groundtruth_dir=str(tmp_path),
+    )
+    gtab = loader.load().extras["groundtruth_table"]
+    # additive columns present and degenerate (single class)
+    assert (gtab["preset_index"] == 0).all()
+    assert gtab["agent_class"].nunique() == 1 == gtab["preset_name"].nunique()
+    # groundtruth_table() (params-only path) agrees with load()'s table on params
+    gtab2 = loader.groundtruth_table()
+    import pandas.testing as pdt
+    cols = [c for c in gtab.columns if c.startswith("param_")]
+    pdt.assert_frame_equal(
+        gtab.sort_values(["subject_index", "session_index_0based"])[cols].reset_index(drop=True),
+        gtab2.sort_values(["subject_index", "session_index_0based"])[cols].reset_index(drop=True),
+    )
+
+
+@requires_stack
+def test_end_to_end_mixture_stage3(tmp_path):
+    """Stage 3: per-subject presets => each subject is ONE model type for life,
+    balanced round-robin assignment, distinct agent_kwargs per preset, and the
+    ground-truth table records per-subject preset identity."""
+    from data_loaders.hierarchical_synthetic import HierarchicalCognitiveAgents
+
+    task, agent = _tiny_config()
+    # remove single-class fields; presets carry their own
+    for k in ("agent_class", "agent_kwargs", "subject_param_dist"):
+        agent.pop(k, None)
+    agent["subject_presets"] = _stage3_presets()
+    loader = HierarchicalCognitiveAgents(
+        task=task, agent=agent, num_trials=80, num_subjects=6,
+        num_sessions_per_subject=6, eval_every_n=2, batch_size=32,
+        groundtruth_dir=str(tmp_path),
+    )
+    bundle = loader.load()
+    gtab = bundle.extras["groundtruth_table"]
+    # balanced assignment over 2 presets, 6 subjects -> 3 each
+    assign = gtab.drop_duplicates("subject_index").set_index("subject_index")["preset_index"]
+    assert sorted(assign.tolist()) == [0, 0, 0, 1, 1, 1]
+    assert set(gtab["preset_name"].unique()) == {"RescorlaWagner", "Hattori2019"}
+    # a subject keeps ONE preset across all its sessions (no within-subject switching)
+    for _, sub in gtab.groupby("subject_index"):
+        assert sub["preset_index"].nunique() == 1
+    # preset-specific params only appear for their preset's subjects
+    rw = gtab[gtab["preset_name"] == "RescorlaWagner"]
+    ht = gtab[gtab["preset_name"] == "Hattori2019"]
+    assert rw["param_epsilon"].notna().all()
+    assert ht["param_learn_rate_rew"].notna().all() and ht["param_learn_rate_unrew"].notna().all()
+    # ground-truth likelihood still finite
+    assert np.isfinite(bundle.metadata["avg_eval_likelihood_groundtruth"])
+
+
+@requires_stack
+def test_mixture_assignment_deterministic(tmp_path):
+    """Balanced assignment is pure round-robin (no RNG); random assignment is
+    reproducible from the seed and respects weights length."""
+    from data_loaders.hierarchical_synthetic import _assign_subject_presets
+
+    assert _assign_subject_presets(6, 3, mode="balanced") == [0, 1, 2, 0, 1, 2]
+    a1 = _assign_subject_presets(50, 3, mode="random", base_seed=42)
+    a2 = _assign_subject_presets(50, 3, mode="random", base_seed=42)
+    assert a1 == a2 and set(a1) <= {0, 1, 2}
+    import pytest as _pytest
+    with _pytest.raises(ValueError):
+        _assign_subject_presets(6, 3, mode="random", weights=[0.5, 0.5])  # wrong length
+
+
 def test_resolve_workers_logic(tmp_path):
     """_resolve_workers honors explicit counts and caps at num_subjects."""
     import importlib.util
