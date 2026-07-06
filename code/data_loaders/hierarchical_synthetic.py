@@ -59,7 +59,7 @@ import copy
 import json
 import logging
 import os
-from typing import Any, Literal, Mapping
+from typing import Any, Literal, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
@@ -187,6 +187,48 @@ def _tail_eval_indices(n_sessions: int, heldout_frac: float) -> list[int]:
         raise ValueError("Need >=2 sessions to split.")
     n_eval = max(1, min(n_sessions - 1, int(round(heldout_frac * n_sessions))))
     return list(range(n_sessions - n_eval, n_sessions))
+
+
+def _assign_subject_presets(
+    num_subjects: int,
+    n_presets: int,
+    *,
+    mode: str = "balanced",
+    weights: Sequence[float] | None = None,
+    base_seed: int = 0,
+) -> list[int]:
+    """Assign each subject to a preset index (0..n_presets-1), deterministically.
+
+    Stage 3+ mixture generators: a subject is a single model TYPE (preset) for its
+    whole lifetime -- an animal is assumed not to switch algorithm within a session
+    (per-session family switching is the separate Stage-4b axis). This picks which
+    preset each subject uses.
+
+      * ``balanced`` (default): round-robin ``subject_idx % n_presets`` -- equal
+        counts, NO RNG, independent of the param/seed streams, fully reproducible.
+      * ``random``: draw each subject's preset i.i.d. from ``weights`` (uniform if
+        None) using a dedicated RNG stream seeded off ``base_seed`` via an
+        independent SeedSequence entropy tag, so it never collides with the
+        subject/session seed hierarchies.
+    """
+    if n_presets <= 0:
+        raise ValueError("subject_presets.presets must be non-empty.")
+    mode = str(mode).lower()
+    if mode == "balanced":
+        return [i % n_presets for i in range(num_subjects)]
+    if mode == "random":
+        if weights is None:
+            p = None
+        else:
+            w = np.asarray([float(x) for x in weights], dtype=float)
+            if w.shape[0] != n_presets:
+                raise ValueError(
+                    "subject_presets.weights length must equal the number of presets."
+                )
+            p = w / w.sum()
+        rng = np.random.default_rng(np.random.SeedSequence([int(base_seed), 0x5EED3]))
+        return [int(v) for v in rng.choice(n_presets, size=num_subjects, p=p)]
+    raise ValueError(f"Unsupported subject_presets.assignment mode {mode!r}.")
 
 
 def _split_dataset_tail(dataset: Any, heldout_frac: float) -> tuple[Any, Any]:
@@ -407,6 +449,78 @@ class HierarchicalCognitiveAgents(DatasetLoader):
     # ------------------------------------------------------------------ #
     # Per-(subject, session) parameter resolution
     # ------------------------------------------------------------------ #
+    def _resolve_preset_specs(self) -> tuple[list[dict[str, Any]], list[int]]:
+        """Resolve the per-subject generative preset list + subject->preset assignment.
+
+        Returns ``(presets, assignment)`` where each preset is a normalized dict with
+        keys: ``name``, ``agent_class``, ``agent_kwargs``, ``agent_params``,
+        ``subject_param_dist``, ``drift``, ``session_noise``; ``assignment[i]`` is the
+        preset index for subject ``i``.
+
+        BACKWARD-COMPATIBLE: when the agent config has no ``subject_presets`` block,
+        returns a single preset built from the top-level agent fields and an all-zero
+        assignment -- so the single-class Stage 1/2/2b path is byte-identical (same
+        centroid RNG draws in the same order).
+
+        Stage 3 (``subject_presets`` present): each subject is ONE preset for life
+        (Bari / Hattori / Rescorla-Wagner, etc.), each preset carrying its own
+        agent_class + agent_kwargs + subject_param_dist (+ optional per-preset drift /
+        session_noise; falls back to the top-level drift/session_noise when a preset
+        omits them).
+        """
+        agent_cfg = self.agent_config
+        top_drift = copy.deepcopy(agent_cfg.get("drift", {})) or {}
+        top_noise = copy.deepcopy(agent_cfg.get("session_noise", {})) or {}
+        preset_block = agent_cfg.get("subject_presets")
+        if not preset_block:
+            # Single-class fallback (Stage 1/2/2b) -- identical behavior to before.
+            single = {
+                "name": str(agent_cfg.get("agent_class", "")).strip(),
+                "agent_class": str(agent_cfg.get("agent_class", "")).strip(),
+                "agent_kwargs": copy.deepcopy(agent_cfg.get("agent_kwargs", {})),
+                "agent_params": copy.deepcopy(agent_cfg.get("agent_params", {})),
+                "subject_param_dist": copy.deepcopy(agent_cfg.get("subject_param_dist", {})),
+                "drift": top_drift,
+                "session_noise": top_noise,
+            }
+            return [single], [0] * self.num_subjects
+        # Stage 3: explicit per-subject presets.
+        raw_presets = list(preset_block.get("presets", []))
+        if not raw_presets:
+            raise ValueError("agent.subject_presets.presets must be a non-empty list.")
+        presets: list[dict[str, Any]] = []
+        for i, pr in enumerate(raw_presets):
+            if not pr.get("subject_param_dist"):
+                raise ValueError(
+                    f"subject_presets.presets[{i}] requires its own subject_param_dist."
+                )
+            presets.append(
+                {
+                    "name": str(pr.get("name", pr.get("agent_class", f"preset{i}"))),
+                    "agent_class": str(pr["agent_class"]).strip(),
+                    "agent_kwargs": copy.deepcopy(pr.get("agent_kwargs", {})),
+                    "agent_params": copy.deepcopy(pr.get("agent_params", {})),
+                    "subject_param_dist": copy.deepcopy(pr["subject_param_dist"]),
+                    # per-preset drift/noise override the top-level defaults when given
+                    "drift": copy.deepcopy(pr["drift"]) if "drift" in pr else top_drift,
+                    "session_noise": (
+                        copy.deepcopy(pr["session_noise"])
+                        if "session_noise" in pr
+                        else top_noise
+                    ),
+                }
+            )
+        base_seed = agent_cfg.get("seed")
+        base_seed = 0 if base_seed is None else int(base_seed)
+        assignment = _assign_subject_presets(
+            self.num_subjects,
+            len(presets),
+            mode=str(preset_block.get("assignment", "balanced")),
+            weights=preset_block.get("weights"),
+            base_seed=base_seed,
+        )
+        return presets, assignment
+
     def _subject_centroid(
         self, subject_seed: int, subject_param_dist: Mapping[str, Any]
     ) -> dict[str, float]:
@@ -458,18 +572,11 @@ class HierarchicalCognitiveAgents(DatasetLoader):
         config regenerates (the guarantee behind trusting the CSV).
         """
         agent_cfg = copy.deepcopy(self.agent_config)
-        subject_param_dist = copy.deepcopy(agent_cfg.get("subject_param_dist", {}))
-        base_params = copy.deepcopy(agent_cfg.get("agent_params", {}))
-        drift = copy.deepcopy(agent_cfg.get("drift", {})) or {}
-        session_noise = copy.deepcopy(agent_cfg.get("session_noise", {})) or {}
+        presets, assignment = self._resolve_preset_specs()
         base_seed = agent_cfg.get("seed")
         base_seed = 0 if base_seed is None else int(base_seed)
         base_task_seed = self.task_config.get("seed")
         base_task_seed = base_seed if base_task_seed is None else int(base_task_seed)
-        if not subject_param_dist:
-            raise ValueError(
-                "HierarchicalCognitiveAgents requires agent.subject_param_dist."
-            )
         n_sessions = self.num_sessions_per_subject
         if n_sessions < 2:
             raise ValueError("num_sessions_per_subject must be >= 2 for a train/eval split.")
@@ -480,6 +587,11 @@ class HierarchicalCognitiveAgents(DatasetLoader):
 
         rows: list[dict[str, Any]] = []
         for subject_idx in range(self.num_subjects):
+            preset = presets[assignment[subject_idx]]
+            subject_param_dist = preset["subject_param_dist"]
+            base_params = preset["agent_params"]
+            drift = preset["drift"]
+            session_noise = preset["session_noise"]
             subject_seed = self._subject_seed(base_seed, subject_idx)
             subject_id = f"synth{subject_idx:03d}"
             centroid = self._subject_centroid(subject_seed, subject_param_dist)
@@ -493,6 +605,8 @@ class HierarchicalCognitiveAgents(DatasetLoader):
                 is_eval = session_idx in _eval_idx_set
                 row = {
                     "subject_index": subject_idx, "subject_id": subject_id,
+                    "preset_index": int(assignment[subject_idx]),
+                    "preset_name": preset["name"], "agent_class": preset["agent_class"],
                     "session_index_0based": session_idx, "session_index_1based": session_idx + 1,
                     "session_id": f"{subject_id}_s{session_idx:03d}",
                     "is_eval": bool(is_eval), "session_frac": float(session_frac),
@@ -511,24 +625,12 @@ class HierarchicalCognitiveAgents(DatasetLoader):
         task_class = _TASK_LOOKUP[task_type_key]
 
         agent_cfg = copy.deepcopy(self.agent_config)
-        agent_class_name = str(agent_cfg.get("agent_class", "")).strip()
-        agent_class = getattr(generative_model, agent_class_name)
-        agent_kwargs = copy.deepcopy(agent_cfg.get("agent_kwargs", {}))
-        base_params = copy.deepcopy(agent_cfg.get("agent_params", {}))
-        subject_param_dist = copy.deepcopy(agent_cfg.get("subject_param_dist", {}))
-        drift = copy.deepcopy(agent_cfg.get("drift", {})) or {}
-        session_noise = copy.deepcopy(agent_cfg.get("session_noise", {})) or {}
+        presets, assignment = self._resolve_preset_specs()
 
         base_seed = agent_cfg.get("seed")
         base_seed = 0 if base_seed is None else int(base_seed)
         base_task_seed = task_cfg.pop("seed", None)
         base_task_seed = base_seed if base_task_seed is None else int(base_task_seed)
-
-        if not subject_param_dist:
-            raise ValueError(
-                "HierarchicalCognitiveAgents requires agent.subject_param_dist to "
-                "define each subject's parameter subregion."
-            )
 
         n_sessions = self.num_sessions_per_subject
         if n_sessions < 2:
@@ -548,6 +650,13 @@ class HierarchicalCognitiveAgents(DatasetLoader):
         groundtruth_rows: list[dict[str, Any]] = []
         work_items: list[dict[str, Any]] = []
         for subject_idx in range(self.num_subjects):
+            preset = presets[assignment[subject_idx]]
+            subject_param_dist = preset["subject_param_dist"]
+            base_params = preset["agent_params"]
+            drift = preset["drift"]
+            session_noise = preset["session_noise"]
+            agent_class_name = preset["agent_class"]
+            agent_kwargs = preset["agent_kwargs"]
             subject_seed = self._subject_seed(base_seed, subject_idx)
             subject_id = f"synth{subject_idx:03d}"
             centroid = self._subject_centroid(subject_seed, subject_param_dist)
@@ -579,6 +688,9 @@ class HierarchicalCognitiveAgents(DatasetLoader):
                 gt_row = {
                     "subject_index": subject_idx,
                     "subject_id": subject_id,
+                    "preset_index": int(assignment[subject_idx]),
+                    "preset_name": preset["name"],
+                    "agent_class": agent_class_name,
                     "session_index_0based": session_idx,
                     "session_index_1based": session_idx + 1,
                     "session_id": session_id,
@@ -734,11 +846,12 @@ class HierarchicalCognitiveAgents(DatasetLoader):
                 "num_sessions_per_subject": int(n_sessions),
                 "num_trials_per_session": int(self.num_trials),
                 "eval_every_n": int(self.eval_every_n),
-                "agent_class": agent_class_name,
-                "agent_kwargs": agent_kwargs,
-                "subject_param_dist": subject_param_dist,
-                "drift": drift,
-                "session_noise": session_noise,
+                "presets": [
+                    {k: p[k] for k in ("name", "agent_class", "agent_kwargs",
+                                        "subject_param_dist", "drift", "session_noise")}
+                    for p in presets
+                ],
+                "preset_assignment": [int(a) for a in assignment],
                 "base_seed": int(base_seed),
                 "subject_seed_stride": int(self.subject_seed_stride),
                 "avg_eval_likelihood_groundtruth": avg_eval_groundtruth,
