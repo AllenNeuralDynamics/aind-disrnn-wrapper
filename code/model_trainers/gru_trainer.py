@@ -267,6 +267,45 @@ def _threeway_likelihood_decomposition(
             rnn_utils.normalized_likelihood(engage_label, binary_logits)
         )
 
+        # --- Ignore-class classification metrics (rare positive: ~5% of trials) ---
+        # Likelihood alone is dominated by the ~95% engaged majority and cannot
+        # tell genuine ignore-detection from base-rate hedging. Report class-
+        # resolved precision/recall/F1 (at p=0.5) and threshold-free average
+        # precision (PR-AUC) with ignore as the positive class.
+        vmask = valid.reshape(-1)
+        y_true = (lab.reshape(-1)[vmask] == _IGNORE_CLASS_INDEX).astype(np.int64)
+        # P(ignore) from the binary head: softmax over [engaged, ignore].
+        bl = binary_logits.reshape(-1, 2)[vmask]
+        bl_max = np.max(bl, axis=-1, keepdims=True)
+        bexp = np.exp(bl - bl_max)
+        p_ignore = (bexp[:, 1] / bexp.sum(axis=-1))
+        n_pos = int(y_true.sum())
+        n_tot = int(y_true.size)
+        out["engage_ignore_base_rate"] = float(n_pos / n_tot) if n_tot else 0.0
+        if n_pos > 0:
+            pred = (p_ignore >= 0.5).astype(np.int64)
+            tp = float(np.sum((pred == 1) & (y_true == 1)))
+            fp = float(np.sum((pred == 1) & (y_true == 0)))
+            fn = float(np.sum((pred == 0) & (y_true == 1)))
+            prec = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+            rec = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+            f1 = (2 * prec * rec / (prec + rec)) if (prec + rec) > 0 else 0.0
+            out["engage_ignore_precision"] = float(prec)
+            out["engage_ignore_recall"] = float(rec)
+            out["engage_ignore_f1"] = float(f1)
+            # Average precision (area under PR curve), threshold-free. No-skill
+            # baseline == base rate, so lift over base_rate is what matters.
+            order = np.argsort(-p_ignore)
+            yt = y_true[order]
+            tps = np.cumsum(yt)
+            fps = np.cumsum(1 - yt)
+            precisions = tps / np.maximum(tps + fps, 1)
+            recalls = tps / n_pos
+            rec_prev = np.concatenate([[0.0], recalls[:-1]])
+            out["engage_ignore_pr_auc"] = float(
+                np.sum((recalls - rec_prev) * precisions)
+            )
+
     return out
 
 
