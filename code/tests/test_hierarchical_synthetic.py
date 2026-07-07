@@ -367,6 +367,90 @@ def test_mixture_assignment_deterministic(tmp_path):
         _assign_subject_presets(6, 3, mode="random", weights=[0.5, 0.5])  # wrong length
 
 
+def test_stage4b_mixture_helpers_deterministic():
+    """Stage 4b: per-subject Dirichlet mixture weights + per-session family draws are
+    reproducible from the seed, normalized, and independent of the assignment stream."""
+    from data_loaders.hierarchical_synthetic import (
+        _subject_mixture_weights, _session_family_draws,
+    )
+    import numpy as np
+
+    w1 = _subject_mixture_weights(20, 3, concentration=0.5, base_seed=42)
+    w2 = _subject_mixture_weights(20, 3, concentration=0.5, base_seed=42)
+    assert np.allclose(w1, w2)                       # reproducible
+    assert w1.shape == (20, 3)
+    assert np.allclose(w1.sum(axis=1), 1.0)          # valid prob vectors
+    # different seed -> different weights
+    assert not np.allclose(w1, _subject_mixture_weights(20, 3, concentration=0.5, base_seed=7))
+    # per-session draws reproducible per subject, respect n_sessions
+    d1 = _session_family_draws(w1[0], 30, subject_idx=0, base_seed=42)
+    d2 = _session_family_draws(w1[0], 30, subject_idx=0, base_seed=42)
+    assert d1 == d2 and len(d1) == 30 and set(d1) <= {0, 1, 2}
+    # different subject index -> independent draw stream
+    assert d1 != _session_family_draws(w1[0], 30, subject_idx=1, base_seed=42)
+
+
+@requires_stack
+def test_stage3_presets_no_switching_stay_one_family(tmp_path):
+    """Stage-3 presets WITHOUT a session_switching block must keep the one-family-
+    per-subject behavior (backward-compat: switching is opt-in)."""
+    from data_loaders.hierarchical_synthetic import HierarchicalCognitiveAgents
+
+    task, agent = _tiny_config()
+    for k in ("agent_class", "agent_kwargs", "subject_param_dist"):
+        agent.pop(k, None)
+    agent["subject_presets"] = _stage3_presets()          # no session_switching key
+    loader = HierarchicalCognitiveAgents(
+        task=task, agent=agent, num_trials=60, num_subjects=6,
+        num_sessions_per_subject=6, eval_every_n=2, batch_size=32,
+        groundtruth_dir=str(tmp_path),
+    )
+    gtab = loader.groundtruth_table()
+    for _, sub in gtab.groupby("subject_index"):
+        assert sub["preset_index"].nunique() == 1          # one family for life
+    assert not any(c.startswith("mixweight_") for c in gtab.columns)  # no mixture cols
+
+
+@requires_stack
+def test_stage4b_per_session_family_switching(tmp_path):
+    """Stage 4b: with session_switching enabled, a subject visits MULTIPLE families
+    across its sessions, its mixture weights are recorded (constant within subject),
+    and realized session families are drawn from those weights."""
+    from data_loaders.hierarchical_synthetic import HierarchicalCognitiveAgents
+    import numpy as np
+
+    task, agent = _tiny_config()
+    for k in ("agent_class", "agent_kwargs", "subject_param_dist"):
+        agent.pop(k, None)
+    presets = _stage3_presets()
+    presets["session_switching"] = {"enabled": True, "concentration": 1.5}  # fairly mixed
+    agent["subject_presets"] = presets
+    loader = HierarchicalCognitiveAgents(
+        task=task, agent=agent, num_trials=60, num_subjects=8,
+        num_sessions_per_subject=20, eval_every_n=2, batch_size=32,
+        groundtruth_dir=str(tmp_path),
+    )
+    gtab = loader.groundtruth_table()
+    # mixture-weight columns present, one per preset, constant within subject
+    mw = [c for c in gtab.columns if c.startswith("mixweight_")]
+    assert len(mw) == 2
+    for _, sub in gtab.groupby("subject_index"):
+        for c in mw:
+            assert sub[c].nunique() == 1                    # stable identity
+    # at least some subjects switch families across sessions
+    nfam = gtab.groupby("subject_index")["preset_index"].nunique()
+    assert (nfam >= 2).any(), "no subject switched families"
+    # weights sum to 1 per subject
+    per_subj = gtab.drop_duplicates("subject_index")[mw].sum(axis=1)
+    assert np.allclose(per_subj.values, 1.0)
+    # groundtruth_table() and load()'s table agree on params + realized family
+    gt2 = loader.load().extras["groundtruth_table"]
+    key = ["subject_index", "session_index_0based"]
+    a = gtab.sort_values(key).reset_index(drop=True)
+    b = gt2.sort_values(key).reset_index(drop=True)
+    assert (a["preset_index"].values == b["preset_index"].values).all()
+
+
 def test_resolve_workers_logic(tmp_path):
     """_resolve_workers honors explicit counts and caps at num_subjects."""
     import importlib.util
