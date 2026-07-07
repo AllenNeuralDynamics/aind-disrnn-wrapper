@@ -231,6 +231,56 @@ def _assign_subject_presets(
     raise ValueError(f"Unsupported subject_presets.assignment mode {mode!r}.")
 
 
+def _subject_mixture_weights(
+    num_subjects: int,
+    n_presets: int,
+    *,
+    concentration: float = 0.5,
+    base_seed: int = 0,
+) -> np.ndarray:
+    """Stage-4b: per-subject MIXTURE weights over presets (families).
+
+    Each subject is characterized by a probability vector over the presets -- the
+    fraction of its sessions expected to be drawn from each family. This is the
+    subject's stable IDENTITY (what the subject embedding should recover), distinct
+    from the per-session realized family (what the session embedding should decode).
+
+    Weights are drawn from a Dirichlet(concentration) per subject using a dedicated
+    RNG stream (independent entropy tag) so they never collide with the
+    subject/session param seeds or the Stage-3 assignment stream. Low concentration
+    (<1) -> subjects lean toward one dominant family (sparse mixtures); high (>1) ->
+    more uniform mixtures. Deterministic from ``base_seed``.
+    """
+    if n_presets <= 0:
+        raise ValueError("subject_presets.presets must be non-empty.")
+    rng = np.random.default_rng(np.random.SeedSequence([int(base_seed), 0x5E5510]))
+    alpha = np.full(n_presets, float(concentration), dtype=float)
+    # Draw subjects in order so the stream is stable regardless of num_subjects.
+    return rng.dirichlet(alpha, size=num_subjects)
+
+
+def _session_family_draws(
+    mixture_weights: np.ndarray,
+    n_sessions: int,
+    *,
+    subject_idx: int,
+    base_seed: int = 0,
+) -> list[int]:
+    """Stage-4b: draw the realized family (preset index) for each of a subject's
+    sessions from that subject's mixture weights.
+
+    Uses a per-subject RNG stream (entropy tag + subject_idx) that is independent of
+    the session param/task seed hierarchies, so the family sequence is reproducible
+    and does not perturb the parameter draws. Returns a list of length ``n_sessions``.
+    """
+    w = np.asarray(mixture_weights, dtype=float)
+    w = w / w.sum()
+    rng = np.random.default_rng(
+        np.random.SeedSequence([int(base_seed), 0x5E5511, int(subject_idx)])
+    )
+    return [int(v) for v in rng.choice(w.shape[0], size=int(n_sessions), p=w)]
+
+
 def _split_dataset_tail(dataset: Any, heldout_frac: float) -> tuple[Any, Any]:
     """Tail-holdout analogue of rnn_utils.split_dataset (session axis = axis 1)."""
     from disentangled_rnns.library.rnn_utils import DatasetRNN
@@ -301,8 +351,8 @@ def _simulate_subject(work: dict[str, Any]) -> dict[str, Any]:
     session_id, session_params, session_seed, session_task_seed, is_eval).
     """
     task_class = _TASK_LOOKUP[work["task_type_key"]]
-    agent_class = getattr(generative_model, work["agent_class_name"])
-    agent_kwargs = work["agent_kwargs"]
+    default_agent_class_name = work["agent_class_name"]
+    default_agent_kwargs = work["agent_kwargs"]
     num_trials = work["num_trials"]
 
     session_frames: list[pd.DataFrame] = []
@@ -316,7 +366,12 @@ def _simulate_subject(work: dict[str, Any]) -> dict[str, Any]:
         task_kwargs.setdefault("num_trials", num_trials)
         task_instance = task_class(**task_kwargs)
 
-        forager_kwargs = copy.deepcopy(agent_kwargs)
+        # Stage-4b: each session may use its OWN family; fall back to the subject's
+        # default (Stage-3/4a, where every session repeats the same agent).
+        agent_class = getattr(
+            generative_model, sess.get("agent_class_name", default_agent_class_name)
+        )
+        forager_kwargs = copy.deepcopy(sess.get("agent_kwargs", default_agent_kwargs))
         forager_kwargs["seed"] = sess["session_seed"]
         forager = agent_class(**forager_kwargs)
         forager.set_params(**sess["session_params"])
@@ -521,6 +576,42 @@ class HierarchicalCognitiveAgents(DatasetLoader):
         )
         return presets, assignment
 
+    def _resolve_session_switching(self, presets):
+        """Stage-4b: resolve per-subject family-mixture weights + per-session family
+        draws, or return None when session switching is disabled.
+
+        Returns ``(mixture_weights, session_families)`` or ``None``:
+          * ``mixture_weights[i]`` -- probability vector over presets for subject i
+            (its stable identity; subject embedding target).
+          * ``session_families[i]`` -- list of length n_sessions giving the realized
+            preset index for each of subject i's sessions (session embedding target).
+
+        Enabled by ``subject_presets.session_switching.enabled: true``. When disabled
+        (or no subject_presets), returns None -> the one-family-per-subject Stage-3/4a
+        path is unchanged (byte-identical). The subject's centroid is still drawn ONCE
+        per subject from a SHARED param space so a single continuous parameter vector
+        threads across the families it visits (see load()).
+        """
+        preset_block = self.agent_config.get("subject_presets") or {}
+        sw = preset_block.get("session_switching") or {}
+        if not sw.get("enabled"):
+            return None
+        n_presets = len(presets)
+        base_seed = self.agent_config.get("seed")
+        base_seed = 0 if base_seed is None else int(base_seed)
+        conc = float(sw.get("concentration", 0.5))
+        mixture = _subject_mixture_weights(
+            self.num_subjects, n_presets, concentration=conc, base_seed=base_seed
+        )
+        n_sessions = self.num_sessions_per_subject
+        session_families = [
+            _session_family_draws(
+                mixture[i], n_sessions, subject_idx=i, base_seed=base_seed
+            )
+            for i in range(self.num_subjects)
+        ]
+        return mixture, session_families
+
     def _subject_centroid(
         self, subject_seed: int, subject_param_dist: Mapping[str, Any]
     ) -> dict[str, float]:
@@ -585,33 +676,55 @@ class HierarchicalCognitiveAgents(DatasetLoader):
         else:
             _eval_idx_set = set(range(self.eval_every_n - 1, n_sessions, self.eval_every_n))
 
+        switching = self._resolve_session_switching(presets)
         rows: list[dict[str, Any]] = []
         for subject_idx in range(self.num_subjects):
-            preset = presets[assignment[subject_idx]]
-            subject_param_dist = preset["subject_param_dist"]
-            base_params = preset["agent_params"]
-            drift = preset["drift"]
-            session_noise = preset["session_noise"]
             subject_seed = self._subject_seed(base_seed, subject_idx)
             subject_id = f"synth{subject_idx:03d}"
-            centroid = self._subject_centroid(subject_seed, subject_param_dist)
+            if switching is None:
+                # Stage 3/4a: one preset for life (unchanged, byte-identical).
+                preset = presets[assignment[subject_idx]]
+                centroid = self._subject_centroid(subject_seed, preset["subject_param_dist"])
+                per_session_preset_idx = [assignment[subject_idx]] * n_sessions
+                centroids = {assignment[subject_idx]: centroid}
+                mix = None
+            else:
+                # Stage 4b: subject visits multiple families across sessions. Draw ONE
+                # centroid per preset the subject could use (offset seed per preset so
+                # the draws are independent), and record the subject's mixture weights.
+                mixture, session_families = switching
+                mix = mixture[subject_idx]
+                per_session_preset_idx = session_families[subject_idx]
+                centroids = {
+                    pi: self._subject_centroid(
+                        subject_seed + 1000003 * pi, presets[pi]["subject_param_dist"]
+                    )
+                    for pi in sorted(set(per_session_preset_idx))
+                }
             for session_idx in range(n_sessions):
+                pi = per_session_preset_idx[session_idx]
+                preset = presets[pi]
+                centroid = centroids[pi]
                 session_seed = self._session_seed(base_seed, subject_idx, session_idx)
                 session_task_seed = self._session_seed(base_task_seed, subject_idx, session_idx)
                 session_frac = 0.0 if n_sessions == 1 else session_idx / (n_sessions - 1)
                 session_params = self._session_params(
-                    centroid, base_params, drift, session_noise, session_frac, session_seed
+                    centroid, preset["agent_params"], preset["drift"],
+                    preset["session_noise"], session_frac, session_seed
                 )
                 is_eval = session_idx in _eval_idx_set
                 row = {
                     "subject_index": subject_idx, "subject_id": subject_id,
-                    "preset_index": int(assignment[subject_idx]),
+                    "preset_index": int(pi),
                     "preset_name": preset["name"], "agent_class": preset["agent_class"],
                     "session_index_0based": session_idx, "session_index_1based": session_idx + 1,
                     "session_id": f"{subject_id}_s{session_idx:03d}",
                     "is_eval": bool(is_eval), "session_frac": float(session_frac),
                     "session_seed": int(session_seed), "task_seed": int(session_task_seed),
                 }
+                if mix is not None:
+                    for k, pr in enumerate(presets):
+                        row[f"mixweight_{pr['name']}"] = float(mix[k])
                 for pname, pval in session_params.items():
                     row[f"param_{pname}"] = float(pval)
                 for pname, pval in centroid.items():
@@ -647,29 +760,46 @@ class HierarchicalCognitiveAgents(DatasetLoader):
         # --- Resolve all per-(subject, session) params + seeds up front. This is
         # cheap (numpy RNG only) and lets simulation fan out across processes. The
         # ground-truth table is built here so it is independent of worker order.
+        switching = self._resolve_session_switching(presets)
         groundtruth_rows: list[dict[str, Any]] = []
         work_items: list[dict[str, Any]] = []
         for subject_idx in range(self.num_subjects):
-            preset = presets[assignment[subject_idx]]
-            subject_param_dist = preset["subject_param_dist"]
-            base_params = preset["agent_params"]
-            drift = preset["drift"]
-            session_noise = preset["session_noise"]
-            agent_class_name = preset["agent_class"]
-            agent_kwargs = preset["agent_kwargs"]
             subject_seed = self._subject_seed(base_seed, subject_idx)
             subject_id = f"synth{subject_idx:03d}"
-            centroid = self._subject_centroid(subject_seed, subject_param_dist)
+            if switching is None:
+                # Stage 3/4a: one preset for life (unchanged, byte-identical).
+                per_session_preset_idx = [assignment[subject_idx]] * n_sessions
+                centroids = {
+                    assignment[subject_idx]: self._subject_centroid(
+                        subject_seed, presets[assignment[subject_idx]]["subject_param_dist"]
+                    )
+                }
+                mix = None
+            else:
+                # Stage 4b: per-session family switching from the subject's mixture.
+                mixture, session_families = switching
+                mix = mixture[subject_idx]
+                per_session_preset_idx = session_families[subject_idx]
+                centroids = {
+                    pi: self._subject_centroid(
+                        subject_seed + 1000003 * pi, presets[pi]["subject_param_dist"]
+                    )
+                    for pi in sorted(set(per_session_preset_idx))
+                }
 
             sessions: list[dict[str, Any]] = []
             for session_idx in range(n_sessions):
+                pi = per_session_preset_idx[session_idx]
+                preset = presets[pi]
+                centroid = centroids[pi]
                 # Non-overlapping seed hierarchy (stride >> n_sessions), one
                 # stream for the agent, one for the task.
                 session_seed = self._session_seed(base_seed, subject_idx, session_idx)
                 session_task_seed = self._session_seed(base_task_seed, subject_idx, session_idx)
                 session_frac = 0.0 if n_sessions == 1 else session_idx / (n_sessions - 1)
                 session_params = self._session_params(
-                    centroid, base_params, drift, session_noise, session_frac, session_seed
+                    centroid, preset["agent_params"], preset["drift"],
+                    preset["session_noise"], session_frac, session_seed
                 )
                 # eval-session flag matches the actual split (interleaved OR tail);
                 # _eval_idx_set was precomputed above to mirror the split site.
@@ -682,15 +812,18 @@ class HierarchicalCognitiveAgents(DatasetLoader):
                         "session_seed": int(session_seed),
                         "session_task_seed": int(session_task_seed),
                         "is_eval": bool(is_eval),
+                        # per-session agent (Stage-4b); Stage-3/4a repeats the subject's.
+                        "agent_class_name": preset["agent_class"],
+                        "agent_kwargs": preset["agent_kwargs"],
                     }
                 )
 
                 gt_row = {
                     "subject_index": subject_idx,
                     "subject_id": subject_id,
-                    "preset_index": int(assignment[subject_idx]),
+                    "preset_index": int(pi),
                     "preset_name": preset["name"],
-                    "agent_class": agent_class_name,
+                    "agent_class": preset["agent_class"],
                     "session_index_0based": session_idx,
                     "session_index_1based": session_idx + 1,
                     "session_id": session_id,
@@ -699,6 +832,9 @@ class HierarchicalCognitiveAgents(DatasetLoader):
                     "session_seed": int(session_seed),
                     "task_seed": int(session_task_seed),
                 }
+                if mix is not None:
+                    for k, pr in enumerate(presets):
+                        gt_row[f"mixweight_{pr['name']}"] = float(mix[k])
                 for pname, pval in session_params.items():
                     gt_row[f"param_{pname}"] = float(pval)
                 for pname, pval in centroid.items():
@@ -711,8 +847,10 @@ class HierarchicalCognitiveAgents(DatasetLoader):
                     "subject_id": subject_id,
                     "task_type_key": task_type_key,
                     "task_cfg": task_cfg,
-                    "agent_class_name": agent_class_name,
-                    "agent_kwargs": agent_kwargs,
+                    # subject-level defaults (used when a session omits its own);
+                    # Stage-4b sessions carry per-session agent_class_name/agent_kwargs.
+                    "agent_class_name": presets[per_session_preset_idx[0]]["agent_class"],
+                    "agent_kwargs": presets[per_session_preset_idx[0]]["agent_kwargs"],
                     "num_trials": self.num_trials,
                     "sessions": sessions,
                 }
