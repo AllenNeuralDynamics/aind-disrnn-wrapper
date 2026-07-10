@@ -16,7 +16,7 @@ sys.path.insert(0, "/workspace/aind-disrnn-wrapper/code")
 import wandb
 api = wandb.Api(); ENT, PROJ = "AIND-disRNN", "embedding_recovery"
 from data_loaders.hierarchical_synthetic import HierarchicalCognitiveAgents
-from utils.multisubject import compute_session_conditioned_context_dataframe
+from utils.multisubject import compute_session_conditioned_context_dataframe, extract_subject_embeddings_from_params
 from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.model_selection import cross_val_predict, GroupKFold, KFold
 from sklearn.metrics import r2_score, accuracy_score, confusion_matrix
@@ -35,8 +35,8 @@ def regen_gt(cfg):
         heldout_frac=cfg.get("heldout_frac", 0.2))
     return ld.groundtruth_table()
 
-def fetch(run, fn, dest):
-    a = api.artifact(f"{ENT}/{PROJ}/gru-output-{run}:latest", type="training-output")
+def fetch(run, fn, dest, mtype="gru"):
+    a = api.artifact(f"{ENT}/{PROJ}/{mtype}-output-{run}:latest", type="training-output")
     return a.get_entry(fn).download(root=dest)
 
 results = {}
@@ -46,16 +46,19 @@ for run, meta in inv.items():
         continue
     enc, emb = meta["enc"], meta["emb"]
     rd = os.path.join(outdir, run); os.makedirs(rd, exist_ok=True)
+    mtype = meta.get("model", "gru")
+    cfg_fn = "disrnn_config.json" if mtype == "disrnn" else "gru_config.json"
     try:
-        P = json.load(open(fetch(run, "params.json", rd)))
-        md = json.load(open(fetch(run, "multisubject_metadata.json", rd)))
-        arch = json.load(open(fetch(run, "gru_config.json", rd)))["architecture"]
+        P = json.load(open(fetch(run, "params.json", rd, mtype)))
+        md = json.load(open(fetch(run, "multisubject_metadata.json", rd, mtype)))
+        arch = json.load(open(fetch(run, cfg_fn, rd, mtype)))["architecture"]
         ckey = json.dumps(meta["data_cfg"], sort_keys=True)
         if ckey not in gt_cache:
             gt_cache[ckey] = regen_gt(meta["data_cfg"])
         gt = gt_cache[ckey]
         s2i = md["subject_id_to_index"]
-        subj_emb = np.array(P["multisubject_gru"]["subject_embeddings"])  # (N, D)
+        # model-agnostic subject-embedding extraction (GRU or disRNN)
+        subj_emb = extract_subject_embeddings_from_params(P)  # (N, D)
         mix_cols = [c for c in gt.columns if c.startswith("mixweight_")]
         fams = [c.replace("mixweight_", "") for c in mix_cols]
 
