@@ -9,7 +9,9 @@ Writes: <outdir>/stage4b_recovery.json  (all metrics)
         <outdir>/emb_<run>.csv           (per-subject embedding + mixweights, for figures)
 """
 import os, sys, json, numpy as np, pandas as pd
-sys.path.insert(0, os.path.expanduser("code"))
+# code root = parent of this script's dir (.../code/analysis/ -> .../code)
+_CODE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _CODE_ROOT)
 sys.path.insert(0, "/workspace/aind-disrnn-wrapper/code")
 import wandb
 api = wandb.Api(); ENT, PROJ = "AIND-disRNN", "embedding_recovery"
