@@ -51,7 +51,8 @@ for run, meta in inv.items():
     try:
         P = json.load(open(fetch(run, "params.json", rd, mtype)))
         md = json.load(open(fetch(run, "multisubject_metadata.json", rd, mtype)))
-        arch = json.load(open(fetch(run, cfg_fn, rd, mtype)))["architecture"]
+        _cfg = json.load(open(fetch(run, cfg_fn, rd, mtype)))
+        arch = _cfg.get("architecture", _cfg)  # GRU nests under 'architecture'; disRNN is flat
         ckey = json.dumps(meta["data_cfg"], sort_keys=True)
         if ckey not in gt_cache:
             gt_cache[ckey] = regen_gt(meta["data_cfg"])
