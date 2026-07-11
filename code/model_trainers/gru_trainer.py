@@ -758,8 +758,10 @@ class GruTrainer(BaseMultisubjectTrainer):
         runtime_heldout_cfg = HeldoutEvalConfig.from_data_cfg(metadata)
         if runtime_heldout_cfg.enabled and is_multisubject:
             logger.info(
-                "Skipping held-out evaluation for multisubject GRU; "
-                "v1 supports seen-subject personalization only."
+                "Skipping PER-CHECKPOINT held-out eval (checkpoint_run_heldout_eval) "
+                "for multisubject GRU; v1 supports seen-subject personalization only. "
+                "NOTE: this does NOT disable the end-of-training held-out fine-tune "
+                "(auto_heldout_finetune) — that runs separately and logs heldout/* metrics."
             )
         elif runtime_heldout_cfg.enabled:
             heldout_eval_cfg = OmegaConf.create(
