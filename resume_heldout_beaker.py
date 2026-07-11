@@ -188,6 +188,29 @@ def main() -> None:
         raise RuntimeError(f"No checkpoints/step_* under {outputs_dir} after download.")
     logger.info("Downloaded %d checkpoint(s); latest=%s", len(steps), steps[-1].name)
 
+    # 1b) Normalize checkpoints/index.json params_path entries to RELATIVE form.
+    #     The index records each params_path as the ORIGINAL absolute HPC path
+    #     (/allen/.../files/outputs/checkpoints/step_N/params.json). resolve_model_run's
+    #     _resolve_artifact_path remaps such a path by splitting on the FIRST "/outputs/",
+    #     but the HPC path contains "/outputs/" twice (/han.hou/outputs/disrnn AND
+    #     /files/outputs/), so the remap points at a nonexistent path and best_eval
+    #     SILENTLY falls back to `final` (step_90000) instead of the true best checkpoint.
+    #     Rewriting each params_path to "outputs/checkpoints/step_N/params.json" makes the
+    #     resolver take its unambiguous startswith("outputs/") branch -> model_dir/<that>.
+    index_path = outputs_dir / "checkpoints" / "index.json"
+    if index_path.exists():
+        index = json.loads(index_path.read_text())
+        rewritten = 0
+        for rec in index.get("checkpoints", []) or []:
+            step = rec.get("step")
+            if step is not None:
+                rec["params_path"] = f"outputs/checkpoints/step_{step}/params.json"
+                rewritten += 1
+        index_path.write_text(json.dumps(index))
+        logger.info("Normalized %d params_path entries in index.json to relative form.", rewritten)
+    else:
+        logger.warning("No checkpoints/index.json found; best_eval selection may fall back to final.")
+
     # 2) Reconstruct inputs.yaml from the run config (via GraphQL, not api.run()).
     src_cfg = _fetch_run_config(args.entity, args.project, args.run_id)
     _reconstruct_inputs_yaml(src_cfg, model_dir)
