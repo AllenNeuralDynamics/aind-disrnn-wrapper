@@ -29,16 +29,43 @@ Reads WANDB_API_KEY from env (or ~/.netrc).
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import logging
 import os
 import sys
+import urllib.request
 from pathlib import Path
 
 import wandb
 import yaml
 
 logger = logging.getLogger("resume_heldout_beaker")
+
+
+def _fetch_run_config(entity: str, project: str, run_id: str) -> dict:
+    """Fetch a run's config via the W&B GraphQL endpoint directly.
+
+    Avoids ``wandb.Api().run()`` — that auto-loads the run's Sweep, and the
+    Sweep.get() query is broken in the container's wandb build (raises
+    'Object of type Api is not JSON serializable'). A plain GraphQL POST for the
+    config field sidesteps the whole run/sweep object graph.
+    """
+    key = os.environ["WANDB_API_KEY"]
+    q = (
+        'query{project(name:"%s",entityName:"%s"){run(name:"%s"){config}}}'
+        % (project, entity, run_id)
+    )
+    body = json.dumps({"query": q}).encode()
+    auth = base64.b64encode(f"api:{key}".encode()).decode()
+    req = urllib.request.Request(
+        "https://api.wandb.ai/graphql",
+        data=body,
+        headers={"Content-Type": "application/json", "Authorization": "Basic " + auth},
+    )
+    resp = json.load(urllib.request.urlopen(req))
+    raw = resp["data"]["project"]["run"]["config"]
+    return json.loads(raw) if isinstance(raw, str) else raw
 
 
 def _unwrap(d):
@@ -52,7 +79,7 @@ def _unwrap(d):
     return d
 
 
-def _reconstruct_inputs_yaml(run, model_dir: Path) -> None:
+def _reconstruct_inputs_yaml(cfg: dict, model_dir: Path) -> None:
     """Rebuild ``<model_dir>/inputs.yaml`` from the source run's config.
 
     ``resolve_model_run`` requires inputs.yaml (data + model blocks) to rebuild
@@ -61,7 +88,7 @@ def _reconstruct_inputs_yaml(run, model_dir: Path) -> None:
     ``data`` and ``model`` blocks. Write exactly those (+ seed) so the resolver
     sees the same config the original training run used.
     """
-    cfg = _unwrap(run.config) if isinstance(run.config, dict) else dict(run.config)
+    cfg = _unwrap(cfg)
     for key in ("data", "model"):
         if key not in cfg or not isinstance(cfg[key], dict):
             raise ValueError(
@@ -78,11 +105,11 @@ def _reconstruct_inputs_yaml(run, model_dir: Path) -> None:
     )
 
 
-def _build_finetune_config(run, model_dir: Path) -> dict:
+def _build_finetune_config(cfg: dict, model_dir: Path) -> dict:
     """Mirror training_runner._run_auto_heldout_finetune's config, sourced from
     the run's own auto_heldout_finetune block so the held-out draw is identical.
     """
-    cfg = _unwrap(run.config) if isinstance(run.config, dict) else dict(run.config)
+    cfg = _unwrap(cfg)
     auto = cfg["model"].get("training", {}).get("auto_heldout_finetune", {}) or {}
     return {
         "source_run": {
@@ -161,12 +188,12 @@ def main() -> None:
         raise RuntimeError(f"No checkpoints/step_* under {outputs_dir} after download.")
     logger.info("Downloaded %d checkpoint(s); latest=%s", len(steps), steps[-1].name)
 
-    # 2) Reconstruct inputs.yaml from the run config.
-    src_run = api.run(f"{args.entity}/{args.project}/{args.run_id}")
-    _reconstruct_inputs_yaml(src_run, model_dir)
+    # 2) Reconstruct inputs.yaml from the run config (via GraphQL, not api.run()).
+    src_cfg = _fetch_run_config(args.entity, args.project, args.run_id)
+    _reconstruct_inputs_yaml(src_cfg, model_dir)
 
     # 3) Resume the ORIGINAL W&B run and inject held-out-only metrics into it.
-    finetune_config = _build_finetune_config(src_run, model_dir)
+    finetune_config = _build_finetune_config(src_cfg, model_dir)
     wandb_run = wandb.init(
         entity=args.entity, project=args.project, id=args.run_id, resume="must"
     )
