@@ -204,6 +204,117 @@ def _require_n_action_logits(dataset: Any, yhat: np.ndarray, *, context: str) ->
     return n_action_logits
 
 
+# Class-index convention for the 3-way (ignore-included) head: 0=left, 1=right,
+# 2=ignore. Matches the data loader (animal_response) and the L/R prob columns
+# in gru_evaluation. For the 2-way head only classes 0/1 exist.
+_IGNORE_CLASS_INDEX = 2
+
+
+def _threeway_likelihood_decomposition(
+    labels: np.ndarray,
+    logits: np.ndarray,
+    *,
+    n_action_logits: int,
+) -> dict[str, float]:
+    """Decompose a 3-way (L/R/ignore) eval into engagement-relevant metrics.
+
+    The raw 3-way normalized likelihood lives on a 1/3-chance scale and is NOT
+    comparable to the 2-way study's L/R numbers (1/2-chance, engaged trials
+    only). This returns two extra scalars that ARE interpretable:
+
+    - ``eval_likelihood_LR_engaged``: geometric-mean likelihood of the correct
+      side (left/right) on ENGAGED trials only, with the softmax renormalized
+      over the {left, right} logits. Directly comparable to the 2-way L/R
+      likelihood. Implemented by masking non-engaged labels to -1 (the
+      convention ``normalized_likelihood`` uses for padding) and slicing the
+      logits to the first two classes, so log_softmax renormalizes over L/R.
+    - ``eval_likelihood_engage``: geometric-mean likelihood of the correct
+      engage-vs-ignore decision, over ALL trials, by collapsing the head to a
+      binary {engaged, ignore} problem (engaged logit = logsumexp of L,R).
+
+    Returns an empty dict for a 2-way head (nothing to decompose).
+    """
+    labels = np.asarray(labels)
+    logits = np.asarray(logits)
+    if n_action_logits < 3 or logits.shape[2] < 3:
+        return {}
+
+    lab = labels[..., 0].astype(np.int64)  # (T, E)
+    valid = lab >= 0  # padding mask used by normalized_likelihood
+
+    out: dict[str, float] = {}
+
+    # --- Conditional L/R on engaged trials (comparable to the 2-way number) ---
+    engaged = valid & (lab != _IGNORE_CLASS_INDEX)
+    if bool(engaged.any()):
+        lr_labels = np.where(engaged, lab, -1)[..., None]  # mask ignore -> -1
+        lr_logits = logits[:, :, :2]  # renormalize softmax over {L, R}
+        out["eval_likelihood_LR_engaged"] = float(
+            rnn_utils.normalized_likelihood(lr_labels, lr_logits)
+        )
+
+    # --- Engage vs ignore (binary calibration of the ignore head) ---
+    if bool(valid.any()):
+        # Binary label: 0 = engaged (was L or R), 1 = ignore.
+        engage_label = np.where(lab == _IGNORE_CLASS_INDEX, 1, 0)
+        engage_label = np.where(valid, engage_label, -1)[..., None]
+        # Binary logits: [engaged = logsumexp(L, R), ignore].
+        lr_logits = logits[:, :, :2]
+        engaged_logit = _logsumexp(lr_logits, axis=-1)  # (T, E)
+        ignore_logit = logits[:, :, _IGNORE_CLASS_INDEX]  # (T, E)
+        binary_logits = np.stack([engaged_logit, ignore_logit], axis=-1)
+        out["eval_likelihood_engage"] = float(
+            rnn_utils.normalized_likelihood(engage_label, binary_logits)
+        )
+
+        # --- Ignore-class classification metrics (rare positive: ~5% of trials) ---
+        # Likelihood alone is dominated by the ~95% engaged majority and cannot
+        # tell genuine ignore-detection from base-rate hedging. Report class-
+        # resolved precision/recall/F1 (at p=0.5) and threshold-free average
+        # precision (PR-AUC) with ignore as the positive class.
+        vmask = valid.reshape(-1)
+        y_true = (lab.reshape(-1)[vmask] == _IGNORE_CLASS_INDEX).astype(np.int64)
+        # P(ignore) from the binary head: softmax over [engaged, ignore].
+        bl = binary_logits.reshape(-1, 2)[vmask]
+        bl_max = np.max(bl, axis=-1, keepdims=True)
+        bexp = np.exp(bl - bl_max)
+        p_ignore = (bexp[:, 1] / bexp.sum(axis=-1))
+        n_pos = int(y_true.sum())
+        n_tot = int(y_true.size)
+        out["engage_ignore_base_rate"] = float(n_pos / n_tot) if n_tot else 0.0
+        if n_pos > 0:
+            pred = (p_ignore >= 0.5).astype(np.int64)
+            tp = float(np.sum((pred == 1) & (y_true == 1)))
+            fp = float(np.sum((pred == 1) & (y_true == 0)))
+            fn = float(np.sum((pred == 0) & (y_true == 1)))
+            prec = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+            rec = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+            f1 = (2 * prec * rec / (prec + rec)) if (prec + rec) > 0 else 0.0
+            out["engage_ignore_precision"] = float(prec)
+            out["engage_ignore_recall"] = float(rec)
+            out["engage_ignore_f1"] = float(f1)
+            # Average precision (area under PR curve), threshold-free. No-skill
+            # baseline == base rate, so lift over base_rate is what matters.
+            order = np.argsort(-p_ignore)
+            yt = y_true[order]
+            tps = np.cumsum(yt)
+            fps = np.cumsum(1 - yt)
+            precisions = tps / np.maximum(tps + fps, 1)
+            recalls = tps / n_pos
+            rec_prev = np.concatenate([[0.0], recalls[:-1]])
+            out["engage_ignore_pr_auc"] = float(
+                np.sum((recalls - rec_prev) * precisions)
+            )
+
+    return out
+
+
+def _logsumexp(a: np.ndarray, axis: int) -> np.ndarray:
+    a_max = np.max(a, axis=axis, keepdims=True)
+    out = np.log(np.sum(np.exp(a - a_max), axis=axis, keepdims=True)) + a_max
+    return np.squeeze(out, axis=axis)
+
+
 def _bind_session_curriculum_lambda(
     make_network: Any,
     *,
@@ -966,6 +1077,7 @@ class GruTrainer(BaseMultisubjectTrainer):
                     )
 
                 eval_likelihood_ckpt: float | None = None
+                eval_likelihood_decomp_ckpt: dict[str, float] = {}
                 if args.checkpoint_eval_on_eval_split:
                     yhat_eval_ckpt, _ = self._eval_network_full(
                         current_eval_network,
@@ -982,6 +1094,14 @@ class GruTrainer(BaseMultisubjectTrainer):
                             ys_eval_all,
                             np.asarray(yhat_eval_ckpt)[:, :, :n_action_logits_ckpt],
                         )
+                    )
+                    # For the 3-way (ignore-included) head, also record the
+                    # engagement-conditional L/R likelihood (comparable to the
+                    # 2-way study) and the engage-vs-ignore calibration.
+                    eval_likelihood_decomp_ckpt = _threeway_likelihood_decomposition(
+                        ys_eval_all,
+                        np.asarray(yhat_eval_ckpt)[:, :, :n_action_logits_ckpt],
+                        n_action_logits=n_action_logits_ckpt,
                     )
 
                 checkpoint_record = {
@@ -1002,6 +1122,14 @@ class GruTrainer(BaseMultisubjectTrainer):
                         "Checkpoint step %s, eval likelihood: %.4f",
                         steps_completed,
                         eval_likelihood_ckpt,
+                    )
+                for _decomp_key, _decomp_val in eval_likelihood_decomp_ckpt.items():
+                    checkpoint_record[_decomp_key] = _decomp_val
+                    logger.info(
+                        "Checkpoint step %s, %s: %.4f",
+                        steps_completed,
+                        _decomp_key,
+                        _decomp_val,
                     )
 
                 checkpoint_plot_paths: dict[str, Any] = {
@@ -1137,6 +1265,10 @@ class GruTrainer(BaseMultisubjectTrainer):
                         {
                             "checkpoint/eval_likelihood": eval_likelihood_ckpt,
                             "checkpoint/step": int(steps_completed),
+                            **{
+                                f"checkpoint/{_k}": _v
+                                for _k, _v in eval_likelihood_decomp_ckpt.items()
+                            },
                         },
                         step=int(steps_completed),
                     )

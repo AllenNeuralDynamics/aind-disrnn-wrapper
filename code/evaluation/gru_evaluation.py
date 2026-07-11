@@ -272,7 +272,16 @@ def plot_gru_examples_for_split(
             logits[:, :, :n_action_logits],
             class_index=1 if n_action_logits > 1 else 0,
         )
-        color_label = "P(right)" if n_action_logits == 2 else "P(class_1)"
+        color_label = "P(right)" if n_action_logits == 2 else "P(right)"
+        # For the 3-way (ignore-included) head, also color the SAME latent space
+        # by P(ignore) so the engage/disengage axis is visible alongside the L/R
+        # axis. Class index 2 = ignore (0=left, 1=right, 2=ignore).
+        engage_probs_for_coloring = None
+        if n_action_logits >= 3:
+            engage_probs_for_coloring = _prob_from_logits(
+                logits[:, :, :n_action_logits],
+                class_index=2,
+            )
         selected_latents = list(range(projected_states.shape[2]))
         run_len = min(30, states.shape[0])
 
@@ -283,6 +292,7 @@ def plot_gru_examples_for_split(
         selected_examples: list[dict[str, Any]] = []
         trial_plot_paths: list[Path] = []
         space_plot_paths: list[Path] = []
+        engage_space_plot_paths: list[Path] = []
 
         for subject_id, session_ids in subject_groups:
             selected_session_ids = session_ids[:sessions_per_subject]
@@ -309,12 +319,31 @@ def plot_gru_examples_for_split(
                 axis_label_prefix="PC",
             )
             fig_space.suptitle(str(_normalize_identifier(session_ids[0])), fontsize=14)
-            fig_space.subplots_adjust(top=0.93)
             subject_space_plot_path = save_figure(
                 fig_space,
                 split_dir / f"latents_in_space_subject_{_safe_filename_component(subject_id)}.png",
             )
             space_plot_paths.append(subject_space_plot_path)
+
+            # Engagement (P(ignore)) view of the same latent space, 3-way only.
+            if engage_probs_for_coloring is not None:
+                subject_engage_colors = engage_probs_for_coloring[:, session_indices]
+                subject_engage_color_points = subject_engage_colors.reshape(-1)
+                fig_engage = plot_latents_in_space(
+                    latent_states=subject_states_points,
+                    color_values=subject_engage_color_points,
+                    color_label="P(ignore)",
+                    selected_latents=selected_latents,
+                    example_run=example_run,
+                    axis_label_prefix="PC",
+                )
+                fig_engage.suptitle(str(_normalize_identifier(session_ids[0])), fontsize=14)
+                subject_engage_plot_path = save_figure(
+                    fig_engage,
+                    split_dir
+                    / f"latents_in_space_engage_subject_{_safe_filename_component(subject_id)}.png",
+                )
+                engage_space_plot_paths.append(subject_engage_plot_path)
 
             for session_id in selected_session_ids:
                 session_df = output_df[output_df["ses_idx"] == session_id].sort_values("trial")
@@ -379,6 +408,9 @@ def plot_gru_examples_for_split(
             "plots": {
                 "latents_over_trials_examples": [str(p) for p in trial_plot_paths],
                 "latents_in_space_examples": [str(p) for p in space_plot_paths],
+                "latents_in_space_engage_examples": [
+                    str(p) for p in engage_space_plot_paths
+                ],
             },
         }
     except Exception as exc:
@@ -411,12 +443,19 @@ def plot_gru_examples_for_split(
             wandb.Image(str(path))
             for path in summary["plots"]["latents_in_space_examples"]
         ]
-        wandb_run.log(
-            {
-                f"{split_name}/latents_over_trials_examples": wandb_trial_images,
-                f"{split_name}/latents_in_space_examples": wandb_space_images,
-            }
-        )
+        wandb_engage_images = [
+            wandb.Image(str(path))
+            for path in summary["plots"].get("latents_in_space_engage_examples", [])
+        ]
+        space_log = {
+            f"{split_name}/latents_over_trials_examples": wandb_trial_images,
+            f"{split_name}/latents_in_space_examples": wandb_space_images,
+        }
+        if wandb_engage_images:
+            space_log[f"{split_name}/latents_in_space_engage_examples"] = (
+                wandb_engage_images
+            )
+        wandb_run.log(space_log)
 
     return summary
 
@@ -625,11 +664,19 @@ def evaluate_gru_on_heldout_subjects(
             np.asarray(yhat_test)[:, :, :n_action_logits],
             class_index=prob_class_index,
         )
-        color_label = "P(right)" if n_action_logits == 2 else f"P(class_{prob_class_index})"
+        color_label = "P(right)"
+        # Engagement (P(ignore)) coloring for the 3-way head (2 = ignore).
+        engage_probs_for_coloring = None
+        if n_action_logits >= 3:
+            engage_probs_for_coloring = _prob_from_logits(
+                np.asarray(yhat_test)[:, :, :n_action_logits],
+                class_index=2,
+            )
         selected_latents = list(range(projected_states.shape[2]))
         run_len = min(30, projected_states.shape[0])
 
         space_plot_paths: list[Path] = []
+        engage_space_plot_paths: list[Path] = []
         for subject_id, subject_rows in selected_subject_groups:
             subject_sessions = subject_rows["ses_idx"].tolist()
             session_indices = [
@@ -659,13 +706,34 @@ def evaluate_gru_on_heldout_subjects(
                 str(_normalize_identifier(example_session_id)),
                 fontsize=14,
             )
-            fig_space.subplots_adjust(top=0.93)
             subject_space_plot_path = save_figure(
                 fig_space,
                 plot_dir
                 / f"latents_in_space_subject_{_safe_filename_component(subject_id)}.png",
             )
             space_plot_paths.append(subject_space_plot_path)
+
+            if engage_probs_for_coloring is not None:
+                subject_engage_colors = engage_probs_for_coloring[:, session_indices]
+                subject_engage_color_points = subject_engage_colors.reshape(-1)
+                fig_engage = plot_latents_in_space(
+                    latent_states=subject_states_points,
+                    color_values=subject_engage_color_points,
+                    color_label="P(ignore)",
+                    selected_latents=selected_latents,
+                    example_run=example_run,
+                    axis_label_prefix="PC",
+                )
+                fig_engage.suptitle(
+                    str(_normalize_identifier(example_session_id)),
+                    fontsize=14,
+                )
+                subject_engage_plot_path = save_figure(
+                    fig_engage,
+                    plot_dir
+                    / f"latents_in_space_engage_subject_{_safe_filename_component(subject_id)}.png",
+                )
+                engage_space_plot_paths.append(subject_engage_plot_path)
 
         if not space_plot_paths:
             raise ValueError("Could not generate held-out latent-space plots for any subject.")
@@ -689,6 +757,9 @@ def evaluate_gru_on_heldout_subjects(
             "plots": {
                 "latents_over_trials_examples": [str(p) for p in trial_plot_paths],
                 "latents_in_space_examples": [str(p) for p in space_plot_paths],
+                "latents_in_space_engage_examples": [
+                    str(p) for p in engage_space_plot_paths
+                ],
             },
         }
     except Exception as exc:
@@ -734,11 +805,20 @@ def evaluate_gru_on_heldout_subjects(
                 wandb.Image(str(path))
                 for path in summary["plots"]["latents_in_space_examples"]
             ]
-            wandb_run.log(
-                {
-                    "heldout/latents_over_trials_examples": wandb_trial_images,
-                    "heldout/latents_in_space_examples": wandb_space_images,
-                }
-            )
+            wandb_engage_images = [
+                wandb.Image(str(path))
+                for path in summary["plots"].get(
+                    "latents_in_space_engage_examples", []
+                )
+            ]
+            heldout_space_log = {
+                "heldout/latents_over_trials_examples": wandb_trial_images,
+                "heldout/latents_in_space_examples": wandb_space_images,
+            }
+            if wandb_engage_images:
+                heldout_space_log["heldout/latents_in_space_engage_examples"] = (
+                    wandb_engage_images
+                )
+            wandb_run.log(heldout_space_log)
 
     return summary
