@@ -191,7 +191,7 @@ eval-throttling (item 10) were both tested and gave nothing. For *scale*, use
 |---|---|
 | Workspace | `ai1/aind-dynamic-foraging-foundation-model` |
 | Cluster (L40s) | `ai1/octo-hub-aws-l40s` |
-| Image ref | `han-hou/disrnn-wrapper` (from `beaker image get disrnn-wrapper`) |
+| Image ref | `han-hou/disrnn-wrapper-pck-integration-20260630` — the original `han-hou/disrnn-wrapper` **no longer exists** (`ImageNotFound`). Authoritative list: the dispatcher's `code/beaker/README.md` "Available images" table, or `beaker workspace images ai1/aind-dynamic-foraging-foundation-model` |
 | W&B secret | `han-wandb-api-key` (a Beaker secret holding `WANDB_API_KEY`) |
 
 ---

@@ -100,3 +100,17 @@ Rules:
 - Use `<scope>` for the affected area when helpful (e.g. `feat(launcher): ...`, `docs(readme): ...`).
 - Mark breaking changes with `!` after the type/scope (e.g. `feat(api)!: ...`) and a `BREAKING CHANGE:` footer.
 - Body explains the motivation and any non-obvious consequences; don't restate the diff.
+
+## 7. Project Skills & Living Docs
+
+- The **Agent Skills pack** for this two-repo project lives in the dispatcher:
+  `aind-disrnn-dispatcher/aind-behavior-foundation-model-skills/`. It is the
+  canonical home for cross-cutting operational knowledge — Beaker/HPC launching,
+  study conventions, post-hoc reporting, and this repo's runtime distilled in the
+  `wrapper-runtime` skill. It is auto-enabled here via the checked-in
+  `.claude/settings.json` (Claude Code plugin marketplace).
+- This repo's **living documents stay canonical** for code-coupled reference:
+  `code/TRAINING.md` (read §1.5 "Run lifecycle & key switches" first) and
+  `code/POST_TRAINING_ANALYSIS.md`. When you add or change a feature, update the
+  relevant guide + its Changelog — the skills defer to these files.
+- Never squash-merge a PR (`gh pr merge <n> --merge`) — preserve per-commit history.
