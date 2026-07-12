@@ -1,0 +1,13 @@
+{
+  "extraKnownMarketplaces": {
+    "aind-behavior-foundation-model": {
+      "source": {
+        "source": "github",
+        "repo": "AllenNeuralDynamics/aind-disrnn-dispatcher"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "aind-behavior-foundation-model-skills@aind-behavior-foundation-model": true
+  }
+}

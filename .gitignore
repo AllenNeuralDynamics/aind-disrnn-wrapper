@@ -153,7 +153,9 @@ dmypy.json
 !.vscode/*.code-snippets
 .vscode
 
-.claude/
+# Claude Code: track only the shared project settings (skills-pack enablement)
+.claude/*
+!.claude/settings.json
 
 # Other editable repos
 src
