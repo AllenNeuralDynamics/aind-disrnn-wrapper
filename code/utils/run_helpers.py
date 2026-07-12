@@ -203,12 +203,11 @@ def _hardware_tags() -> list[str]:
 
 
 def _code_versions() -> dict[str, Optional[str]]:
-    """Resolved commit SHAs of the wrapper + dispatcher repos, for reproducibility.
+    """Resolved commit SHAs of the runtime source repos, for reproducibility.
 
     Stamped into the W&B run config so every run is traceable to the exact code it
-    ran. Prefers the WRAPPER_COMMIT / DISPATCHER_COMMIT env vars (e.g. set by
-    beaker/entrypoint.sh) and falls back to `git rev-parse` on the on-disk repos;
-    None if neither is available (so it's harmless on any platform).
+    ran. Prefers commit env vars set by ``beaker/entrypoint.sh`` and falls back
+    to ``git rev-parse`` on the on-disk repos; None if neither is available.
     """
 
     def sha(repo_dir: Path, env_var: str) -> Optional[str]:
@@ -229,9 +228,13 @@ def _code_versions() -> dict[str, Optional[str]]:
 
     wrapper_dir = Path(__file__).resolve().parents[2]  # .../aind-disrnn-wrapper
     dispatcher_dir = wrapper_dir.parent / "aind-disrnn-dispatcher"
+    foraging_models_dir = wrapper_dir.parent / "aind-dynamic-foraging-models"
     return {
         "wrapper_commit": sha(wrapper_dir, "WRAPPER_COMMIT"),
         "dispatcher_commit": sha(dispatcher_dir, "DISPATCHER_COMMIT"),
+        "foraging_models_commit": sha(
+            foraging_models_dir, "FORAGING_MODELS_COMMIT"
+        ),
     }
 
 

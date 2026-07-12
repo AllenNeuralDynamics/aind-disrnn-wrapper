@@ -2,7 +2,7 @@
 # Runtime entrypoint for the disRNN Beaker image.
 #
 # Runs at CONTAINER STARTUP on every Beaker job (NOT at image build time): it
-# refreshes both repos to the latest code on GitHub *before* running the job, so
+# refreshes all three repos to the requested code on GitHub *before* running the job, so
 # code/config edits take effect by just launching a new run — no image rebuild.
 #
 # Invoked from the Beaker spec's `command`, e.g.:
@@ -14,25 +14,32 @@
 # the pinned git deps). Plain code or Hydra-config edits never need one. If a run
 # fails with ImportError/ModuleNotFound after a pull, that's the signal to rebuild.
 #
-# Pin a run for reproducibility by passing a commit SHA instead of the branch:
-#   envVars: [{name: WRAPPER_REF, value: <sha>}, {name: DISPATCHER_REF, value: <sha>}]
+# Pin a run for reproducibility by passing commit SHAs instead of branches:
+#   envVars: [{name: WRAPPER_REF, value: <sha>},
+#             {name: DISPATCHER_REF, value: <sha>},
+#             {name: FORAGING_MODELS_REF, value: <sha>}]
 set -euo pipefail
 
-WRAPPER_REF="${WRAPPER_REF:-ai_hub}"
-DISPATCHER_REF="${DISPATCHER_REF:-ai_hub}"
+WRAPPER_REF="${WRAPPER_REF:-main}"
+DISPATCHER_REF="${DISPATCHER_REF:-main}"
+FORAGING_MODELS_REF="${FORAGING_MODELS_REF:-main}"
 
-refresh() {  # <repo dir> <ref>
-    local dir="$1" ref="$2"
+refresh() {  # <repo dir> <ref> <commit env var>
+    local dir="$1" ref="$2" commit_env="$3" commit
     # --depth 1 keeps the shallow clone shallow; works for a branch, tag, or
     # (GitHub allows) a specific commit SHA. Detach at the fetched commit.
     git -C "$dir" fetch --depth 1 origin "$ref"
     git -C "$dir" checkout -f --detach FETCH_HEAD
-    echo "[entrypoint]   $(basename "$dir") @ ${ref} -> $(git -C "$dir" rev-parse --short HEAD)"
+    commit="$(git -C "$dir" rev-parse HEAD)"
+    printf -v "$commit_env" '%s' "$commit"
+    export "$commit_env"
+    echo "[entrypoint]   $(basename "$dir") @ ${ref} -> ${commit:0:7}"
 }
 
 echo "[entrypoint] refreshing source from GitHub before the run..."
-refresh /workspace/aind-disrnn-dispatcher "$DISPATCHER_REF"
-refresh /workspace/aind-disrnn-wrapper    "$WRAPPER_REF"
+refresh /workspace/aind-disrnn-dispatcher          "$DISPATCHER_REF"       DISPATCHER_COMMIT
+refresh /workspace/aind-dynamic-foraging-models    "$FORAGING_MODELS_REF"  FORAGING_MODELS_COMMIT
+refresh /workspace/aind-disrnn-wrapper             "$WRAPPER_REF"          WRAPPER_COMMIT
 
 if [ "$#" -eq 0 ]; then
     echo "[entrypoint] no command given; nothing to run." >&2
