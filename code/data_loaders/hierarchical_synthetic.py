@@ -91,9 +91,18 @@ _TASK_LOOKUP = {
     "random_walk": RandomWalkTask,
 }
 
-# Conservative clamp bounds for ForagerQLearning params (mirrors the pydantic
-# field constraints in aind_dynamic_foraging_models: learn_rate in [0,1],
-# rates in [0,1], softmax_inverse_temperature >= 0, biasL fit-bounds +/-5).
+# Conservative clamp bounds mirroring the pydantic field constraints in
+# aind_dynamic_foraging_models, applied after drift+noise so a rare tail excursion
+# cannot produce an out-of-range value that the model rejects.
+#   ForagerQLearning:       learn_rate/rates in [0,1], softmax_inv_temp >= 0,
+#                           biasL fit-bounds +/-5.
+#   ForagerCompareThreshold: threshold >= 0.
+#   ForagerLossCounting:    loss_count_threshold_{mean,std} >= 0 (a count / its std).
+# Stage-4b mixes families per session, so the LossCounting/CTT params below MUST be
+# clamped too: at high mixture concentration many more LossCounting sessions are drawn,
+# and drift+session_noise can push loss_count_threshold_mean slightly below 0
+# (pydantic ge=0 -> ValidationError, killing the whole generation job). Upper bound is
+# left open (inf) where the model has none, so drift extrapolation is not capped.
 _PARAM_CLAMP: dict[str, tuple[float, float]] = {
     "learn_rate": (0.0, 1.0),
     "learn_rate_rew": (0.0, 1.0),
@@ -104,6 +113,9 @@ _PARAM_CLAMP: dict[str, tuple[float, float]] = {
     "softmax_inverse_temperature": (0.0, 100.0),
     "biasL": (-5.0, 5.0),
     "epsilon": (0.0, 1.0),
+    "threshold": (0.0, np.inf),
+    "loss_count_threshold_mean": (0.0, np.inf),
+    "loss_count_threshold_std": (0.0, np.inf),
 }
 
 
