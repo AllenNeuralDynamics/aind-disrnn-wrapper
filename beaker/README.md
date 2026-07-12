@@ -176,6 +176,7 @@ eval-throttling (item 10) were both tested and gave nothing. For *scale*, use
 | `Dockerfile` | GPU image: clones both repos (sibling layout) + installs deps | **Yes** |
 | `entrypoint.sh` | Runtime bootstrap: pulls latest code, then `exec`s the job | **Yes** (baked, runs before the pull) |
 | `build_and_push.sh` | Builds (`linux/amd64`) and pushes via `beaker image create` | n/a |
+| `BUILD_LOG.md` | Registry metadata and dependency rationale for each image build | n/a |
 | `smoke.yaml` | Beaker spec: image sanity check (GPU + config, no W&B) | No |
 | `pack_gpu.sh` | Time-slicing: pack M `wandb agent`s onto one GPU | No (pulled at runtime, like the app code) |
 
@@ -191,7 +192,7 @@ eval-throttling (item 10) were both tested and gave nothing. For *scale*, use
 |---|---|
 | Workspace | `ai1/aind-dynamic-foraging-foundation-model` |
 | Cluster (L40s) | `ai1/octo-hub-aws-l40s` |
-| Image ref | `han-hou/disrnn-wrapper-pck-integration-20260630` — the original `han-hou/disrnn-wrapper` **no longer exists** (`ImageNotFound`). Authoritative list: the dispatcher's `code/beaker/README.md` "Available images" table, or `beaker workspace images ai1/aind-dynamic-foraging-foundation-model` |
+| Image ref | `han-hou/disrnn-wrapper-pck-integration-20260630` — the original `han-hou/disrnn-wrapper` **no longer exists** (`ImageNotFound`). Build history: [`BUILD_LOG.md`](BUILD_LOG.md). Authoritative live list: `beaker workspace images ai1/aind-dynamic-foraging-foundation-model` |
 | W&B secret | `han-wandb-api-key` (a Beaker secret holding `WANDB_API_KEY`) |
 
 ---
@@ -232,6 +233,9 @@ real dependency-change rebuild is therefore:
 ```bash
 bash beaker/build_and_push.sh --force-rebuild --force-override-beaker
 ```
+
+After a successful push, add the Beaker image ID, registry timestamps, exact
+baked refs, and rebuild reason to [`BUILD_LOG.md`](BUILD_LOG.md).
 
 > Apple Silicon builds `linux/amd64` under emulation (Beaker nodes are x86) — slower
 > but correct; the flag is already set. The image name/ref stays stable across
