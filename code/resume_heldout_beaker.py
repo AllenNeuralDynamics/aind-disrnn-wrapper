@@ -165,9 +165,8 @@ def main() -> None:
     logging.basicConfig(
         level=logging.INFO, format="[%(asctime)s][%(name)s][%(levelname)s] %(message)s"
     )
-    # The wrapper package lives under code/; make its modules importable.
-    repo_code = Path(__file__).resolve().parent / "code"
-    sys.path.insert(0, str(repo_code))
+    # This script lives in code/; its own dir holds the wrapper modules.
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
     from post_training_analysis import run_heldout_subject_finetuning_from_config
 
     work = Path(args.work_dir).expanduser()
