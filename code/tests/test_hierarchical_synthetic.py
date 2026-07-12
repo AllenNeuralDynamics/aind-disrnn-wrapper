@@ -1,0 +1,470 @@
+"""Tests for the hierarchical synthetic generator.
+
+Two tiers:
+  * ``test_pure_logic_*``: exercise the seed hierarchy, drift, and clamp helpers
+    with NO heavy deps (jax / foragers / disrnn) -- runnable anywhere numpy exists.
+  * ``test_end_to_end_*``: full generation + merged multisubject dataset +
+    ground-truth table + determinism. Requires the wrapper stack (jax,
+    disentangled_rnns, aind_dynamic_foraging_models, aind_behavior_gym,
+    aind_disrnn_utils). Skipped automatically if those imports are unavailable.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+
+import numpy as np
+import pytest
+
+
+# --------------------------------------------------------------------------- #
+# Tier 1: pure-logic helpers (no heavy deps)
+# --------------------------------------------------------------------------- #
+def _load_helpers():
+    """Import only the stack-free helpers by loading the module's functions.
+
+    We import the functions directly to avoid importing the heavy top-level
+    dependencies at collection time; the helpers live in the same module but do
+    not use jax/foragers.
+    """
+    from data_loaders import hierarchical_synthetic as hs
+
+    return hs
+
+
+HAS_STACK = all(
+    importlib.util.find_spec(mod) is not None
+    for mod in (
+        "jax",
+        "disentangled_rnns",
+        "aind_dynamic_foraging_models",
+        "aind_behavior_gym",
+        "aind_disrnn_utils",
+    )
+)
+requires_stack = pytest.mark.skipif(not HAS_STACK, reason="wrapper training stack not installed")
+
+
+@pytest.mark.skipif(not HAS_STACK, reason="module import needs stack for top-level imports")
+def test_pure_logic_clamp_and_drift():
+    hs = _load_helpers()
+    # clamp respects known bounds
+    assert hs._clamp("learn_rate", 1.7) == 1.0
+    assert hs._clamp("learn_rate", -0.3) == 0.0
+    assert hs._clamp("biasL", 9.0) == 5.0
+    assert hs._clamp("softmax_inverse_temperature", -1.0) == 0.0
+    # linear drift
+    assert hs._apply_drift("learn_rate", 0.2, {"mode": "linear", "delta": 0.4}, 0.0) == 0.2
+    assert abs(hs._apply_drift("learn_rate", 0.2, {"mode": "linear", "delta": 0.4}, 1.0) - 0.6) < 1e-9
+    # toward_zero drift (|bias| shrinks)
+    assert abs(hs._apply_drift("biasL", 2.0, {"mode": "toward_zero", "frac": 1.0}, 1.0)) < 1e-9
+    assert abs(hs._apply_drift("biasL", 2.0, {"mode": "toward_zero", "frac": 0.5}, 1.0) - 1.0) < 1e-9
+
+
+@pytest.mark.skipif(not HAS_STACK, reason="module import needs stack for top-level imports")
+def test_pure_logic_nonmonotonic_drift():
+    """Stage-2b non-monotonic modes: sinusoidal, inverted_u, piecewise."""
+    from data_loaders import hierarchical_synthetic as hs
+    # sinusoidal: one full cycle returns to centroid at frac 0, 0.5, 1.0; peak at 0.25
+    assert abs(hs._apply_drift("softmax_inverse_temperature", 6.0, {"mode": "sinusoidal", "amp": 3.0, "cycles": 1.0}, 0.0) - 6.0) < 1e-9
+    assert abs(hs._apply_drift("softmax_inverse_temperature", 6.0, {"mode": "sinusoidal", "amp": 3.0, "cycles": 1.0}, 0.25) - 9.0) < 1e-9
+    assert abs(hs._apply_drift("softmax_inverse_temperature", 6.0, {"mode": "sinusoidal", "amp": 3.0, "cycles": 1.0}, 1.0) - 6.0) < 1e-9
+    # inverted_u: 0 at both ends, peak +amp at frac=0.5 (non-monotonic)
+    assert abs(hs._apply_drift("learn_rate", 0.3, {"mode": "inverted_u", "amp": 0.4}, 0.0) - 0.3) < 1e-9
+    assert abs(hs._apply_drift("learn_rate", 0.3, {"mode": "inverted_u", "amp": 0.4}, 0.5) - 0.7) < 1e-9
+    assert abs(hs._apply_drift("learn_rate", 0.3, {"mode": "inverted_u", "amp": 0.4}, 1.0) - 0.3) < 1e-9
+    # piecewise tent: rises to centroid+delta at peak, returns to centroid at frac=1
+    assert abs(hs._apply_drift("learn_rate", 0.3, {"mode": "piecewise", "delta": 0.5, "peak": 0.5}, 0.5) - 0.8) < 1e-9
+    assert abs(hs._apply_drift("learn_rate", 0.3, {"mode": "piecewise", "delta": 0.5, "peak": 0.5}, 1.0) - 0.3) < 1e-9
+
+
+# --------------------------------------------------------------------------- #
+# Tier 2: end-to-end generation (requires the stack)
+# --------------------------------------------------------------------------- #
+def _tiny_config():
+    task = {"type": "random_walk", "reward_baiting": False, "p_min": 0.0, "p_max": 1.0,
+            "sigma": 0.15, "mean": 0, "seed": 42}
+    agent = {
+        "agent_class": "ForagerQLearning",
+        "agent_kwargs": {
+            "number_of_learning_rate": 1,
+            "number_of_forget_rate": 0,
+            "choice_kernel": "none",
+            "action_selection": "softmax",
+        },
+        "agent_params": {},
+        "subject_param_dist": {
+            "learn_rate": {"type": "uniform", "min": 0.2, "max": 0.8},
+            "biasL": {"type": "uniform", "min": -1.5, "max": 1.5},
+            "softmax_inverse_temperature": {"type": "uniform", "min": 3.0, "max": 12.0},
+        },
+        "seed": 0,
+    }
+    return task, agent
+
+
+@requires_stack
+def test_seed_hierarchy_no_collisions_realcode():
+    """Exercise the ACTUAL _subject_seed/_session_seed methods, not a re-derived formula."""
+    from data_loaders.hierarchical_synthetic import HierarchicalCognitiveAgents
+
+    task, agent = _tiny_config()
+    loader = HierarchicalCognitiveAgents(
+        task=task, agent=agent, num_trials=10, num_subjects=300,
+        num_sessions_per_subject=50, eval_every_n=2, subject_seed_stride=100_000,
+    )
+    # Collect seeds from the real methods for a mice-scale grid.
+    agent_seeds, task_seeds = set(), set()
+    for si in range(300):
+        for se in range(50):
+            agent_seeds.add(loader._session_seed(0, si, se))
+            task_seeds.add(loader._session_seed(7, si, se))  # different base stream
+    assert len(agent_seeds) == 300 * 50, "agent seed collisions from real _session_seed"
+    assert len(task_seeds) == 300 * 50, "task seed collisions from real _session_seed"
+    # Sessions stay strictly inside their subject's stride block.
+    assert loader._session_seed(0, 0, 49) < loader._subject_seed(0, 1)
+
+
+@requires_stack
+def test_end_to_end_static_stage1(tmp_path):
+    from data_loaders.hierarchical_synthetic import HierarchicalCognitiveAgents
+
+    task, agent = _tiny_config()
+    loader = HierarchicalCognitiveAgents(
+        task=task, agent=agent, num_trials=80, num_subjects=4,
+        num_sessions_per_subject=6, eval_every_n=2, batch_size=32,
+        groundtruth_dir=str(tmp_path),
+    )
+    bundle = loader.load()
+    md = bundle.metadata
+
+    # merged multisubject shape: feature 0 is Subject ID
+    xs = bundle.extras["dataset"].get_all()["xs"]
+    assert xs.shape[1] == 4 * 6  # subjects * sessions
+    assert bundle.extras["dataset"].x_names[0] == "Subject ID"
+    # subject ids are dense [0, num_subjects)
+    subj_col = xs[..., 0]
+    present = np.unique(subj_col[subj_col >= 0]).astype(int)
+    assert set(present.tolist()) == set(range(4))
+    assert md["num_subjects"] == 4
+    # ground-truth likelihood populated (finite, in (0, 1])
+    gt = md["avg_eval_likelihood_groundtruth"]
+    assert np.isfinite(gt) and 0.0 < gt <= 1.0
+    # ground-truth table complete: one row per (subject, session)
+    gtab = bundle.extras["groundtruth_table"]
+    assert len(gtab) == 4 * 6
+    assert {"param_learn_rate", "param_biasL", "param_softmax_inverse_temperature"} <= set(gtab.columns)
+    assert "session_seed" in gtab.columns
+    # Stage 1 (no drift): params constant across a subject's sessions
+    for _, sub_rows in gtab.groupby("subject_index"):
+        assert sub_rows["param_learn_rate"].nunique() == 1
+        assert sub_rows["param_biasL"].nunique() == 1
+    # session_context present with per-subject 1-based ordering
+    # bundle.raw carries subject_id + ses_idx (baseline_rl reads raw directly)
+    assert {"subject_id", "ses_idx", "trial", "animal_response", "earned_reward"} <= set(bundle.raw.columns)
+    assert bundle.raw["subject_id"].nunique() == 4
+    assert md["session_context"]["indexing"] == "1_based"
+    assert len(md["session_context"]["per_subject"]) == 4
+    # Seed hierarchy is collision-free -- asserted on the ACTUAL seeds the
+    # generator emitted (not a re-derived formula): every (subject, session)
+    # got a unique agent seed and a unique task seed.
+    assert gtab["session_seed"].is_unique, "agent session_seed collisions in generated data"
+    assert gtab["task_seed"].is_unique, "task_seed collisions in generated data"
+
+
+@requires_stack
+def test_end_to_end_drift_stage2(tmp_path):
+    from data_loaders.hierarchical_synthetic import HierarchicalCognitiveAgents
+
+    task, agent = _tiny_config()
+    agent["drift"] = {
+        "learn_rate": {"mode": "linear", "delta": 0.3},
+        "biasL": {"mode": "toward_zero", "frac": 0.8},
+        "softmax_inverse_temperature": {"mode": "multiplicative", "rel": 0.5},
+    }
+    loader = HierarchicalCognitiveAgents(
+        task=task, agent=agent, num_trials=80, num_subjects=3,
+        num_sessions_per_subject=8, eval_every_n=2, batch_size=32,
+        groundtruth_dir=str(tmp_path),
+    )
+    gtab = loader.load().extras["groundtruth_table"]
+    # Stage 2: learn_rate strictly increases across sessions within each subject
+    for _, sub_rows in gtab.sort_values("session_index_0based").groupby("subject_index"):
+        lr = sub_rows["param_learn_rate"].to_numpy()
+        assert np.all(np.diff(lr) >= -1e-9) and lr[-1] > lr[0]
+        # |biasL| shrinks
+        ab = np.abs(sub_rows["param_biasL"].to_numpy())
+        assert ab[-1] <= ab[0] + 1e-9
+
+
+@requires_stack
+def test_end_to_end_determinism(tmp_path):
+    """Same seed + config => byte-identical merged tensors + ground-truth table."""
+    from data_loaders.hierarchical_synthetic import HierarchicalCognitiveAgents
+
+    task, agent = _tiny_config()
+    kw = dict(task=task, agent=agent, num_trials=80, num_subjects=3,
+              num_sessions_per_subject=6, eval_every_n=2, batch_size=32)
+    b1 = HierarchicalCognitiveAgents(groundtruth_dir=str(tmp_path / "a"), **kw).load()
+    b2 = HierarchicalCognitiveAgents(groundtruth_dir=str(tmp_path / "b"), **kw).load()
+    xs1 = b1.extras["dataset"].get_all()["xs"]
+    xs2 = b2.extras["dataset"].get_all()["xs"]
+    ys1 = b1.extras["dataset"].get_all()["ys"]
+    ys2 = b2.extras["dataset"].get_all()["ys"]
+    assert np.array_equal(xs1, xs2), "merged xs differ across identical-seed runs"
+    assert np.array_equal(ys1, ys2), "merged ys differ across identical-seed runs"
+    # ground-truth param table identical
+    g1 = b1.extras["groundtruth_table"].reset_index(drop=True)
+    g2 = b2.extras["groundtruth_table"].reset_index(drop=True)
+    import pandas.testing as pdt
+    pdt.assert_frame_equal(g1, g2)
+    assert b1.metadata["avg_eval_likelihood_groundtruth"] == b2.metadata["avg_eval_likelihood_groundtruth"]
+
+
+@requires_stack
+def test_end_to_end_serial_equals_parallel(tmp_path):
+    """Parallel generation (workers>1) is byte-identical to serial (workers=1)."""
+    from data_loaders.hierarchical_synthetic import HierarchicalCognitiveAgents
+
+    task, agent = _tiny_config()
+    kw = dict(task=task, agent=agent, num_trials=80, num_subjects=6,
+              num_sessions_per_subject=6, eval_every_n=2, batch_size=32)
+    serial = HierarchicalCognitiveAgents(
+        groundtruth_dir=str(tmp_path / "s"), generation_workers=1, **kw
+    ).load()
+    parallel = HierarchicalCognitiveAgents(
+        groundtruth_dir=str(tmp_path / "p"), generation_workers=3, **kw
+    ).load()
+    xs_s = serial.extras["dataset"].get_all()["xs"]
+    xs_p = parallel.extras["dataset"].get_all()["xs"]
+    ys_s = serial.extras["dataset"].get_all()["ys"]
+    ys_p = parallel.extras["dataset"].get_all()["ys"]
+    assert np.array_equal(xs_s, xs_p), "parallel xs differ from serial"
+    assert np.array_equal(ys_s, ys_p), "parallel ys differ from serial"
+    import pandas.testing as pdt
+    pdt.assert_frame_equal(
+        serial.extras["groundtruth_table"].reset_index(drop=True),
+        parallel.extras["groundtruth_table"].reset_index(drop=True),
+    )
+    assert (serial.metadata["avg_eval_likelihood_groundtruth"]
+            == parallel.metadata["avg_eval_likelihood_groundtruth"])
+
+
+def _stage3_presets():
+    """Two-preset mixture: Rescorla-Wagner (eps-greedy) vs Hattori (2-lr softmax)."""
+    return {
+        "assignment": "balanced",
+        "presets": [
+            {
+                "name": "RescorlaWagner",
+                "agent_class": "ForagerQLearning",
+                "agent_kwargs": {
+                    "number_of_learning_rate": 1, "number_of_forget_rate": 0,
+                    "choice_kernel": "none", "action_selection": "epsilon-greedy",
+                },
+                "agent_params": {},
+                "subject_param_dist": {
+                    "learn_rate": {"type": "uniform", "min": 0.2, "max": 0.8},
+                    "biasL": {"type": "uniform", "min": -1.0, "max": 1.0},
+                    "epsilon": {"type": "uniform", "min": 0.05, "max": 0.3},
+                },
+            },
+            {
+                "name": "Hattori2019",
+                "agent_class": "ForagerQLearning",
+                "agent_kwargs": {
+                    "number_of_learning_rate": 2, "number_of_forget_rate": 1,
+                    "choice_kernel": "none", "action_selection": "softmax",
+                },
+                "agent_params": {},
+                "subject_param_dist": {
+                    "learn_rate_rew": {"type": "uniform", "min": 0.2, "max": 0.8},
+                    "learn_rate_unrew": {"type": "uniform", "min": 0.1, "max": 0.6},
+                    "forget_rate_unchosen": {"type": "uniform", "min": 0.0, "max": 0.3},
+                    "biasL": {"type": "uniform", "min": -1.0, "max": 1.0},
+                    "softmax_inverse_temperature": {"type": "uniform", "min": 3.0, "max": 12.0},
+                },
+            },
+        ],
+    }
+
+
+@requires_stack
+def test_backward_compat_no_presets_identical(tmp_path):
+    """The single-class fallback (no subject_presets) must be byte-identical to the
+    pre-preset behavior: same params + same merged tensors, just with additive
+    preset_index/preset_name/agent_class columns all pointing at the one class."""
+    from data_loaders.hierarchical_synthetic import HierarchicalCognitiveAgents
+
+    task, agent = _tiny_config()
+    agent["drift"] = {"learn_rate": {"mode": "linear", "delta": 0.3}}
+    loader = HierarchicalCognitiveAgents(
+        task=task, agent=agent, num_trials=80, num_subjects=4,
+        num_sessions_per_subject=6, eval_every_n=2, batch_size=32,
+        groundtruth_dir=str(tmp_path),
+    )
+    gtab = loader.load().extras["groundtruth_table"]
+    # additive columns present and degenerate (single class)
+    assert (gtab["preset_index"] == 0).all()
+    assert gtab["agent_class"].nunique() == 1 == gtab["preset_name"].nunique()
+    # groundtruth_table() (params-only path) agrees with load()'s table on params
+    gtab2 = loader.groundtruth_table()
+    import pandas.testing as pdt
+    cols = [c for c in gtab.columns if c.startswith("param_")]
+    pdt.assert_frame_equal(
+        gtab.sort_values(["subject_index", "session_index_0based"])[cols].reset_index(drop=True),
+        gtab2.sort_values(["subject_index", "session_index_0based"])[cols].reset_index(drop=True),
+    )
+
+
+@requires_stack
+def test_end_to_end_mixture_stage3(tmp_path):
+    """Stage 3: per-subject presets => each subject is ONE model type for life,
+    balanced round-robin assignment, distinct agent_kwargs per preset, and the
+    ground-truth table records per-subject preset identity."""
+    from data_loaders.hierarchical_synthetic import HierarchicalCognitiveAgents
+
+    task, agent = _tiny_config()
+    # remove single-class fields; presets carry their own
+    for k in ("agent_class", "agent_kwargs", "subject_param_dist"):
+        agent.pop(k, None)
+    agent["subject_presets"] = _stage3_presets()
+    loader = HierarchicalCognitiveAgents(
+        task=task, agent=agent, num_trials=80, num_subjects=6,
+        num_sessions_per_subject=6, eval_every_n=2, batch_size=32,
+        groundtruth_dir=str(tmp_path),
+    )
+    bundle = loader.load()
+    gtab = bundle.extras["groundtruth_table"]
+    # balanced assignment over 2 presets, 6 subjects -> 3 each
+    assign = gtab.drop_duplicates("subject_index").set_index("subject_index")["preset_index"]
+    assert sorted(assign.tolist()) == [0, 0, 0, 1, 1, 1]
+    assert set(gtab["preset_name"].unique()) == {"RescorlaWagner", "Hattori2019"}
+    # a subject keeps ONE preset across all its sessions (no within-subject switching)
+    for _, sub in gtab.groupby("subject_index"):
+        assert sub["preset_index"].nunique() == 1
+    # preset-specific params only appear for their preset's subjects
+    rw = gtab[gtab["preset_name"] == "RescorlaWagner"]
+    ht = gtab[gtab["preset_name"] == "Hattori2019"]
+    assert rw["param_epsilon"].notna().all()
+    assert ht["param_learn_rate_rew"].notna().all() and ht["param_learn_rate_unrew"].notna().all()
+    # ground-truth likelihood still finite
+    assert np.isfinite(bundle.metadata["avg_eval_likelihood_groundtruth"])
+
+
+@requires_stack
+def test_mixture_assignment_deterministic(tmp_path):
+    """Balanced assignment is pure round-robin (no RNG); random assignment is
+    reproducible from the seed and respects weights length."""
+    from data_loaders.hierarchical_synthetic import _assign_subject_presets
+
+    assert _assign_subject_presets(6, 3, mode="balanced") == [0, 1, 2, 0, 1, 2]
+    a1 = _assign_subject_presets(50, 3, mode="random", base_seed=42)
+    a2 = _assign_subject_presets(50, 3, mode="random", base_seed=42)
+    assert a1 == a2 and set(a1) <= {0, 1, 2}
+    import pytest as _pytest
+    with _pytest.raises(ValueError):
+        _assign_subject_presets(6, 3, mode="random", weights=[0.5, 0.5])  # wrong length
+
+
+def test_stage4b_mixture_helpers_deterministic():
+    """Stage 4b: per-subject Dirichlet mixture weights + per-session family draws are
+    reproducible from the seed, normalized, and independent of the assignment stream."""
+    from data_loaders.hierarchical_synthetic import (
+        _subject_mixture_weights, _session_family_draws,
+    )
+    import numpy as np
+
+    w1 = _subject_mixture_weights(20, 3, concentration=0.5, base_seed=42)
+    w2 = _subject_mixture_weights(20, 3, concentration=0.5, base_seed=42)
+    assert np.allclose(w1, w2)                       # reproducible
+    assert w1.shape == (20, 3)
+    assert np.allclose(w1.sum(axis=1), 1.0)          # valid prob vectors
+    # different seed -> different weights
+    assert not np.allclose(w1, _subject_mixture_weights(20, 3, concentration=0.5, base_seed=7))
+    # per-session draws reproducible per subject, respect n_sessions
+    d1 = _session_family_draws(w1[0], 30, subject_idx=0, base_seed=42)
+    d2 = _session_family_draws(w1[0], 30, subject_idx=0, base_seed=42)
+    assert d1 == d2 and len(d1) == 30 and set(d1) <= {0, 1, 2}
+    # different subject index -> independent draw stream
+    assert d1 != _session_family_draws(w1[0], 30, subject_idx=1, base_seed=42)
+
+
+@requires_stack
+def test_stage3_presets_no_switching_stay_one_family(tmp_path):
+    """Stage-3 presets WITHOUT a session_switching block must keep the one-family-
+    per-subject behavior (backward-compat: switching is opt-in)."""
+    from data_loaders.hierarchical_synthetic import HierarchicalCognitiveAgents
+
+    task, agent = _tiny_config()
+    for k in ("agent_class", "agent_kwargs", "subject_param_dist"):
+        agent.pop(k, None)
+    agent["subject_presets"] = _stage3_presets()          # no session_switching key
+    loader = HierarchicalCognitiveAgents(
+        task=task, agent=agent, num_trials=60, num_subjects=6,
+        num_sessions_per_subject=6, eval_every_n=2, batch_size=32,
+        groundtruth_dir=str(tmp_path),
+    )
+    gtab = loader.groundtruth_table()
+    for _, sub in gtab.groupby("subject_index"):
+        assert sub["preset_index"].nunique() == 1          # one family for life
+    assert not any(c.startswith("mixweight_") for c in gtab.columns)  # no mixture cols
+
+
+@requires_stack
+def test_stage4b_per_session_family_switching(tmp_path):
+    """Stage 4b: with session_switching enabled, a subject visits MULTIPLE families
+    across its sessions, its mixture weights are recorded (constant within subject),
+    and realized session families are drawn from those weights."""
+    from data_loaders.hierarchical_synthetic import HierarchicalCognitiveAgents
+    import numpy as np
+
+    task, agent = _tiny_config()
+    for k in ("agent_class", "agent_kwargs", "subject_param_dist"):
+        agent.pop(k, None)
+    presets = _stage3_presets()
+    presets["session_switching"] = {"enabled": True, "concentration": 1.5}  # fairly mixed
+    agent["subject_presets"] = presets
+    loader = HierarchicalCognitiveAgents(
+        task=task, agent=agent, num_trials=60, num_subjects=8,
+        num_sessions_per_subject=20, eval_every_n=2, batch_size=32,
+        groundtruth_dir=str(tmp_path),
+    )
+    gtab = loader.groundtruth_table()
+    # mixture-weight columns present, one per preset, constant within subject
+    mw = [c for c in gtab.columns if c.startswith("mixweight_")]
+    assert len(mw) == 2
+    for _, sub in gtab.groupby("subject_index"):
+        for c in mw:
+            assert sub[c].nunique() == 1                    # stable identity
+    # at least some subjects switch families across sessions
+    nfam = gtab.groupby("subject_index")["preset_index"].nunique()
+    assert (nfam >= 2).any(), "no subject switched families"
+    # weights sum to 1 per subject
+    per_subj = gtab.drop_duplicates("subject_index")[mw].sum(axis=1)
+    assert np.allclose(per_subj.values, 1.0)
+    # groundtruth_table() and load()'s table agree on params + realized family
+    gt2 = loader.load().extras["groundtruth_table"]
+    key = ["subject_index", "session_index_0based"]
+    a = gtab.sort_values(key).reset_index(drop=True)
+    b = gt2.sort_values(key).reset_index(drop=True)
+    assert (a["preset_index"].values == b["preset_index"].values).all()
+
+
+def test_resolve_workers_logic(tmp_path):
+    """_resolve_workers honors explicit counts and caps at num_subjects."""
+    import importlib.util
+    if importlib.util.find_spec("jax") is None:
+        import pytest as _pytest
+        _pytest.skip("module import needs stack")
+    from data_loaders.hierarchical_synthetic import HierarchicalCognitiveAgents
+
+    task, agent = _tiny_config()
+    mk = lambda w, n: HierarchicalCognitiveAgents(
+        task=task, agent=agent, num_trials=10, num_subjects=n,
+        num_sessions_per_subject=2, generation_workers=w,
+        groundtruth_dir=str(tmp_path),
+    )
+    assert mk(1, 10)._resolve_workers() == 1          # forced serial
+    assert mk(4, 10)._resolve_workers() == 4          # explicit
+    assert mk(50, 10)._resolve_workers() == 10        # capped at num_subjects
