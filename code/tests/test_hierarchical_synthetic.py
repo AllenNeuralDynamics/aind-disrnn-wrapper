@@ -53,6 +53,13 @@ def test_pure_logic_clamp_and_drift():
     assert hs._clamp("learn_rate", -0.3) == 0.0
     assert hs._clamp("biasL", 9.0) == 5.0
     assert hs._clamp("softmax_inverse_temperature", -1.0) == 0.0
+    # Stage-4b mixture-family params: LossCounting / CompareThreshold floors at 0
+    # (drift+noise can push these slightly negative; pydantic ge=0 would reject them).
+    assert hs._clamp("loss_count_threshold_mean", -0.0101) == 0.0
+    assert hs._clamp("loss_count_threshold_std", -0.5) == 0.0
+    assert hs._clamp("threshold", -0.2) == 0.0
+    # upper bound is open (no artificial cap on drift extrapolation)
+    assert hs._clamp("loss_count_threshold_mean", 7.5) == 7.5
     # linear drift
     assert hs._apply_drift("learn_rate", 0.2, {"mode": "linear", "delta": 0.4}, 0.0) == 0.2
     assert abs(hs._apply_drift("learn_rate", 0.2, {"mode": "linear", "delta": 0.4}, 1.0) - 0.6) < 1e-9
