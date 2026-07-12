@@ -229,11 +229,15 @@ def _code_versions() -> dict[str, Optional[str]]:
     wrapper_dir = Path(__file__).resolve().parents[2]  # .../aind-disrnn-wrapper
     dispatcher_dir = wrapper_dir.parent / "aind-disrnn-dispatcher"
     foraging_models_dir = wrapper_dir.parent / "aind-dynamic-foraging-models"
+    disentangled_rnns_dir = wrapper_dir.parent / "aind-disentangled-rnns"
     return {
         "wrapper_commit": sha(wrapper_dir, "WRAPPER_COMMIT"),
         "dispatcher_commit": sha(dispatcher_dir, "DISPATCHER_COMMIT"),
         "foraging_models_commit": sha(
             foraging_models_dir, "FORAGING_MODELS_COMMIT"
+        ),
+        "disentangled_rnns_commit": sha(
+            disentangled_rnns_dir, "DISENTANGLED_RNNS_COMMIT"
         ),
     }
 

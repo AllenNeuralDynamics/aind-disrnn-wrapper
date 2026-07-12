@@ -28,6 +28,7 @@ tasks:
         set -e
         python -c "import jax; print('JAX devices:', jax.devices())"
         python -c "import aind_dynamic_foraging_models; print('foraging models import: OK')"
+        python -c "import disentangled_rnns; print('disentangled RNNs import: OK')"
         python -m run_hpc --cfg job data=synthetic model=disrnn
         echo "SMOKE OK"
     context:
@@ -44,6 +45,8 @@ tasks:
       - name: DISPATCHER_REF
         value: main
       - name: FORAGING_MODELS_REF
+        value: main
+      - name: DISENTANGLED_RNNS_REF
         value: main
     result:
       path: /results

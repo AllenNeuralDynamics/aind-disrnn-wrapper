@@ -34,6 +34,7 @@ class TestRunHelpers(unittest.TestCase):
             "WRAPPER_COMMIT": "wrapper-sha",
             "DISPATCHER_COMMIT": "dispatcher-sha",
             "FORAGING_MODELS_COMMIT": "foraging-models-sha",
+            "DISENTANGLED_RNNS_COMMIT": "disentangled-rnns-sha",
         }
 
         with mock.patch.dict(os.environ, commits, clear=False):
@@ -43,6 +44,9 @@ class TestRunHelpers(unittest.TestCase):
         self.assertEqual(versions["dispatcher_commit"], "dispatcher-sha")
         self.assertEqual(
             versions["foraging_models_commit"], "foraging-models-sha"
+        )
+        self.assertEqual(
+            versions["disentangled_rnns_commit"], "disentangled-rnns-sha"
         )
 
     def test_resolve_disrnn_penalties_uses_beta_as_default_base(self):

@@ -17,10 +17,11 @@ Run the disRNN training stack on the Allen **AI Hub / Beaker** GPU platform.
   W&B sweep and submits the Beaker experiment. No GPU, no Docker.
 
 **Key idea — code is *not* frozen in the image.** The image bakes only the
-environment (Python + JAX + pinned deps). The wrapper, dispatcher, and
-`aind-dynamic-foraging-models` sources are pulled fresh from GitHub at job startup
-by `entrypoint.sh`, so day-to-day you just **edit → push → re-run**, never rebuild.
-See [Controlling the code version](#3-controlling-the-code-version).
+environment (Python + JAX + pinned deps). The wrapper, dispatcher,
+`aind-dynamic-foraging-models`, and `aind-disentangled-rnns` sources are pulled
+fresh from GitHub at job startup by `entrypoint.sh`, so day-to-day you just
+**edit → push → re-run**, never rebuild. See
+[Controlling the code version](#3-controlling-the-code-version).
 
 ## Migration status
 
@@ -31,20 +32,21 @@ Where the CO → Beaker migration stands (this section is the running log).
 
 1. **Beaker access** — CLI installed (via `environment/postInstall` in the dispatcher),
    `BEAKER_TOKEN` auth confirmed; workspace + cluster reachable from Code Ocean.
-2. **Image build** — `Dockerfile` git-clones all three repos + installs deps; built on a
+2. **Image build** — `Dockerfile` git-clones all four repos + installs deps; built on a
    Mac (`build_and_push.sh`, `--platform linux/amd64`) and pushed to Beaker's registry
    as `han-hou/disrnn-wrapper`. CO can't build (seccomp), so the Mac is the build box.
-3. **Runtime code-pull** — `entrypoint.sh` git-fetches all three repos to
-   `WRAPPER_REF`/`DISPATCHER_REF`/`FORAGING_MODELS_REF` at job start → **code edits
-   need no rebuild**.
+3. **Runtime code-pull** — `entrypoint.sh` git-fetches all four repos to
+   `WRAPPER_REF`/`DISPATCHER_REF`/`FORAGING_MODELS_REF`/`DISENTANGLED_RNNS_REF`
+   at job start → **code edits need no rebuild**.
 4. **Smoke test** — `smoke.yaml` confirmed image pull + runtime pull + GPU visible +
    Hydra config composition, no W&B.
 5. **Control plane** — the dispatcher's `launch_beaker.py` creates a W&B sweep, saves a
    reproducibility record to `/results`, and submits the Beaker experiment (the
    dispatcher → wrapper hand-off, mirroring CO). A 1-point MVP run succeeded.
 6. **Reproducibility** — each run stamps `wrapper_commit` / `dispatcher_commit` /
-   `foraging_models_commit` / `CO_COMPUTATION_ID` into its W&B config; the dispatcher
-   saves the sweep YAML + IDs + commit to `/results`.
+   `foraging_models_commit` / `disentangled_rnns_commit` / `CO_COMPUTATION_ID`
+   into its W&B config; the dispatcher saves the sweep YAML + IDs + commit to
+   `/results`.
 7. **Scale-out (array of jobs)** — `replicas: 4` validated: 4 `wandb agent`s across 4
    GPUs sharing one sweep (`experiment_scaling.yaml`).
 
@@ -175,7 +177,7 @@ eval-throttling (item 10) were both tested and gave nothing. For *scale*, use
 
 | File | What it is | Rebuild image to change? |
 |---|---|---|
-| `Dockerfile` | GPU image: clones all three runtime repos + installs deps | **Yes** |
+| `Dockerfile` | GPU image: clones all four runtime repos + installs deps | **Yes** |
 | `entrypoint.sh` | Runtime bootstrap: pulls latest code, then `exec`s the job | **Yes** (baked, runs before the pull) |
 | `build_and_push.sh` | Builds (`linux/amd64`) and pushes via `beaker image create` | n/a |
 | `BUILD_LOG.md` | Registry metadata and dependency rationale for each image build | n/a |
@@ -224,9 +226,10 @@ beaker image get disrnn-wrapper   # note the ref: han-hou/disrnn-wrapper
 |---|---|---|
 | `--name NAME` | Beaker image name | `disrnn-wrapper` |
 | `--workspace WS` | Beaker workspace | `ai1/aind-dynamic-foraging-foundation-model` |
-| `--ref REF` | Branch/tag/SHA baked into all three repos | `main` |
+| `--ref REF` | Branch/tag/SHA baked into all four repos | `main` |
 | `--wrapper-ref` / `--dispatcher-ref` | Override one repo's baked ref | `main` |
 | `--foraging-models-ref` | Override the models repo's baked ref | `main` |
+| `--disentangled-rnns-ref` | Override the disentangled-RNN repo's baked ref | `main` |
 | `--force-rebuild` | Bust Docker's cache → fresh clone + reinstall | off |
 | `--force-override-beaker` | Replace an existing Beaker image (delete only after a successful build) | off |
 
@@ -261,9 +264,10 @@ plane — `wandb sweep` → submit `experiment_mvp.yaml` — documented in
 
 ## 3. Controlling the code version
 
-At container startup `entrypoint.sh` `git fetch`es the wrapper, dispatcher, and
-`aind-dynamic-foraging-models` repos to `WRAPPER_REF`, `DISPATCHER_REF`, and
-`FORAGING_MODELS_REF` (default `main`), exports their resolved commits for W&B
+At container startup `entrypoint.sh` `git fetch`es the wrapper, dispatcher,
+`aind-dynamic-foraging-models`, and `aind-disentangled-rnns` repos to
+`WRAPPER_REF`, `DISPATCHER_REF`, `FORAGING_MODELS_REF`, and
+`DISENTANGLED_RNNS_REF` (default `main`), exports their resolved commits for W&B
 provenance, then `exec`s the job. The Beaker spec invokes it as:
 
 ```yaml
@@ -280,13 +284,14 @@ Consequences:
     - { name: WRAPPER_REF,    value: my-feature-branch }   # branch, tag, or SHA
     - { name: DISPATCHER_REF, value: my-feature-branch }
     - { name: FORAGING_MODELS_REF, value: my-models-branch }
+    - { name: DISENTANGLED_RNNS_REF, value: my-disrnn-branch }
   ```
   Omit them and they default to `main`. Use **SHAs** to pin a run for
   reproducibility.
 - **Build-time refs don't matter for what runs.** The Dockerfile/`build_and_push.sh`
   refs only seed the baked clone; the runtime pull overwrites it.
 - **Rebuild only on dependency changes** (`pyproject.toml` / pinned git deps,
-  including new dependencies added by `aind-dynamic-foraging-models`).
+  including new dependencies added by either dynamically refreshed library).
   Symptom: a run fails with `ImportError` / `ModuleNotFoundError` after a pull.
 
 ## 3b. Staged horizons — "extend later" (continue from a prior run)
