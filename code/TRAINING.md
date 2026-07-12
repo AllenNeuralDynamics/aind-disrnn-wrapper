@@ -44,6 +44,98 @@ the `aind_disrnn_utils` data-loader package.
 
 ---
 
+## 1.5 Run lifecycle & key switches (read first)
+
+> Two independent sessions once misread the log line *"Skipping held-out evaluation
+> for multisubject …"* as *"no held-out numbers at all."* It only means the
+> **per-checkpoint** held-out eval is off — the **end-of-training held-out
+> fine-tune still runs**. This section exists so that never happens again. If a
+> log message and this section disagree, trust the code path named here.
+
+### The four phases of a run (in order)
+1. **Warmup** — `n_warmup_steps` of penalty ramp-up (disRNN) / session-curriculum
+   warmup. Loss is high and bottlenecks are held open here; this is *not* the model
+   failing. **The W&B `_step` axis includes the warmup offset**, so main-phase
+   progress is `(_step − n_warmup_steps) / n_steps`, not `_step / n_steps`.
+2. **Main training** — the `while steps_completed < n_steps` loop. Checkpoints are
+   written every `checkpoint_every_n_steps` (chunked path only — see resumability
+   below).
+3. **Artifact upload** — after the main loop, the *entire* `output_dir` (params +
+   `train_state.pkl` + plots) is uploaded to W&B as `<mtype>-output-<run_id>`
+   (type `training-output`). **This happens once, at the end — not per checkpoint.**
+   A run that hasn't finished has no restorable artifact yet.
+4. **Held-out fine-tune** (multisubject GRU/disRNN, on by default) — fine-tune a
+   fresh subject embedding on each reserved held-out mouse, predict its other
+   sessions, log `heldout/*`. This keeps the job in `running`/`idle` briefly after
+   training + upload are already done.
+
+### The two DIFFERENT held-out switches (the source of the confusion)
+| Switch | What it controls | Default | Skipping it means |
+|---|---|---|---|
+| `model.training.checkpoint_run_heldout_eval` | **per-checkpoint** held-out eval *during* training (expensive) | often `false` | only the mid-training held-out curve is off |
+| `model.training.auto_heldout_finetune.enabled` | the **end-of-training** held-out fine-tune+test (the real figure of merit) | **`true`** | **NO `heldout/*` metrics at all** |
+
+These are **not the same knob.** The *"Skipping held-out evaluation … seen-subject
+personalization only"* log line refers to the **first** (per-checkpoint eval); the
+second still runs and produces `heldout/final/eval_likelihood`. Full detail in §8.
+
+- **Held-out-mouse likelihood is the correct figure of merit** for generalization
+  questions; within-subject `checkpoint/eval_likelihood` **saturates** (~0.72–0.75
+  across model sizes) and cannot discriminate. Read `heldout/final/eval_likelihood`.
+
+### Checkpoints, resumability, and extendability (three distinct things)
+- **Checkpointing** — only the *chunked* training path writes resumable state, so
+  it requires `checkpoint_every_n_steps > 0`. Each checkpoint writes params +
+  `train_state.pkl` (optimizer state, `steps_completed`, rng) under
+  `output_dir/checkpoints/step_*`.
+- **Resumability = WITHIN one experiment (preemption recovery).** A preempted task
+  restarts as the *same* task with the *same* `/results` dataset (anchored by
+  `DISRNN_RESUMABLE_OUTPUT_DIR=/results/run`). On start, `find_latest_resumable_state`
+  loads the newest checkpoint and the loop continues from `steps_completed`,
+  **skipping warmup** (warmup is already folded into the checkpointed params).
+  Gated by `auto_resume` (default `true`) + `checkpoint_every_n_steps > 0`; W&B
+  continuity via a deterministic `WANDB_RUN_ID` + `WANDB_RESUME=allow`. Automatic,
+  no flags needed.
+- **Extendability = ACROSS experiments (staged horizons).** A *new* experiment gets
+  a *fresh, empty* `/results`, so it does **not** see the old run's checkpoints and
+  would restart from scratch — **unless** you set
+  `model.training.restore_from_run_id=<source W&B run name>` (or env
+  `DISRNN_RESTORE_FROM_RUN_ID`). That downloads the source run's
+  `<mtype>-output-<run_id>:latest` artifact into the new run's `outputs/` so resume
+  finds the checkpoint and continues (skipping warmup). Set the new `n_steps`
+  **larger** than the source's. Prerequisite: the source run must have **finished**
+  (phase 3 above) so its artifact is `COMMITTED`. Trainer-agnostic (GRU + disRNN
+  upload the same artifact shape). Helper:
+  `run_helpers.maybe_restore_checkpoint_from_wandb`, called from `run_hpc.py`.
+
+### Other switches that surprise people
+- **`length_bucketing`** (+ `length_bucket_grid`, default 128): trims each
+  `random`-mode batch's RNN unroll to the batch's own session length instead of the
+  global `T_max`. Big speedup (~1.86× measured on 100-mice disRNN). Requires
+  `batch_mode=random`; no-op under `single`/full-batch. Runs in the **training**
+  loop (both trainers), *not* rollout/generation. The disRNN/GRU configs must
+  **declare** the key (Hydra struct mode rejects overriding an absent key).
+- **disRNN has NO early stopping.** Only `gru_trainer` has opt-in loss-based early
+  stopping. A disRNN sweep must **omit** `early_stopping` keys or Hydra errors.
+- **Bottleneck sigma convention:** small σ = **OPEN** (info flows), σ→1 = **CLOSED**.
+  So openness *decreases* as σ→1 (sparser). At init all bottlenecks are open.
+- **Reading the sparsity metrics — mind the threshold.** A single hard-threshold
+  `frac_open` is **misleading**: `bottlenecks/<fam>_frac_open` (σ<0.1) *saturates* to
+  0 while channels sit at σ≈0.85 (mostly-but-not-fully closed), whereas the dashboard
+  `plot_bottlenecks` figure calls a latent "open" at the far more permissive σ<0.97
+  (it logs `open latents by bottleneck > 0.03`, i.e. 1−σ>0.03) — so the same run can
+  read `frac_open=0.0` in the scalar and "almost all open" in the figure. They are not
+  contradictory; they are different cutoffs on the same σ distribution. **Prefer the
+  threshold-free readouts** logged alongside: `bottlenecks/<fam>_n_eff_open_frac` (the
+  normalized participation ratio of channel openness `1−σ`, in [1/n,1], **comparable
+  across families of different size** — 5-element latent vs the matrix-shaped
+  update-net bottleneck), plus `sigma_median` / `sigma_p10` / `sigma_p90` (catch a
+  bimodal open/closed split) and `total_openness` (=Σ(1−σ), raw capacity). `frac_open`
+  is kept as a multi-threshold curve (`_frac_open_s0p03/0p1/0p5/0p9/0p97`) so both the
+  strict and figure conventions are visible.
+
+---
+
 ## 2. Repository layout
 
 | Path | What it is |
@@ -340,6 +432,22 @@ environment.
 ## Changelog
 
 > Add a dated entry (newest first) whenever you add or change a feature.
+
+### 2026-07-04
+- **Threshold-free bottleneck-sparsity metrics.** `compute_bottleneck_sparsity_metrics`
+  now also logs, per family: `n_eff_open` + `n_eff_open_frac` (normalized participation
+  ratio of channel openness `1−σ`, comparable across families of different size),
+  `total_openness` (Σ(1−σ)), `sigma_p10/median/p90`, and a multi-threshold `frac_open`
+  curve (σ<0.03/0.1/0.5/0.9/0.97). Motivated by the single-threshold `frac_open`
+  saturating to 0 (σ<0.1) while the dashboard figure reads "open" (σ<0.97) — see §1.5.
+- **Docs: new §1.5 "Run lifecycle & key switches (read first)".** Consolidates the
+  four run phases, the two *different* held-out switches
+  (`checkpoint_run_heldout_eval` vs `auto_heldout_finetune.enabled`), and
+  checkpoints/resumability/extendability upfront, after two sessions misread the
+  per-checkpoint-eval skip log line as "no held-out at all."
+- **Clarified the held-out skip log messages** in `gru_trainer`, `disrnn_trainer`,
+  and `training_runner` to name *which* held-out path is skipped and state that the
+  end-of-training `auto_heldout_finetune` still runs (with `heldout/*` metrics).
 
 ### 2026-06-18
 - **Held-out auto fine-tune mirrors training's logging/plotting cadence.** The
