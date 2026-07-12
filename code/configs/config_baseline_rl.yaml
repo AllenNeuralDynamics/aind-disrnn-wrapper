@@ -1,0 +1,171 @@
+# Baseline RL model training configuration
+# This config uses the same Q-learning model for both simulation and fitting
+# to enable fair comparison of parameter recovery and likelihood metrics
+# 
+# Setup:
+#  - Data simulation uses Hattori2019-style Q-learning (2 learning rates, 1 forget rate)
+#  - Fitting uses identical model structure to recover parameters
+#  - Allows comparison of: fitted vs true parameters, likelihood vs groundtruth
+
+
+# data:
+#   type: synthetic
+#   _target_: ${.agent.loader_target}
+#   num_trials: 500
+#   num_sessions: 30
+#   run_name_component: synthetic_${.agent.type}_${.task.type}
+#   task:
+#     type: random_walk
+#     reward_baiting: false
+#     p_min: 0.0
+#     p_max: 1.0
+#     sigma: 0.15
+#     mean: 0
+#     num_trials: ${..num_trials}
+#     seed: ${seed}
+#   agent:
+#     type: ${.agent_class}
+#     loader_target: data_loaders.synthetic.SyntheticCognitiveAgents
+#     agent_class: ForagerQLearning
+#     # Use Hattori2019-style Q-learning model (2 learning rates, 1 forget rate)
+#     # These agent_kwargs match the model section below for fair comparison
+#     agent_kwargs:
+#       number_of_learning_rate: 2
+#       number_of_forget_rate: 1
+#       choice_kernel: none
+#       action_selection: softmax
+#     # True parameters used for simulation (can compare against fitted params)
+#     agent_params:
+#       learn_rate_rew: 0.5
+#       learn_rate_unrew: 0.1
+#       forget_rate_unchosen: 0.05
+#       softmax_inverse_temperature: 5.0
+#       biasL: 0.0
+#     # Add session-to-session variability to biasL for more realistic data
+#     agent_params_session_var:
+#       biasL:
+#         type: gaussian
+#         mean: 0
+#         std: 1
+#     seed: ${seed}
+#   eval_every_n: 2
+#   seed: ${seed}
+
+
+# mice_snapshot, multi-subject
+data:
+  type: mice_snapshot
+  _target_: data_loaders.mice.MiceSnapshotDatasetLoader
+  subject_ids: null             # direct override; bypasses the selection pipeline
+  # ── Subject selection pipeline ──────────────────────────────────────────
+  # Subjects with >= min_sessions sessions are assigned their most-common task
+  # as a curriculum, ranked per curriculum by session count; a fixed ~20% heldout
+  # test set is reserved (every heldout_every_n-th in rank order) and the training
+  # set is a seeded subject_ratio sample of the remaining ~80% pool per curriculum.
+  min_sessions: 10
+  heldout_every_n: 5            # reserve every 5th ranked subject (~20%) as heldout
+  subject_ratio:                # per-curriculum fraction of the ~80% train pool
+    Coupled Baiting: 1.0
+    Uncoupled Baiting: 1.0
+    Uncoupled Without Baiting: 1.0
+  subject_sample_seed: ${seed}  # reproducible training-set subject sample
+  # ── Held-out test subject evaluation ────────────────────────────────────
+  # Auto-enabled for mice_snapshot runs (gated on data.type); set
+  # `heldout_eval: false` to disable, or `true` to force on for other run types.
+  test_subject_ids: null        # optional explicit heldout subjects (overrides the reserved set)
+  train_example_sessions_per_subject: 1    # >=0; 0 skips training example plotting
+  heldout_example_sessions_per_subject: 1  # >=0; 0 skips held-out example plotting
+  eval_example_sessions_per_subject: 1     # >=0; 0 skips eval example plotting
+  example_max_subjects: 3                  # >=0; cap subjects used for train/eval/held-out examples
+
+  mature_only: true             # return only mature-stage trials (does not affect selection)
+  curricula:
+    - Coupled Baiting
+    - Uncoupled Baiting
+    - Uncoupled Without Baiting
+  multisubject: true
+  ignore_policy: exclude
+  features: null
+  eval_every_n: 2
+  batch_size: 1024              # random/rolling require an explicit int; null is only valid with batch_mode: single
+  batch_mode: random            # single | rolling | random
+  run_name_component: mice_snapshot
+  seed: ${seed}
+
+
+
+####################################################################
+# # baseline_rl
+# model:
+#   type: baseline_rl
+#   _target_: model_trainers.baseline_rl_trainer.BaselineRLTrainer
+#   agent_class: ForagerQLearning
+#   agent_kwargs:
+#     number_of_learning_rate: 1
+#     number_of_forget_rate: 1
+#     choice_kernel: one_step
+#     action_selection: softmax
+#   fit_bounds_override: {}
+#   clamp_params: {}
+#   DE_kwargs:
+#     workers: -1               # increase for multi-core fitting (e.g. 4 or -1)
+#     polish: true
+#   run_name_component: rl_${.agent_class}_L${.agent_kwargs.number_of_learning_rate}F${.agent_kwargs.number_of_forget_rate}
+
+
+# baseline_rl, multi-subject
+model:
+  type: baseline_rl
+  _target_: model_trainers.baseline_rl_trainer.BaselineRLTrainer
+  architecture:
+    multisubject: true
+  multisubject_subject_workers: 6  # Number of subjects to fit concurrently in multisubject mode
+  # multisubject fitting only goes through the process pool when multisubject_subject_workers > 1
+  # Agent class from aind_dynamic_foraging_models.generative_model
+  # Options: ForagerQLearning, ForagerLossCounting, ForagerCompareThreshold
+  agent_class: ForagerQLearning
+  # Agent hyperparameters that define the model structure
+  # For ForagerQLearning:
+  #   - number_of_learning_rate: 1 or 2 (1=single rate, 2=separate for rewarded/unrewarded)
+  #   - number_of_forget_rate: 0 or 1 (0=no forgetting, 1=forget unchosen)
+  #   - choice_kernel: "none", "one_step", or "full"
+  #   - action_selection: "softmax" or "epsilon-greedy"
+  agent_kwargs:
+    number_of_learning_rate: 1
+    number_of_forget_rate: 1
+    choice_kernel: one_step
+    action_selection: softmax
+  # Override default parameter bounds for fitting (optional)
+  # Example: fit_bounds_override: {learn_rate_rew: [0.0, 0.5]}
+  fit_bounds_override: {}
+  # Fix certain parameters to specific values during fitting (optional)
+  # Example: clamp_params: {biasL: 0.0}
+  clamp_params: {}
+  # Differential evolution optimizer settings
+  DE_kwargs:
+    # popsize: 15
+    # mutation: [0.5, 1.0]
+    # recombination: 0.7
+    polish: true
+  # Re-fit baseline RL on the reserved held-out subjects (per-subject, train/eval
+  # split) and log aggregate held-out train/eval likelihood under heldout/*, like
+  # GRU/disRNN. Set skip_train_fit=true for a held-out-only baseline that skips
+  # the main training-subject fit. Replaces the old transfer-based held-out eval.
+  heldout_refit:
+    enabled: true
+    skip_train_fit: false
+  seed: ${seed}
+  run_name_component: baseline_rl_${.agent_class}_L${.agent_kwargs.number_of_learning_rate}F${.agent_kwargs.number_of_forget_rate}
+
+
+
+####################################################################
+seed: 43
+
+wandb:
+  entity: AIND-disRNN
+  dir: /results
+  project: test
+  name: ${data.run_name_component}_${model.run_name_component}
+
+job_id: 0

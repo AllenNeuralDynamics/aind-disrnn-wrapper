@@ -1,14 +1,21 @@
-"""Entry point for disRNN wrapper experiments (Code Ocean pipeline)."""
+"""Entry point for disRNN wrapper experiments (Code Ocean pipeline).
+
+Loads the active Hydra config from the Code Ocean job mount (/data/jobs),
+prepares it, starts a W&B run, then delegates the train + held-out
+evaluation/fine-tuning to the shared ``training_runner.run_training`` (the same
+body the Beaker/HPC entry point run_hpc.py uses), keeping the two paths in parity.
+"""
 
 import logging
 import sys
 from pathlib import Path
 
-from hydra.utils import instantiate
 from omegaconf import OmegaConf
 
-from base.interfaces import DatasetLoader, ModelTrainer
+from training_runner import run_training
 from utils.run_helpers import (
+    apply_dynamic_run_name_components,
+    apply_model_penalty_multipliers,
     configure_sys_logger,
     copy_input_folder,
     find_hydra_config,
@@ -30,6 +37,8 @@ def main() -> None:
 
     logger.info("Loading Hydra config from %s", config_path)
     hydra_config = OmegaConf.load(config_path)
+    apply_model_penalty_multipliers(hydra_config)
+    apply_dynamic_run_name_components(hydra_config)
 
     # Backup inputs
     copy_input_folder(config_path)
@@ -40,15 +49,8 @@ def main() -> None:
     resolved = OmegaConf.to_container(hydra_config, resolve=True)
     logger.info("Hydra config (resolved):\n%s", OmegaConf.to_yaml(resolved))
 
-    # --- Load data ---
-    dataset_loader: DatasetLoader = instantiate(hydra_config.data)
-    dataset_bundle = dataset_loader.load()
-    logger.info("Loaded dataset bundle with metadata: %s", dataset_bundle.metadata)
-
-    # --- Train model ---
-    model_trainer: ModelTrainer = instantiate(hydra_config.model)
-    loggers = {"wandb": wandb_run} if wandb_run is not None else None
-    model_trainer.fit(dataset_bundle, loggers=loggers)
+    # --- Train + held-out evaluation/fine-tuning (shared with run_hpc.py) ---
+    run_training(hydra_config, wandb_run)
     if wandb_run is not None:
         wandb_run.finish()
 

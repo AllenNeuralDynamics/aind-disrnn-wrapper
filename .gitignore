@@ -153,13 +153,20 @@ dmypy.json
 !.vscode/*.code-snippets
 .vscode
 
-.codeocean/
-.claude/
-
-environment/postInstall
+# Claude Code: track only the shared project settings (skills-pack enablement)
+.claude/*
+!.claude/settings.json
 
 # Other editable repos
 src
 
 # Per-user slurm settings (see job/user.env.example)
 job/user.env
+
+# Committed data artifacts kept out of source (still available on origin/pck_dev)
+code/*.pkl
+code/resolved_run.json
+
+# Local W&B scratch (run logs + downloaded artifact tables); reproducible from W&B.
+wandb/
+artifacts/
