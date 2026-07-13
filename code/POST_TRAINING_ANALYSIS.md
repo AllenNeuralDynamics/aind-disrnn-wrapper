@@ -64,7 +64,6 @@ Everything is **JAX/Haiku** on the upstream `disentangled_rnns` library and the
 | `evaluation/plotting.py` | Framework-free latent/trajectory plotting |
 | `utils/{disrnn,gru,baseline_rl}_evaluation.py`, `utils/disrnn_plotting.py` | **Deprecated re-export shims** → `evaluation/*` (back-compat for trainers/`run_capsule.py`; prefer `evaluation.*` in new code) |
 | `run_embedding_space_analysis.py`, `run_heldout_subject_finetuning.py` | Older single-purpose argparse CLIs (still work; `run_analysis.py` supersedes them) |
-| `run_capsule-test_*.py` | **Deprecated** scratch scripts — now stubs pointing at `run_analysis.py` |
 | `tests/` | `unittest` suites (see [§9](#9-testing)) |
 
 ---
@@ -109,9 +108,41 @@ python run_analysis.py <subcommand> --help    # full options for any sub-command
 | `from-histories` | `run_post_training_analysis_from_saved_histories` | `--simulated-history` · `--animal-history` · `--resolved-run` · `--window-size` (no model load) |
 | `likelihood-comparison` | `run_prediction_likelihood_comparison` | `--model-dirs A B …` · `--model-labels` · `--checkpoint-policy` · `--include-heldout/--no-include-heldout` · `--precomputed-session-metrics` |
 | `likelihood-advantage` | `run_likelihood_advantage_analysis` | `--model1-dir` · `--model2-dir` · `--split` · `--include-rnn-state-space/--no-…` · `--include-baseline-q-space/--no-…` |
+| `state-space-condition` | `run_rnn_state_space_condition_analysis` | `--trial-advantage` · `--condition-columns` · `--condition-values` · `--probability-color-column` (no model load) |
+| `state-space-subject` | `run_rnn_state_space_subject_analysis` | `--trial-advantage` · `--probability-column` · `--subject-ids` · `--subject-embeddings` (no model load) |
+| `state-space-overview` | `run_rnn_state_space_overview_analysis` | `--trial-advantage` · `--color-columns` (no model load) |
+| `q-space-condition` | `run_baseline_q_space_condition_analysis` | `--trial-advantage` · `--condition-columns` · `--condition-values` (no model load) |
+| `q-space-subject` | `run_baseline_q_space_subject_analysis` | `--trial-advantage` · `--probability-column` · `--subject-ids` (no model load) |
+| `embedding-params` | `run_subject_embedding_baseline_parameter_analysis` | `--model1-dir` (RNN) · `--model2-dir` (baseline-RL) · `--parameter-names` |
 | `embedding` | `run_embedding_space_analysis` | `--model-dir` · `--checkpoint-policy` · `--task-column` · `--room-column` · … |
 | `baseline-rl` | `run_baseline_rl_post_training_analysis` | `--resolved-run` · `--fitting-df` · `--model-aliases` · `--n-rollouts-per-session` |
 | `finetune` | `run_heldout_subject_finetuning_from_config` | `--config <yaml>` · `--output-root` (**training-adjacent**, [§7](#7-training-adjacent-exceptions)) |
+
+### The two-stage state-space / Q-space flow
+
+`likelihood-advantage` is the **expensive** stage: it loads both models, evaluates them,
+rolls out the baseline-RL agent, extracts RNN hidden states, and writes a canonical
+trial-level dataframe to `<output-dir>/trial_advantage.pkl` (it also runs the projections
+inline by default — `--include-rnn-state-space` / `--include-baseline-q-space`).
+
+The five `state-space-*` / `q-space-*` sub-commands are the **cheap** stage: they read that
+pickle and re-render figures **without loading any model**, so a projection, condition split,
+or colouring can be changed without repeating the evaluation.
+
+```bash
+# Stage 1 (heavy, needs both runs) — writes OUT/trial_advantage.pkl
+python run_analysis.py likelihood-advantage \
+    --model1-dir /data/<RNN_RUN> --model2-dir /data/<BASELINE_RUN> --output-dir OUT
+
+# Stage 2 (cheap, re-plot only) — no model is loaded
+python run_analysis.py state-space-subject --trial-advantage OUT/trial_advantage.pkl \
+    --subject-ids 700123 700456 --output-dir OUT
+python run_analysis.py q-space-condition --trial-advantage OUT/trial_advantage.pkl \
+    --condition-values '{"session_stage": ["early", "late"]}' --output-dir OUT
+```
+
+`embedding-params` stands apart: it needs both run directories (not the pickle) and colours
+model1's subject embeddings by model2's fitted baseline-RL parameters.
 
 All sub-commands accept `--output-dir` and print a JSON summary. Examples:
 

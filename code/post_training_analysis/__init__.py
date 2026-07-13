@@ -51,9 +51,17 @@ _EXPORTS = {
         "post_training_analysis.likelihood_advantage_analysis",
         "run_rnn_state_space_condition_analysis",
     ),
+    "run_rnn_state_space_overview_analysis": (
+        "post_training_analysis.likelihood_advantage_analysis",
+        "run_rnn_state_space_overview_analysis",
+    ),
     "run_rnn_state_space_subject_analysis": (
         "post_training_analysis.likelihood_advantage_analysis",
         "run_rnn_state_space_subject_analysis",
+    ),
+    "run_subject_embedding_baseline_parameter_analysis": (
+        "post_training_analysis.likelihood_advantage_analysis",
+        "run_subject_embedding_baseline_parameter_analysis",
     ),
     "compute_history_dependent_switch_stats": (
         "post_training_analysis.generative_analysis",
