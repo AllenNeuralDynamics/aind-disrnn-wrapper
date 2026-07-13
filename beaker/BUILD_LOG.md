@@ -13,9 +13,28 @@ job executes.
 
 ## Live images
 
-### `han-hou/disrnn-wrapper-pck-integration-20260630`
+### `han-hou/disrnn-wrapper-main-20260712`
 
 - **Status:** current; use for new studies
+- **Beaker image ID:** `01KXCF2EASQ8NV463684PZJ0ZP`
+- **Created:** 2026-07-12 17:47 PT
+- **Committed:** 2026-07-12 17:50 PT
+- **Size:** 6,703,239,968 bytes (6.70 GB)
+- **Build host:** Mac, `linux/amd64`
+- **Baked wrapper ref:** `a4792b042ec61193f37c2be58c44f04479cb2e9b`
+- **Baked dispatcher ref:** `7c3ae59d6adaf1f16f9b9a50fda55cb286a9df23`
+- **Baked foraging-models ref:** `b44b0912de8d5307debe9b3b1c570cfc6dad816e`
+- **Baked disentangled-rnns ref:** `a9b9978831cb22d37e2a75c15805c621dfe00b1f`
+- **Reason:** default runtime refs now target `main`; foraging-models is refreshed
+  from GitHub at job startup and records its resolved commit, while
+  disentangled-rnns remains image-baked
+- **Smoke test:** [experiment `01KXCGK6MM6QV3AND8C7ZC1TCX`](https://beaker.org/ex/01KXCGK6MM6QV3AND8C7ZC1TCX),
+  exit code 0 on one g6e GPU; runtime refs, JAX CUDA, imports, Hydra composition,
+  and `SMOKE OK` verified
+
+### `han-hou/disrnn-wrapper-pck-integration-20260630`
+
+- **Status:** deprecated; retained for older runs
 - **Beaker image ID:** `01KWDGGQ4A9BTDXDHCGWXBWG05`
 - **Created:** 2026-06-30 17:16 PT
 - **Committed:** 2026-06-30 17:21 PT

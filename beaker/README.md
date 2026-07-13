@@ -194,7 +194,7 @@ eval-throttling (item 10) were both tested and gave nothing. For *scale*, use
 |---|---|
 | Workspace | `ai1/aind-dynamic-foraging-foundation-model` |
 | Cluster (L40s) | `ai1/octo-hub-aws-l40s` |
-| Image ref | `han-hou/disrnn-wrapper-pck-integration-20260630` — the original `han-hou/disrnn-wrapper` **no longer exists** (`ImageNotFound`). Build history: [`BUILD_LOG.md`](BUILD_LOG.md). Authoritative live list: `beaker workspace images ai1/aind-dynamic-foraging-foundation-model` |
+| Image ref | `han-hou/disrnn-wrapper-main-20260712` — the original `han-hou/disrnn-wrapper` **no longer exists** (`ImageNotFound`). Build history: [`BUILD_LOG.md`](BUILD_LOG.md). Authoritative live list: `beaker workspace images ai1/aind-dynamic-foraging-foundation-model` |
 | W&B secret | `han-wandb-api-key` (a Beaker secret holding `WANDB_API_KEY`) |
 
 ---

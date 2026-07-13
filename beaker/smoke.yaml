@@ -8,7 +8,7 @@
 ##      dependency) via `run_hpc --cfg job`, which prints the resolved config
 ##      and exits — no training, no W&B.
 ##
-## Fill <username> (from `beaker image get disrnn-wrapper`), then submit:
+## Submit:
 ##   beaker experiment create \
 ##     -w ai1/aind-dynamic-foraging-foundation-model beaker/smoke.yaml
 ## Watch it:  https://beaker.org/ex/<experiment-id>   (look for "SMOKE OK")
@@ -18,7 +18,7 @@ description: disRNN image smoke test (GPU + imports + Hydra config, no W&B)
 tasks:
   - name: smoke
     image:
-      beaker: han-hou/disrnn-wrapper
+      beaker: han-hou/disrnn-wrapper-main-20260712
     command:
       - bash
       - /workspace/aind-disrnn-wrapper/beaker/entrypoint.sh
