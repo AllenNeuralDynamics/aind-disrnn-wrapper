@@ -118,6 +118,17 @@ for run, meta in inv.items():
             out["persession_confusion_sessioncond"] = confusion_matrix(y, yhat_sess, labels=labs).tolist()
             out["persession_labels"] = labs
             out["n_session_rows"] = int(len(m))
+            # Mechanism diagnostic: how much smooth session POSITION does the
+            # session-conditioned embedding encode? High position-R^2 alongside a ~0
+            # per-session family gap shows the session code is a POSITION code (good for
+            # Stage-2 drift), structurally unable to represent a discrete regime draw.
+            # subject-only is the ~0 control (constant within subject).
+            if "session_phase" in m.columns:
+                pos = m["session_phase"].values
+                out["position_r2_sessioncond"] = float(r2_score(
+                    pos, cross_val_predict(LinearRegression(), Xsess, pos, cv=gkf, groups=groups)))
+                out["position_r2_subjectonly"] = float(r2_score(
+                    pos, cross_val_predict(LinearRegression(), Xsubj, pos, cv=gkf, groups=groups)))
             m.to_csv(os.path.join(outdir, f"ctx_{run}.csv"), index=False)
 
         # save per-subject embedding + mixweights for figures
@@ -130,7 +141,8 @@ for run, meta in inv.items():
         results[run] = out
         print(f"{run} {enc}/D{emb}: mix_R2_mean={mix_r2_mean:.3f} dom_acc={dom_acc} "
               f"sess_fam={out.get('persession_family_acc_sessioncond')} "
-              f"subj_fam={out.get('persession_family_acc_subjectonly')}", flush=True)
+              f"subj_fam={out.get('persession_family_acc_subjectonly')} "
+              f"pos_R2={out.get('position_r2_sessioncond')}", flush=True)
     except Exception as ex:
         import traceback; print(f"{run} FAILED: {type(ex).__name__}: {ex}", flush=True)
         traceback.print_exc()
