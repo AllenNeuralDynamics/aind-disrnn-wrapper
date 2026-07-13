@@ -1,6 +1,6 @@
 # Beaker (AI Hub) image for the disRNN wrapper — GPU.
 #
-# Clones the four runtime source repos from GitHub.
+# Clones the dispatcher, wrapper, and dynamic-foraging-models repos from GitHub.
 # The dispatcher and wrapper use the sibling layout that run_hpc.py expects:
 #   /workspace/aind-disrnn-wrapper/code/run_hpc.py reads its Hydra configs from
 #   ../../aind-disrnn-dispatcher/code/config  ->  /workspace/aind-disrnn-dispatcher/...
@@ -35,14 +35,13 @@ ARG GH_ORG=https://github.com/AllenNeuralDynamics
 ARG DISPATCHER_REF=main
 ARG WRAPPER_REF=main
 ARG FORAGING_MODELS_REF=main
-ARG DISENTANGLED_RNNS_REF=main
 
-# Clone all four repos and install the wrapper + GPU JAX. All repos
+# Clone all three repos and install the wrapper + GPU JAX. All repos
 # and the wrapper's git deps (disentangled-rnns, aind-disrnn-utils) are public,
 # so no credentials are needed.
 #
 # The baked code is only a STARTING POINT: at job startup beaker/entrypoint.sh
-# re-pulls all four repos to the requested refs (default main), so the image
+# re-pulls all three repos to the requested refs (default main), so the image
 # rarely needs rebuilding — only when DEPENDENCIES change. The build-time clone exists
 # mainly to (a) install deps from pyproject and (b) seed the repos so entrypoint.sh
 # can `git fetch` them. See beaker/entrypoint.sh and the README.
@@ -65,13 +64,10 @@ RUN clone_ref() { \
       /workspace/aind-disrnn-dispatcher "$DISPATCHER_REF" && \
     clone_ref "$GH_ORG/aind-dynamic-foraging-models.git" \
       /workspace/aind-dynamic-foraging-models "$FORAGING_MODELS_REF" && \
-    clone_ref "$GH_ORG/aind-disentangled-rnns.git" \
-      /workspace/aind-disentangled-rnns "$DISENTANGLED_RNNS_REF" && \
     clone_ref "$GH_ORG/aind-disrnn-wrapper.git" \
       /workspace/aind-disrnn-wrapper "$WRAPPER_REF" && \
     pip install --no-cache-dir -e "/workspace/aind-disrnn-wrapper[gpu]" && \
-    pip install --no-cache-dir -e /workspace/aind-dynamic-foraging-models && \
-    pip install --no-cache-dir -e /workspace/aind-disentangled-rnns
+    pip install --no-cache-dir -e /workspace/aind-dynamic-foraging-models
 
 WORKDIR /workspace/aind-disrnn-wrapper/code
 ENV PYTHONPATH=/workspace/aind-disrnn-wrapper/code

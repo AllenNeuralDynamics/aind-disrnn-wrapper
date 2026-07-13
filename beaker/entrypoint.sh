@@ -2,8 +2,8 @@
 # Runtime entrypoint for the disRNN Beaker image.
 #
 # Runs at CONTAINER STARTUP on every Beaker job (NOT at image build time): it
-# refreshes all four repos to the requested code on GitHub *before* running the
-# job, so code/config edits take effect by just launching a new run — no rebuild.
+# refreshes all three repos to the requested code on GitHub *before* running the job, so
+# code/config edits take effect by just launching a new run — no image rebuild.
 #
 # Invoked from the Beaker spec's `command`, e.g.:
 #   command: [bash, /workspace/aind-disrnn-wrapper/beaker/entrypoint.sh,
@@ -17,14 +17,12 @@
 # Pin a run for reproducibility by passing commit SHAs instead of branches:
 #   envVars: [{name: WRAPPER_REF, value: <sha>},
 #             {name: DISPATCHER_REF, value: <sha>},
-#             {name: FORAGING_MODELS_REF, value: <sha>},
-#             {name: DISENTANGLED_RNNS_REF, value: <sha>}]
+#             {name: FORAGING_MODELS_REF, value: <sha>}]
 set -euo pipefail
 
 WRAPPER_REF="${WRAPPER_REF:-main}"
 DISPATCHER_REF="${DISPATCHER_REF:-main}"
 FORAGING_MODELS_REF="${FORAGING_MODELS_REF:-main}"
-DISENTANGLED_RNNS_REF="${DISENTANGLED_RNNS_REF:-main}"
 
 refresh() {  # <repo dir> <ref> <commit env var>
     local dir="$1" ref="$2" commit_env="$3" commit
@@ -41,7 +39,6 @@ refresh() {  # <repo dir> <ref> <commit env var>
 echo "[entrypoint] refreshing source from GitHub before the run..."
 refresh /workspace/aind-disrnn-dispatcher          "$DISPATCHER_REF"       DISPATCHER_COMMIT
 refresh /workspace/aind-dynamic-foraging-models    "$FORAGING_MODELS_REF"  FORAGING_MODELS_COMMIT
-refresh /workspace/aind-disentangled-rnns          "$DISENTANGLED_RNNS_REF" DISENTANGLED_RNNS_COMMIT
 refresh /workspace/aind-disrnn-wrapper             "$WRAPPER_REF"          WRAPPER_COMMIT
 
 if [ "$#" -eq 0 ]; then

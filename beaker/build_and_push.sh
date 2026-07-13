@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the disRNN wrapper GPU image and push it to Beaker's registry.
 #
-# The Dockerfile git-clones all four repos itself (all public, no token needed), so
+# The Dockerfile git-clones all three repos itself (all public, no token needed), so
 # there is no build context to stage and you can run this from anywhere.
 #
 # Usage:
@@ -15,8 +15,6 @@
 #   --dispatcher-ref REF    Override the dispatcher repo ref only
 #   --foraging-models-ref REF
 #                           Override the aind-dynamic-foraging-models ref only
-#   --disentangled-rnns-ref REF
-#                           Override the aind-disentangled-rnns ref only
 #   --force-rebuild         Bust Docker's cache so the build does a FRESH clone +
 #                           reinstall (otherwise Docker reuses cached layers and
 #                           may bake stale code/deps).
@@ -34,7 +32,6 @@ WORKSPACE="ai1/aind-dynamic-foraging-foundation-model"
 WRAPPER_REF="main"
 DISPATCHER_REF="main"
 FORAGING_MODELS_REF="main"
-DISENTANGLED_RNNS_REF="main"
 FORCE_REBUILD=0
 FORCE_OVERRIDE_BEAKER=0
 
@@ -44,11 +41,10 @@ while [ "$#" -gt 0 ]; do
     case "$1" in
         --name)                  IMAGE_NAME="$2"; shift 2 ;;
         --workspace)             WORKSPACE="$2"; shift 2 ;;
-        --ref)                   WRAPPER_REF="$2"; DISPATCHER_REF="$2"; FORAGING_MODELS_REF="$2"; DISENTANGLED_RNNS_REF="$2"; shift 2 ;;
+        --ref)                   WRAPPER_REF="$2"; DISPATCHER_REF="$2"; FORAGING_MODELS_REF="$2"; shift 2 ;;
         --wrapper-ref)           WRAPPER_REF="$2"; shift 2 ;;
         --dispatcher-ref)        DISPATCHER_REF="$2"; shift 2 ;;
         --foraging-models-ref)   FORAGING_MODELS_REF="$2"; shift 2 ;;
-        --disentangled-rnns-ref) DISENTANGLED_RNNS_REF="$2"; shift 2 ;;
         --force-rebuild)         FORCE_REBUILD=1; shift ;;
         --force-override-beaker) FORCE_OVERRIDE_BEAKER=1; shift ;;
         -h|--help)               usage; exit 0 ;;
@@ -60,7 +56,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "image: $IMAGE_NAME   workspace: $WORKSPACE"
 echo "refs: dispatcher=${DISPATCHER_REF} wrapper=${WRAPPER_REF} foraging-models=${FORAGING_MODELS_REF}"
-echo "      disentangled-rnns=${DISENTANGLED_RNNS_REF}"
 echo "force-rebuild: $FORCE_REBUILD   force-override-beaker: $FORCE_OVERRIDE_BEAKER"
 
 # Pre-flight: Beaker image names are unique per workspace. If one already exists,
@@ -100,7 +95,6 @@ docker build \
     --build-arg WRAPPER_REF="$WRAPPER_REF" \
     --build-arg DISPATCHER_REF="$DISPATCHER_REF" \
     --build-arg FORAGING_MODELS_REF="$FORAGING_MODELS_REF" \
-    --build-arg DISENTANGLED_RNNS_REF="$DISENTANGLED_RNNS_REF" \
     -f "$SCRIPT_DIR/Dockerfile" \
     -t "$IMAGE_NAME" \
     "$SCRIPT_DIR"

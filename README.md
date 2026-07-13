@@ -79,9 +79,8 @@ that launched it. This is achieved with three complementary mechanisms:
    - `wandb.init(config=...)` records the `data`, `model`, and `meta` blocks
      from the resolved Hydra config, so they are filterable and groupable in the
      W&B UI.
-   - Beaker runs also stamp `wrapper_commit`, `dispatcher_commit`,
-     `foraging_models_commit`, and `disentangled_rnns_commit` after refreshing
-     all four repositories.
+   - Beaker runs also stamp `wrapper_commit`, `dispatcher_commit`, and
+     `foraging_models_commit` after refreshing all three repositories.
 
 3. Dispatcher lineage injection for HPC sweeps.
    - At sweep creation time, `aind-disrnn-dispatcher/code/launch_hpc.py`
