@@ -2,13 +2,13 @@
 ## WITHOUT W&B, a sweep, or any real training.
 ##
 ## It checks, in one short job:
-##   1. image pulls + beaker/entrypoint.sh runs its runtime git-pull
+##   1. image pulls + beaker/entrypoint.sh refreshes all runtime repos
 ##   2. JAX sees the GPU (jax.devices())
 ##   3. Hydra composes the config across BOTH repos (the sibling-layout
 ##      dependency) via `run_hpc --cfg job`, which prints the resolved config
 ##      and exits — no training, no W&B.
 ##
-## Fill <username> (from `beaker image get disrnn-wrapper`), then submit:
+## Submit:
 ##   beaker experiment create \
 ##     -w ai1/aind-dynamic-foraging-foundation-model beaker/smoke.yaml
 ## Watch it:  https://beaker.org/ex/<experiment-id>   (look for "SMOKE OK")
@@ -18,7 +18,7 @@ description: disRNN image smoke test (GPU + imports + Hydra config, no W&B)
 tasks:
   - name: smoke
     image:
-      beaker: han-hou/disrnn-wrapper
+      beaker: han-hou/disrnn-wrapper-main-20260712
     command:
       - bash
       - /workspace/aind-disrnn-wrapper/beaker/entrypoint.sh
@@ -27,6 +27,7 @@ tasks:
       - |
         set -e
         python -c "import jax; print('JAX devices:', jax.devices())"
+        python -c "import aind_dynamic_foraging_models; print('foraging models import: OK')"
         python -m run_hpc --cfg job data=synthetic model=disrnn
         echo "SMOKE OK"
     context:
@@ -39,8 +40,10 @@ tasks:
       gpuCount: 1
     envVars:
       - name: WRAPPER_REF
-        value: ai_hub
+        value: main
       - name: DISPATCHER_REF
-        value: ai_hub
+        value: main
+      - name: FORAGING_MODELS_REF
+        value: main
     result:
       path: /results
