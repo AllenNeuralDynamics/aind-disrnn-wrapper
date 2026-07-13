@@ -292,6 +292,127 @@ class TestDisrnnTrainer(unittest.TestCase):
         self.assertLessEqual(output["likelihood_train"], 1.0)
         self.assertTrue((self.output_dir / "checkpoints" / "index.json").exists())
 
+    def _checkpoint_plotting_trainer(self, **training_overrides):
+        training = {
+            "lr": 1e-3,
+            "n_steps": 4,
+            "n_warmup_steps": 1,
+            "loss": "penalized_categorical",
+            "loss_param": 1.0,
+            "max_grad_norm": 1.0,
+            "checkpoint_every_n_steps": 2,
+            "checkpoint_plot_split_examples_every_n": 2,  # plotting ON at every checkpoint
+            "checkpoint_save_output_df_every_n": 0,  # whole-cohort frame NOT persisted
+            "checkpoint_log_eval_to_wandb": False,
+            "checkpoint_log_train_to_wandb": False,
+            "checkpoint_log_split_examples_to_wandb": False,
+            "checkpoint_run_heldout_eval": False,
+            "checkpoint_plot_choice_rule": False,
+            "checkpoint_plot_update_rules": False,
+            "plot_choice_rule": False,
+            "plot_update_rules": False,
+            "save_output_df": False,
+        }
+        training.update(training_overrides)
+        return DisrnnTrainer(
+            architecture={
+                "multisubject": True,
+                "latent_size": 4,
+                "update_net_n_units_per_layer": 8,
+                "update_net_n_layers": 2,
+                "choice_net_n_units_per_layer": 4,
+                "choice_net_n_layers": 1,
+                "activation": "leaky_relu",
+                "subject_embedding_size": 3,
+            },
+            penalties={
+                "latent_penalty": 1e-3,
+                "choice_net_latent_penalty": 1e-3,
+                "update_net_obs_penalty": 1e-3,
+                "update_net_latent_penalty": 1e-3,
+                "subject_penalty": 1e-3,
+                "update_net_subject_penalty": 1e-3,
+                "choice_net_subject_penalty": 1e-3,
+            },
+            training=training,
+            output_dir=str(self.output_dir),
+            seed=42,
+        )
+
+    def test_checkpoint_plotting_does_not_materialize_whole_cohort_frame(self):
+        """Checkpoint example-plotting must NOT build the whole-cohort per-trial
+        frame when it is not being persisted.
+
+        Only a couple of subjects are ever plotted, but the checkpoint used to
+        call `dl.add_model_results` over the ENTIRE cohort on every checkpoint --
+        purely to feed those few plots. At D=614 that cost ~50 min per checkpoint
+        (~5 h per run). `gru_trainer` already avoids this by passing `raw_df` and
+        leaving `output_df=None` so each split's frame is built on demand; this
+        test pins the same contract for the disRNN.
+        """
+        trainer = self._checkpoint_plotting_trainer()
+        bundle = self._make_multisubject_bundle()
+        whole_cohort_rows = len(bundle.raw)
+
+        seen_kwargs = []
+        real = BaseMultisubjectTrainer._generate_split_examples
+
+        def spy(self, **kwargs):
+            seen_kwargs.append(kwargs)
+            return real(self, **kwargs)
+
+        # Record the SIZE of every frame handed to add_model_results. The lazy path
+        # still calls it -- more often, in fact -- but on small per-split slices, so
+        # the CALL COUNT is not the signal. The number of WHOLE-COHORT frames is.
+        frame_rows = []
+        real_add = dl.add_model_results
+
+        def add_spy(raw_df, *args, **kwargs):
+            frame_rows.append(len(raw_df))
+            return real_add(raw_df, *args, **kwargs)
+
+        with patch.object(BaseMultisubjectTrainer, "_generate_split_examples", spy), \
+                patch.object(dl, "add_model_results", add_spy):
+            trainer.fit(bundle)
+
+        # PRIMARY CONTRACT: building the whole-cohort per-trial frame is what cost
+        # ~50 min per checkpoint at D=614. It is still built ONCE at the end of
+        # training (the final eval legitimately needs it), but must never be built
+        # inside the checkpoint loop.
+        whole_cohort_builds = [n for n in frame_rows if n == whole_cohort_rows]
+        self.assertLessEqual(
+            len(whole_cohort_builds),
+            1,
+            f"the whole-cohort frame ({whole_cohort_rows} rows) was built "
+            f"{len(whole_cohort_builds)}x; it must be built at most once (the final "
+            f"eval) and never per checkpoint. Frame sizes seen: {frame_rows}",
+        )
+
+        # And the mechanism that makes that possible: checkpoint plotting is handed
+        # raw_df and slices per-subject frames on demand, rather than a prebuilt
+        # whole-cohort output_df.
+        checkpoint_calls = [
+            kw for kw in seen_kwargs if kw.get("wandb_key_prefix") == "checkpoint"
+        ]
+        self.assertTrue(checkpoint_calls, "expected checkpoint plotting to run")
+        for kwargs in checkpoint_calls:
+            self.assertIsNone(kwargs.get("output_df"))
+            self.assertIsNotNone(kwargs.get("raw_df"))
+            self.assertIsNotNone(kwargs.get("ignore_policy"))
+
+    def test_checkpoint_still_persists_output_df_when_requested(self):
+        """The lazy-frame optimization must not break the persist path: when
+        checkpoint_save_output_df_every_n > 0 the whole-cohort frame is still
+        built and written to disk."""
+        trainer = self._checkpoint_plotting_trainer(checkpoint_save_output_df_every_n=2)
+
+        output = trainer.fit(self._make_multisubject_bundle())
+
+        self.assertTrue(output["checkpoints"])
+        for checkpoint in output["checkpoints"]:
+            self.assertIn("output_df_path", checkpoint)
+            self.assertTrue(Path(checkpoint["output_df_path"]).exists())
+
     def test_resume_from_checkpoint_matches_uninterrupted(self):
         """End-to-end resume: a run interrupted at a checkpoint and relaunched
         reproduces the uninterrupted run's final params exactly (optimizer +

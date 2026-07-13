@@ -1714,19 +1714,21 @@ class DisrnnTrainer(BaseMultisubjectTrainer):
                     )
                 )
                 if should_plot_split_examples_ckpt or should_save_output_df_ckpt:
-                    yhat_full_ckpt, network_states_full_ckpt = rnn_utils.eval_network(
+                    yhat_full_ckpt, network_states_full_ckpt = self._eval_network_full(
                         current_noiseless_eval_network,
                         params,
                         xs_full_for_checkpoint,
                     )
-                    output_df_ckpt = dl.add_model_results(
-                        df_for_checkpoint.copy(),
-                        np.asarray(network_states_full_ckpt),
-                        yhat_full_ckpt,
-                        ignore_policy=ignore_policy,
-                    )
-
+                    # Only build the whole-cohort frame when it is persisted;
+                    # plotting builds per-subject frames on demand below.
+                    output_df_ckpt = None
                     if should_save_output_df_ckpt:
+                        output_df_ckpt = dl.add_model_results(
+                            df_for_checkpoint.copy(),
+                            np.asarray(network_states_full_ckpt),
+                            np.asarray(yhat_full_ckpt),
+                            ignore_policy=ignore_policy,
+                        )
                         output_df_ckpt_path = checkpoint_dir / "output_df.csv"
                         output_df_ckpt.to_csv(output_df_ckpt_path, index=False)
                         checkpoint_record["output_df_path"] = str(output_df_ckpt_path)
@@ -1734,12 +1736,14 @@ class DisrnnTrainer(BaseMultisubjectTrainer):
                     if should_plot_split_examples_ckpt:
                         n_action_logits_ckpt_full = _require_n_action_logits(
                             dataset_eval,
-                            yhat_full_ckpt,
+                            np.asarray(yhat_full_ckpt),
                             context="checkpoint full-dataset plotting",
                         )
                         split_summaries_ckpt = self._generate_split_examples(
                             output_dir=checkpoint_dir,
                             output_df=output_df_ckpt,
+                            raw_df=df_for_checkpoint,
+                            ignore_policy=ignore_policy,
                             network_states_full=np.asarray(network_states_full_ckpt),
                             yhat_full=np.asarray(yhat_full_ckpt),
                             params=params,
