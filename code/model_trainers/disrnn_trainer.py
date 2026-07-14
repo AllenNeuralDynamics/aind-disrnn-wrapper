@@ -666,27 +666,39 @@ class DisrnnTrainer(BaseMultisubjectTrainer):
             logger.warning("Initialization plotting failed for %s: %s", stage_name, exc)
 
         if wandb_run is not None:
+            # Building the W&B images is part of DIAGNOSTIC PLOTTING and must never be able to kill
+            # training. The plotting above is already guarded, but these wandb.Image() calls were
+            # not -- and PIL raises DecompressionBombError while OPENING an oversized figure, so a
+            # cosmetic plot took down six 18-hour runs (subject_embedding_size=64 -> a 554 MP
+            # state-space figure). Guard each conversion: a figure we cannot log is a warning, not
+            # a failed run. Metrics are unaffected -- the bottleneck numbers
+            # (final/bottlenecks/*_total_openness) come from params, not from these figures.
             plot_payload = {}
+
+            def _add_image(key: str, path: Any) -> None:
+                try:
+                    plot_payload[key] = wandb.Image(str(path))
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "Skipping W&B image %s for %s (%s): %s", key, stage_name, path, exc
+                    )
+
             if plot_paths["bottlenecks"]:
-                plot_payload["checkpoint/fig/bottlenecks"] = wandb.Image(
-                    str(plot_paths["bottlenecks"])
-                )
+                _add_image("checkpoint/fig/bottlenecks", plot_paths["bottlenecks"])
             if plot_paths["subject_embedding_state_space"]:
-                plot_payload["checkpoint/fig/subject_embedding_state_space"] = wandb.Image(
-                    str(plot_paths["subject_embedding_state_space"])
+                _add_image(
+                    "checkpoint/fig/subject_embedding_state_space",
+                    plot_paths["subject_embedding_state_space"],
                 )
             if plot_paths["subject_session_context_state_space"]:
-                plot_payload["checkpoint/fig/subject_session_context_state_space"] = (
-                    wandb.Image(str(plot_paths["subject_session_context_state_space"]))
+                _add_image(
+                    "checkpoint/fig/subject_session_context_state_space",
+                    plot_paths["subject_session_context_state_space"],
                 )
             if plot_paths["choice_rule"]:
-                plot_payload["checkpoint/fig/choice_rule"] = wandb.Image(
-                    str(plot_paths["choice_rule"])
-                )
+                _add_image("checkpoint/fig/choice_rule", plot_paths["choice_rule"])
             for index, update_rule_path in enumerate(plot_paths["update_rules"]):
-                plot_payload[f"checkpoint/fig/update_rule_{index}"] = wandb.Image(
-                    str(update_rule_path)
-                )
+                _add_image(f"checkpoint/fig/update_rule_{index}", update_rule_path)
             if plot_payload:
                 if wandb_step is None:
                     wandb_run.log(plot_payload)

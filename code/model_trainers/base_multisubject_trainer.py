@@ -42,6 +42,11 @@ from utils.multisubject import (
 
 logger = logging.getLogger(__name__)
 
+# Cap on how many embedding dims the subject-embedding state-space plot pairs up. The panel grid
+# is O(dim^2), so an uncapped 64-dim embedding produces a 554 MP figure that PIL rejects as a
+# decompression bomb. 6 dims = C(6,2) = 15 panels.
+_EMBEDDING_PLOT_MAX_DIMS = 6
+
 
 def _to_dict(config: Mapping[str, Any] | DictConfig) -> Dict[str, Any]:
     if isinstance(config, DictConfig):
@@ -341,6 +346,12 @@ class BaseMultisubjectTrainer(ModelTrainer):
             for column in plot_df.columns
             if column.startswith("embedding_")
         ]
+        # The panel grid is every PAIR of embedding dims, so its area grows as O(dim^2) with no
+        # cap: a 64-dim embedding gives C(64,2)=2016 pairs -> 672 rows -> a 1650 x 336,000 px
+        # figure (554 MP), which PIL refuses as a decompression bomb and which killed the run.
+        # Plot only the leading dims: C(6,2)=15 pairs is already more than anyone reads, and the
+        # figure stays bounded no matter how wide the embedding is.
+        embedding_columns = embedding_columns[:_EMBEDDING_PLOT_MAX_DIMS]
         dim_pairs = list(itertools.combinations(embedding_columns, 2))
         if not dim_pairs:
             return None
