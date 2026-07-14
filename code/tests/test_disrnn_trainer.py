@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import shutil
 import tempfile
 import unittest
@@ -19,7 +20,11 @@ try:
     from base.types import DatasetBundle
     from data_loaders.synthetic import SyntheticCognitiveAgents
     from model_trainers.disrnn_trainer import DisrnnTrainer, _require_n_action_logits
-    from model_trainers.base_multisubject_trainer import BaseMultisubjectTrainer
+    from model_trainers.base_multisubject_trainer import (
+        BaseMultisubjectTrainer,
+        _EMBEDDING_PLOT_N_PCS,
+        _project_embedding_columns_for_plot,
+    )
     from models import MultisubjectDisRnn, MultisubjectDisRnnConfig
     from models.session_conditioning import compute_session_curriculum_lambda
     from models.subject_embedding_initialization import (
@@ -778,6 +783,62 @@ class TestDisrnnTrainer(unittest.TestCase):
         self.assertTrue(Path(output["subject_session_context_state_space_path"]).exists())
         before_warmup = output["initial_evaluations"]["before_warmup"]
         self.assertTrue(before_warmup["plot_paths"]["subject_session_context_state_space"])
+
+    def test_embedding_is_projected_to_leading_pcs_at_every_width(self):
+        """Panel count must be C(4,2)=6 per subject at ANY embedding width -- 4, 16 or 64.
+
+        6 panels is exactly what the old raw-dim grid produced at the default embedding size of
+        4, so the figure keeps its familiar shape. It is what keeps the figure readable, keeps
+        runs at different widths comparable, and keeps the images pushed to W&B constant.
+        """
+        rng = np.random.default_rng(0)
+        for n_dims in (4, 16, 64):
+            with self.subTest(subject_embedding_size=n_dims):
+                columns = [f"embedding_{index}" for index in range(n_dims)]
+                plot_df = pd.DataFrame(rng.normal(size=(50, n_dims)), columns=columns)
+
+                _, out_columns, _ = _project_embedding_columns_for_plot(plot_df, columns)
+
+                self.assertEqual(
+                    out_columns,
+                    [f"embedding_pc{index + 1}" for index in range(_EMBEDDING_PLOT_N_PCS)],
+                )
+                self.assertEqual(
+                    len(list(itertools.combinations(out_columns, 2))),
+                    6,
+                    "the panel grid must be C(4,2)=6, not C(dim,2)",
+                )
+
+    def test_embedding_projection_is_faithful(self):
+        """The PCs must actually carry the embedding's variance, not an arbitrary slice."""
+        rng = np.random.default_rng(0)
+        columns = [f"embedding_{index}" for index in range(64)]
+        # Rank-4 data in 64 dims: 4 PCs must recover essentially all of its variance.
+        plot_df = pd.DataFrame(
+            rng.normal(size=(50, 4)) @ rng.normal(size=(4, 64)), columns=columns
+        )
+
+        out_df, out_columns, _ = _project_embedding_columns_for_plot(plot_df, columns)
+
+        raw = plot_df[columns].to_numpy()
+        centered = raw - raw.mean(axis=0)
+        self.assertAlmostEqual(
+            float(np.linalg.norm(out_df[out_columns].to_numpy())),
+            float(np.linalg.norm(centered)),
+            places=6,
+        )
+
+    def test_embedding_projection_degrades_gracefully_below_four_dims(self):
+        """subject_embedding_size=2 cannot give 4 PCs -- fall back, do not crash."""
+        columns = ["embedding_0", "embedding_1"]
+        plot_df = pd.DataFrame(
+            np.random.default_rng(0).normal(size=(20, 2)), columns=columns
+        )
+
+        _, out_columns, _ = _project_embedding_columns_for_plot(plot_df, columns)
+
+        self.assertEqual(len(out_columns), 2)
+        self.assertLessEqual(len(out_columns), _EMBEDDING_PLOT_N_PCS)
 
     def test_wide_subject_embedding_state_space_plots_are_openable_by_pil(self):
         """A wide embedding must not produce a figure PIL refuses to open.

@@ -14,7 +14,7 @@ import itertools
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, Mapping, Sequence
+from typing import Any, Callable, Dict, Mapping, Sequence
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -42,10 +42,70 @@ from utils.multisubject import (
 
 logger = logging.getLogger(__name__)
 
-# Cap on how many embedding dims the subject-embedding state-space plot pairs up. The panel grid
-# is O(dim^2), so an uncapped 64-dim embedding produces a 554 MP figure that PIL rejects as a
-# decompression bomb. 6 dims = C(6,2) = 15 panels.
-_EMBEDDING_PLOT_MAX_DIMS = 6
+# The state-space plots always show the leading _EMBEDDING_PLOT_N_PCS principal components of the
+# subject embedding, paired up: C(4,2) = 6 panels per subject, at ANY embedding width. 4 matches
+# the default subject_embedding_size, so the figure keeps the exact shape people already read.
+#
+# They used to pair up the RAW embedding dims, which is O(dim^2): subject_embedding_size=64 asks
+# for C(64,2)=2016 panels PER SUBJECT -- a 1.69 GP figure that is unreadable, and that PIL rejects
+# as a decompression bomb (it killed six training runs). Raw dims are not worth enumerating
+# anyway: the embedding is defined only up to rotation, so "dim 3 vs dim 7" carries no special
+# meaning. The PCs are rotation-invariant, use every dim, keep the panel count constant, and make
+# runs at different embedding widths directly comparable -- while pushing far fewer images to W&B.
+_EMBEDDING_PLOT_N_PCS = 4
+
+
+def _project_embedding_columns_for_plot(
+    plot_df: pd.DataFrame,
+    embedding_columns: list[str],
+) -> tuple[pd.DataFrame, list[str], Callable[[np.ndarray], np.ndarray]]:
+    """Replace the raw embedding dims with their leading principal components, for plotting.
+
+    Returns the augmented frame, the PC columns the caller should pair up, and the projection
+    itself -- callers that overlay a raw embedding vector (e.g. the subject's base embedding, as
+    a star) MUST push it through this same basis rather than indexing raw dims, or the overlay
+    lands in a different space than the points around it.
+
+    Coordinate ``i`` of a projected vector corresponds to column ``i`` of the returned columns.
+    Fewer components are returned when the data cannot support 4 (a narrow embedding, or too few
+    rows), in which case the raw columns and an identity projection are returned unchanged.
+    """
+    values = plot_df[embedding_columns].to_numpy(dtype=float)
+    n_components = min(_EMBEDDING_PLOT_N_PCS, values.shape[0], values.shape[1])
+    if n_components < 2:
+        return plot_df, embedding_columns, lambda raw: raw
+
+    mean = values.mean(axis=0, keepdims=True)
+    centered = values - mean
+    # Right singular vectors of the centered matrix are the principal axes.
+    _, singular_values, components = np.linalg.svd(centered, full_matrices=False)
+    basis = components[:n_components]
+    projected = centered @ basis.T
+
+    spectrum = np.square(singular_values)
+    total = float(spectrum.sum())
+    explained = (spectrum[:n_components] / total) if total > 0 else np.zeros(n_components)
+    logger.info(
+        "Projecting %d-dim subject embedding onto %d PCs for the state-space plot "
+        "(explained variance: %s).",
+        len(embedding_columns),
+        n_components,
+        ", ".join(
+            f"PC{index + 1} {100.0 * float(value):.1f}%"
+            for index, value in enumerate(explained)
+        ),
+    )
+
+    def project(raw: np.ndarray) -> np.ndarray:
+        """Map raw embedding coordinates into the plotted PC space (same centering + basis)."""
+        raw = np.asarray(raw, dtype=float)
+        return (raw - mean.reshape(-1)) @ basis.T
+
+    plot_df = plot_df.copy()
+    projected_columns = [f"embedding_pc{index + 1}" for index in range(n_components)]
+    for index, column in enumerate(projected_columns):
+        plot_df[column] = projected[:, index]
+    return plot_df, projected_columns, project
 
 
 def _to_dict(config: Mapping[str, Any] | DictConfig) -> Dict[str, Any]:
@@ -346,12 +406,9 @@ class BaseMultisubjectTrainer(ModelTrainer):
             for column in plot_df.columns
             if column.startswith("embedding_")
         ]
-        # The panel grid is every PAIR of embedding dims, so its area grows as O(dim^2) with no
-        # cap: a 64-dim embedding gives C(64,2)=2016 pairs -> 672 rows -> a 1650 x 336,000 px
-        # figure (554 MP), which PIL refuses as a decompression bomb and which killed the run.
-        # Plot only the leading dims: C(6,2)=15 pairs is already more than anyone reads, and the
-        # figure stays bounded no matter how wide the embedding is.
-        embedding_columns = embedding_columns[:_EMBEDDING_PLOT_MAX_DIMS]
+        plot_df, embedding_columns, _ = _project_embedding_columns_for_plot(
+            plot_df, embedding_columns
+        )
         dim_pairs = list(itertools.combinations(embedding_columns, 2))
         if not dim_pairs:
             return None
@@ -489,16 +546,17 @@ class BaseMultisubjectTrainer(ModelTrainer):
         embedding_columns = [
             column for column in plot_df.columns if column.startswith("embedding_")
         ]
-        # Same O(dim^2) blow-up as the embedding state-space plot above, but worse: this figure
-        # stacks a per-subject block under every dim pair, so a 64-dim embedding reached 1.69 GP
-        # and PIL rejected it as a decompression bomb. Cap the dims here too.
-        embedding_columns = embedding_columns[:_EMBEDDING_PLOT_MAX_DIMS]
         if len(embedding_columns) < 2:
             logger.info(
                 "Skipping session-context state-space plot because subject_embedding_size < 2."
             )
             return None
 
+        # Same O(dim^2) blow-up as the embedding state-space plot above, but worse: this figure
+        # repeats the whole pair grid PER SUBJECT, so a 64-dim embedding reached 1.69 GP.
+        plot_df, embedding_columns, project_embedding = _project_embedding_columns_for_plot(
+            plot_df, embedding_columns
+        )
         dim_pairs = list(itertools.combinations(embedding_columns, 2))
         ncols = min(3, len(dim_pairs))
         block_rows = int(np.ceil(len(dim_pairs) / ncols))
@@ -574,11 +632,15 @@ class BaseMultisubjectTrainer(ModelTrainer):
                         alpha=0.95,
                         zorder=2,
                     )
-                x_dim = int(x_column.split("_")[-1]) - 1
-                y_dim = int(y_column.split("_")[-1]) - 1
+                # The star is the subject's base embedding. It must go through the SAME
+                # projection as the session points around it -- indexing raw dims by the column
+                # name would put it in a different space entirely once we plot PCs.
+                projected_subject_embedding = project_embedding(subject_embedding)
+                x_dim = embedding_columns.index(x_column)
+                y_dim = embedding_columns.index(y_column)
                 ax.scatter(
-                    float(subject_embedding[x_dim]),
-                    float(subject_embedding[y_dim]),
+                    float(projected_subject_embedding[x_dim]),
+                    float(projected_subject_embedding[y_dim]),
                     marker="*",
                     s=160,
                     c="black",
