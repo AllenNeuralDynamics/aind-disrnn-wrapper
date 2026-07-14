@@ -8613,67 +8613,78 @@ def _validate_multisubject_params_against_subject_map(
 
 
 def _fill_offcurriculum_curriculum_name(snapshot_df):
-    """Fill a null ``curriculum_name`` with the subject's most-common ``task``.
+    """Give off-curriculum sessions a real task family instead of a silent default.
 
-    Some mice were trained OFF-CURRICULUM and carry no ``curriculum_name`` at all. The data
-    split already handles this: ``load_mice_database._partition_subjects`` step 3 assigns each
-    subject its most-common ``task`` as its ``subject_curriculum``, and the training cohorts were
-    built from THAT. The generative rollout, however, read the per-session ``curriculum_name`` and
-    hard-raised on the resulting NaN:
+    Some mice were trained OFF-CURRICULUM and carry no ``curriculum_name``. In the database that
+    absence shows up in three different shapes -- a true null (``None``/``NaN``) and, for most
+    rows, the LITERAL STRING ``"None"``. Two things went wrong with that:
 
-        ValueError: Unsupported curriculum_name=nan (no coupled/uncoupled family match)
+    1. ``_build_curriculum_matched_task`` guards with ``curriculum_name is not None``, which
+       catches ``None`` but NOT ``float("nan")`` -- so a null that arrives as NaN produces
+       ``str(nan) == "nan"``, matches no family, and RAISES. That killed 13/15 runs of
+       studies/05-disrnn-scaling-law.
+    2. Worse, the rows it does NOT raise on (the string ``"None"``) fall into its
+       ``norm in ("", "none")`` branch, which SILENTLY rolls the session out as a default
+       ``UncoupledBlockTask(reward_baiting=True)`` -- even when the animal actually ran
+       *Coupled Baiting* or *Coupled Without Baiting*. In one D=10 cohort that is 42/249 sessions
+       (17%) simulated with the wrong task family, without a single warning.
 
-    which made ``run_analysis generative`` unusable on any cohort containing an off-curriculum
-    mouse (13/15 runs of studies/05-disrnn-scaling-law).
+    So the crash was the loud version of a bug that was already there quietly.
 
-    Reconstruct the same pseudo-curriculum here, with the same rule as the split (most-common
-    task; ties broken by task name ascending, matching that function's
-    ``sort_values([... "task"], ascending=[True, False, True])``).
+    Fix both by resolving the family from data we already have. Preference order:
 
-    ``curriculum_name`` stays authoritative wherever it exists, so ON-curriculum sessions are
-    untouched and prior results (e.g. study 01's r9) are unchanged. Note the two are NOT
-    interchangeable in general: one curriculum can involve different tasks at different stages, so
-    the modal task is a per-SUBJECT label, not a per-session one — it is a fallback, not a
-    replacement.
+    * ``curriculum_name`` when it is a real curriculum -- authoritative, so on-curriculum sessions
+      are untouched and prior results stay valid;
+    * else the SESSION's own ``task`` -- this is a per-session, curriculum-MATCHED rollout, and the
+      task is what the animal actually did in that session. (Note a curriculum can span several
+      tasks across stages, so the session's task is strictly better here than any per-subject label);
+    * else the SUBJECT's most-common ``task`` -- the same pseudo-curriculum
+      ``load_mice_database._partition_subjects`` step 3 uses to define ``subject_curriculum``, which
+      is what every training cohort was built from;
+    * else raise, rather than inventing a task family.
     """
     if "curriculum_name" not in snapshot_df.columns:
         return snapshot_df
-    missing = snapshot_df["curriculum_name"].isna()
+
+    def _is_missing(v):
+        if v is None or (isinstance(v, float) and v != v):  # None or NaN
+            return True
+        return str(v).strip().lower() in ("", "none", "nan")
+
+    missing = snapshot_df["curriculum_name"].map(_is_missing)
     if not bool(missing.any()):
         return snapshot_df
     if "task" not in snapshot_df.columns:
         raise ValueError(
-            "curriculum_name is null for "
+            "curriculum_name is missing for "
             f"{int(snapshot_df.loc[missing, 'subject_id'].nunique())} subject(s) and no `task` "
-            "column is available to rebuild the pseudo-curriculum. Add 'task' to snapshot_cols."
+            "column is available to resolve the task family. Add 'task' to snapshot_cols."
         )
 
-    modal_task = (
-        snapshot_df.dropna(subset=["task"])
-        .groupby(["subject_id", "task"], sort=False)
-        .size()
-        .rename("n")
-        .reset_index()
-        .sort_values(["subject_id", "n", "task"], ascending=[True, False, True])
-        .groupby("subject_id", sort=False)
-        .first()["task"]
-    )
-    filled = snapshot_df["subject_id"].map(modal_task)
     snapshot_df = snapshot_df.copy()
-    snapshot_df.loc[missing, "curriculum_name"] = filled[missing]
+    session_task = snapshot_df["task"].where(~snapshot_df["task"].map(_is_missing))
 
-    still_missing = snapshot_df["curriculum_name"].isna()
-    n_subj = int(snapshot_df.loc[missing, "subject_id"].nunique())
-    logger.info(
-        "Rebuilt pseudo-curriculum (modal task) for %d off-curriculum subject(s); "
-        "%d trial row(s) filled, %d still unresolved.",
-        n_subj, int(missing.sum()), int(still_missing.sum()),
+    modal_task = (
+        snapshot_df.assign(_t=session_task).dropna(subset=["_t"])
+        .groupby(["subject_id", "_t"], sort=False).size().rename("n").reset_index()
+        .sort_values(["subject_id", "n", "_t"], ascending=[True, False, True])
+        .groupby("subject_id", sort=False).first()["_t"]
     )
-    if bool(still_missing.any()):
-        bad = sorted(snapshot_df.loc[still_missing, "subject_id"].unique())[:5]
+    resolved = session_task.fillna(snapshot_df["subject_id"].map(modal_task))
+    snapshot_df.loc[missing, "curriculum_name"] = resolved[missing]
+
+    still = snapshot_df["curriculum_name"].map(_is_missing)
+    logger.info(
+        "Resolved task family for %d off-curriculum session-row(s) across %d subject(s) "
+        "from the session's own task (falling back to the subject's modal task); "
+        "%d still unresolved.",
+        int(missing.sum()), int(snapshot_df.loc[missing, "subject_id"].nunique()), int(still.sum()),
+    )
+    if bool(still.any()):
+        bad = sorted(snapshot_df.loc[still, "subject_id"].astype(str).unique())[:5]
         raise ValueError(
-            f"{int(still_missing.sum())} trial row(s) have neither curriculum_name nor a usable "
-            f"`task` to derive one (subjects e.g. {bad}). Refusing to guess a task family."
+            f"{int(still.sum())} row(s) have neither a curriculum_name nor any usable `task` "
+            f"(subjects e.g. {bad}). Refusing to guess a task family."
         )
     return snapshot_df
 

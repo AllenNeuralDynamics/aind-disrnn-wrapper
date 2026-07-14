@@ -20,16 +20,20 @@ from post_training_analysis.generative_analysis import _fill_offcurriculum_curri
 
 
 class TestOffCurriculumCurriculumName(unittest.TestCase):
-    def test_offcurriculum_subject_gets_its_modal_task(self):
-        """A subject with no curriculum_name is labelled with its most-common task."""
+    def test_offcurriculum_session_gets_its_own_task(self):
+        """Each off-curriculum session is matched to the task the animal actually ran.
+
+        A per-subject label would be wrong here: this is a per-session, curriculum-MATCHED rollout,
+        and a subject's task changes across stages.
+        """
         df = pd.DataFrame({
             "subject_id": ["B"] * 5,
             "curriculum_name": [None] * 5,
-            # modal task = Uncoupled Baiting (3 rows vs 2)
             "task": ["Uncoupled Baiting"] * 3 + ["Coupled Baiting"] * 2,
         })
         out = _fill_offcurriculum_curriculum_name(df)
-        self.assertEqual(list(out["curriculum_name"].unique()), ["Uncoupled Baiting"])
+        self.assertEqual(list(out["curriculum_name"]),
+                         ["Uncoupled Baiting"] * 3 + ["Coupled Baiting"] * 2)
 
     def test_oncurriculum_subject_is_untouched_even_when_its_task_varies(self):
         """curriculum_name stays authoritative where present.
@@ -57,8 +61,52 @@ class TestOffCurriculumCurriculumName(unittest.TestCase):
         })
         out = _fill_offcurriculum_curriculum_name(df)
         self.assertTrue(out["curriculum_name"].notna().all())
+        # A is ON-curriculum: authoritative curriculum_name kept, even though its per-session
+        # task varies across stages.
         self.assertEqual(set(out.loc[out.subject_id == "A", "curriculum_name"]), {"Coupled Baiting"})
-        self.assertEqual(set(out.loc[out.subject_id == "B", "curriculum_name"]), {"Uncoupled Baiting"})
+        # B is OFF-curriculum: each session takes the task the animal ACTUALLY ran, so its third
+        # (coupled) session is no longer collapsed onto the subject's modal uncoupled task.
+        self.assertEqual(list(out.loc[out.subject_id == "B", "curriculum_name"]),
+                         ["Uncoupled Baiting", "Uncoupled Baiting", "Coupled Baiting"])
+
+    def test_literal_none_string_is_treated_as_missing_not_defaulted(self):
+        """The DB stores off-curriculum sessions as the STRING "None".
+
+        _build_curriculum_matched_task maps that to its `norm in ("", "none")` branch and SILENTLY
+        rolls the session out as a default UncoupledBlockTask(reward_baiting=True) -- even when the
+        animal actually ran Coupled Baiting. That is the quiet version of the crash: in one D=10
+        cohort, 42/249 sessions (17%) were simulated with the wrong task family, unwarned.
+        """
+        df = pd.DataFrame({
+            "subject_id": ["B"] * 3,
+            "curriculum_name": ["None", "None", "None"],   # literal string, NOT null
+            "task": ["Coupled Baiting", "Coupled Baiting", "Coupled Without Baiting"],
+        })
+        out = _fill_offcurriculum_curriculum_name(df)
+        # each session keeps its OWN task, so the coupled sessions are no longer
+        # silently simulated as uncoupled
+        self.assertEqual(list(out["curriculum_name"]),
+                         ["Coupled Baiting", "Coupled Baiting", "Coupled Without Baiting"])
+
+    def test_nan_null_is_handled_too(self):
+        """`curriculum_name is not None` misses float NaN -- that is what raised in production."""
+        import numpy as np
+        df = pd.DataFrame({
+            "subject_id": ["B"] * 2,
+            "curriculum_name": [np.nan, np.nan],
+            "task": ["Uncoupled Baiting", "Uncoupled Baiting"],
+        })
+        out = _fill_offcurriculum_curriculum_name(df)
+        self.assertEqual(list(out["curriculum_name"].unique()), ["Uncoupled Baiting"])
+
+    def test_falls_back_to_modal_task_when_the_session_has_none(self):
+        df = pd.DataFrame({
+            "subject_id": ["B"] * 3,
+            "curriculum_name": [None, None, None],
+            "task": ["Uncoupled Baiting", "Uncoupled Baiting", None],  # 3rd session has no task
+        })
+        out = _fill_offcurriculum_curriculum_name(df)
+        self.assertEqual(list(out["curriculum_name"].unique()), ["Uncoupled Baiting"])
 
     def test_no_curriculum_and_no_task_raises_rather_than_guessing(self):
         """If neither field is available we must NOT invent a task family."""
