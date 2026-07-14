@@ -422,6 +422,7 @@ def load_animal_session_history(
         "animal_response",
         "earned_reward",
         "curriculum_name",
+        "task",  # needed to rebuild the pseudo-curriculum for off-curriculum mice
         "current_stage_actual",
     ]
     logger.info(
@@ -460,6 +461,8 @@ def load_animal_session_history(
             "Snapshot selection resolved to an empty dataset for "
             f"{resolved_run.model_dir} split={resolved_run.split}."
         )
+
+    snapshot_df = _fill_offcurriculum_curriculum_name(snapshot_df)
 
     snapshot_df = _align_snapshot_df_with_ignore_policy(
         snapshot_df,
@@ -8607,6 +8610,72 @@ def _validate_multisubject_params_against_subject_map(
             f"the resolved subject_index_map.json roster: "
             f"rows={int(subject_embeddings.shape[0])}, subjects={int(n_subjects)}."
         )
+
+
+def _fill_offcurriculum_curriculum_name(snapshot_df):
+    """Fill a null ``curriculum_name`` with the subject's most-common ``task``.
+
+    Some mice were trained OFF-CURRICULUM and carry no ``curriculum_name`` at all. The data
+    split already handles this: ``load_mice_database._partition_subjects`` step 3 assigns each
+    subject its most-common ``task`` as its ``subject_curriculum``, and the training cohorts were
+    built from THAT. The generative rollout, however, read the per-session ``curriculum_name`` and
+    hard-raised on the resulting NaN:
+
+        ValueError: Unsupported curriculum_name=nan (no coupled/uncoupled family match)
+
+    which made ``run_analysis generative`` unusable on any cohort containing an off-curriculum
+    mouse (13/15 runs of studies/05-disrnn-scaling-law).
+
+    Reconstruct the same pseudo-curriculum here, with the same rule as the split (most-common
+    task; ties broken by task name ascending, matching that function's
+    ``sort_values([... "task"], ascending=[True, False, True])``).
+
+    ``curriculum_name`` stays authoritative wherever it exists, so ON-curriculum sessions are
+    untouched and prior results (e.g. study 01's r9) are unchanged. Note the two are NOT
+    interchangeable in general: one curriculum can involve different tasks at different stages, so
+    the modal task is a per-SUBJECT label, not a per-session one — it is a fallback, not a
+    replacement.
+    """
+    if "curriculum_name" not in snapshot_df.columns:
+        return snapshot_df
+    missing = snapshot_df["curriculum_name"].isna()
+    if not bool(missing.any()):
+        return snapshot_df
+    if "task" not in snapshot_df.columns:
+        raise ValueError(
+            "curriculum_name is null for "
+            f"{int(snapshot_df.loc[missing, 'subject_id'].nunique())} subject(s) and no `task` "
+            "column is available to rebuild the pseudo-curriculum. Add 'task' to snapshot_cols."
+        )
+
+    modal_task = (
+        snapshot_df.dropna(subset=["task"])
+        .groupby(["subject_id", "task"], sort=False)
+        .size()
+        .rename("n")
+        .reset_index()
+        .sort_values(["subject_id", "n", "task"], ascending=[True, False, True])
+        .groupby("subject_id", sort=False)
+        .first()["task"]
+    )
+    filled = snapshot_df["subject_id"].map(modal_task)
+    snapshot_df = snapshot_df.copy()
+    snapshot_df.loc[missing, "curriculum_name"] = filled[missing]
+
+    still_missing = snapshot_df["curriculum_name"].isna()
+    n_subj = int(snapshot_df.loc[missing, "subject_id"].nunique())
+    logger.info(
+        "Rebuilt pseudo-curriculum (modal task) for %d off-curriculum subject(s); "
+        "%d trial row(s) filled, %d still unresolved.",
+        n_subj, int(missing.sum()), int(still_missing.sum()),
+    )
+    if bool(still_missing.any()):
+        bad = sorted(snapshot_df.loc[still_missing, "subject_id"].unique())[:5]
+        raise ValueError(
+            f"{int(still_missing.sum())} trial row(s) have neither curriculum_name nor a usable "
+            f"`task` to derive one (subjects e.g. {bad}). Refusing to guess a task family."
+        )
+    return snapshot_df
 
 
 def _align_snapshot_df_with_ignore_policy(snapshot_df: Any, *, ignore_policy: str):
