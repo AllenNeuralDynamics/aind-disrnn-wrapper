@@ -79,32 +79,6 @@ def _unwrap(d):
     return d
 
 
-def _reconstruct_inputs_yaml(cfg: dict, model_dir: Path) -> None:
-    """Rebuild ``<model_dir>/inputs.yaml`` from the source run's config.
-
-    ``resolve_model_run`` requires inputs.yaml (data + model blocks) to rebuild
-    the network and the reserved held-out subject set. The training-output
-    artifact does not include it, but the W&B run config carries the full nested
-    ``data`` and ``model`` blocks. Write exactly those (+ seed) so the resolver
-    sees the same config the original training run used.
-    """
-    cfg = _unwrap(cfg)
-    for key in ("data", "model"):
-        if key not in cfg or not isinstance(cfg[key], dict):
-            raise ValueError(
-                f"Source run config is missing a nested '{key}' block; cannot "
-                f"reconstruct inputs.yaml (keys present: {sorted(cfg)[:20]})."
-            )
-    inputs = {"data": cfg["data"], "model": cfg["model"], "seed": cfg.get("seed")}
-    (model_dir / "inputs.yaml").write_text(yaml.safe_dump(inputs, sort_keys=False))
-    logger.info(
-        "Reconstructed inputs.yaml (model.type=%s, ignore_policy=%s, seed=%s)",
-        cfg["model"].get("type"),
-        cfg["data"].get("ignore_policy"),
-        cfg.get("seed"),
-    )
-
-
 def _build_finetune_config(cfg: dict, model_dir: Path) -> dict:
     """Mirror training_runner._run_auto_heldout_finetune's config, sourced from
     the run's own auto_heldout_finetune block so the held-out draw is identical.
@@ -170,49 +144,18 @@ def main() -> None:
     from post_training_analysis import run_heldout_subject_finetuning_from_config
 
     work = Path(args.work_dir).expanduser()
-    model_dir = work / args.run_id
-    outputs_dir = model_dir / "outputs"
-    outputs_dir.mkdir(parents=True, exist_ok=True)
 
-    api = wandb.Api()
+    # 1+2) Download the training-output artifact, reconstruct inputs.yaml, and normalize
+    #      checkpoints/index.json -- all of it now lives in the shared helper so any post-hoc
+    #      analysis (generative, embedding, this one) restores a run the same way. The helper
+    #      also reads the model type from the run config; this file used to hardcode
+    #      mtype = "gru", which silently broke every non-GRU restore.
+    from post_training_analysis.wandb_model_dir import hydrate_model_dir
 
-    # 1) Download the training-output artifact into <model_dir>/outputs so the
-    #    checkpoints/step_<N>/ tree lands where resolve_model_run looks.
-    mtype = "gru"  # ignore-scaling grid is all GRU; disRNN would be "disrnn"
-    artifact_ref = f"{args.entity}/{args.project}/{mtype}-output-{args.run_id}:latest"
-    logger.info("Downloading %s -> %s", artifact_ref, outputs_dir)
-    api.artifact(artifact_ref, type="training-output").download(root=str(outputs_dir))
-    steps = sorted((outputs_dir / "checkpoints").glob("step_*"))
-    if not steps:
-        raise RuntimeError(f"No checkpoints/step_* under {outputs_dir} after download.")
-    logger.info("Downloaded %d checkpoint(s); latest=%s", len(steps), steps[-1].name)
-
-    # 1b) Normalize checkpoints/index.json params_path entries to RELATIVE form.
-    #     The index records each params_path as the ORIGINAL absolute HPC path
-    #     (/allen/.../files/outputs/checkpoints/step_N/params.json). resolve_model_run's
-    #     _resolve_artifact_path remaps such a path by splitting on the FIRST "/outputs/",
-    #     but the HPC path contains "/outputs/" twice (/han.hou/outputs/disrnn AND
-    #     /files/outputs/), so the remap points at a nonexistent path and best_eval
-    #     SILENTLY falls back to `final` (step_90000) instead of the true best checkpoint.
-    #     Rewriting each params_path to "outputs/checkpoints/step_N/params.json" makes the
-    #     resolver take its unambiguous startswith("outputs/") branch -> model_dir/<that>.
-    index_path = outputs_dir / "checkpoints" / "index.json"
-    if index_path.exists():
-        index = json.loads(index_path.read_text())
-        rewritten = 0
-        for rec in index.get("checkpoints", []) or []:
-            step = rec.get("step")
-            if step is not None:
-                rec["params_path"] = f"outputs/checkpoints/step_{step}/params.json"
-                rewritten += 1
-        index_path.write_text(json.dumps(index))
-        logger.info("Normalized %d params_path entries in index.json to relative form.", rewritten)
-    else:
-        logger.warning("No checkpoints/index.json found; best_eval selection may fall back to final.")
-
-    # 2) Reconstruct inputs.yaml from the run config (via GraphQL, not api.run()).
+    model_dir = hydrate_model_dir(
+        args.run_id, project=args.project, entity=args.entity, dest=work / args.run_id,
+    )
     src_cfg = _fetch_run_config(args.entity, args.project, args.run_id)
-    _reconstruct_inputs_yaml(src_cfg, model_dir)
 
     # 3) Resume the ORIGINAL W&B run and inject held-out-only metrics into it.
     finetune_config = _build_finetune_config(src_cfg, model_dir)
