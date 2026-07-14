@@ -123,3 +123,35 @@ class TestOffCurriculumCurriculumName(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCurriculumMatchedTaskFamilies(unittest.TestCase):
+    """The rollout must build the family the animal actually ran — including Random Walk."""
+
+    def _build(self, name):
+        from post_training_analysis.generative_analysis import _build_curriculum_matched_task
+        return _build_curriculum_matched_task(curriculum_name=name, n_trials=50, seed=0)
+
+    def test_random_walk_builds_the_gym_random_walk_task(self):
+        """Random Walk is rare but REAL in training (9 sessions / 8,284 trials at D=614).
+
+        It used to fall through to the `norm in ("", "none")` branch and be silently simulated as
+        a default UNCOUPLED BAITING task — a completely different reward structure.
+        """
+        from aind_behavior_gym.dynamic_foraging.task import RandomWalkTask
+        for name in ("Random Walk", "random walk", "RandomWalk"):
+            self.assertIsInstance(self._build(name), RandomWalkTask, msg=name)
+
+    def test_block_families_still_resolve(self):
+        from aind_behavior_gym.dynamic_foraging.task import CoupledBlockTask, UncoupledBlockTask
+        self.assertIsInstance(self._build("Coupled Baiting"), CoupledBlockTask)
+        self.assertIsInstance(self._build("Uncoupled Baiting"), UncoupledBlockTask)
+        self.assertIsInstance(self._build("Uncoupled Without Baiting"), UncoupledBlockTask)
+        self.assertIsInstance(self._build("Coupled Without Baiting"), CoupledBlockTask)
+        # baiting flag is read from the name
+        self.assertFalse(self._build("Coupled Without Baiting").reward_baiting)
+        self.assertTrue(self._build("Coupled Baiting").reward_baiting)
+
+    def test_unknown_family_still_raises(self):
+        with self.assertRaises(ValueError):
+            self._build("Some Brand New Task")

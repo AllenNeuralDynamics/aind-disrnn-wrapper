@@ -5568,6 +5568,19 @@ def _build_curriculum_matched_task(
         return task_mod.UncoupledBlockTask(
             reward_baiting=True, num_trials=int(n_trials), seed=int(seed)
         )
+    if "randomwalk" in norm:
+        # Random Walk is a genuinely different family: reward probabilities diffuse as a bounded
+        # random walk rather than switching in blocks. It is rare but REAL in the training data --
+        # 9 sessions / 3 subjects / 8,284 trials in the D=614 cohort -- because `curricula` gates
+        # which SUBJECTS are drawn, never which of their SESSIONS are used, so a subject admitted
+        # on its modal task contributes all of its sessions.
+        #
+        # Before this, such a session had no family match and was swept into the `norm in ("",
+        # "none")` branch, i.e. silently simulated as a default UNCOUPLED BAITING task -- a
+        # completely different reward structure. Map it to the gym's own RandomWalkTask instead.
+        # Like the other families it is built with the gym's DEFAULT walk parameters (p_min, p_max,
+        # sigma, mean); see the LIMITATION note above.
+        return task_mod.RandomWalkTask(num_trials=int(n_trials), seed=int(seed))
     baiting = "withoutbaiting" not in norm and "nobaiting" not in norm
     if "uncoupled" in norm:
         return task_mod.UncoupledBlockTask(
