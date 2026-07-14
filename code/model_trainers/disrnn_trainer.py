@@ -1843,26 +1843,45 @@ class DisrnnTrainer(BaseMultisubjectTrainer):
                         "subject_session_context_state_space"
                     )
                     checkpoint_update_rules = checkpoint_plot_paths.get("update_rules", [])
+
+                    # Same guard as the warmup/final stage block above: PIL raises
+                    # DecompressionBombError while OPENING an oversized figure, so an unguarded
+                    # conversion lets a cosmetic plot kill a multi-hour training run. A figure we
+                    # cannot log is a warning, not a failed run.
+                    def _add_checkpoint_image(key: str, path: Any) -> None:
+                        try:
+                            checkpoint_plot_payload[key] = wandb.Image(str(path))
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning(
+                                "Skipping W&B image %s at checkpoint step %s (%s): %s",
+                                key,
+                                int(steps_completed),
+                                path,
+                                exc,
+                            )
+
                     if checkpoint_bottlenecks:
-                        checkpoint_plot_payload[
-                            "checkpoint/fig/bottlenecks"
-                        ] = wandb.Image(str(checkpoint_bottlenecks))
+                        _add_checkpoint_image(
+                            "checkpoint/fig/bottlenecks", checkpoint_bottlenecks
+                        )
                     if checkpoint_subject_embeddings:
-                        checkpoint_plot_payload[
-                            "checkpoint/fig/subject_embedding_state_space"
-                        ] = wandb.Image(str(checkpoint_subject_embeddings))
+                        _add_checkpoint_image(
+                            "checkpoint/fig/subject_embedding_state_space",
+                            checkpoint_subject_embeddings,
+                        )
                     if checkpoint_subject_session_context:
-                        checkpoint_plot_payload[
-                            "checkpoint/fig/subject_session_context_state_space"
-                        ] = wandb.Image(str(checkpoint_subject_session_context))
+                        _add_checkpoint_image(
+                            "checkpoint/fig/subject_session_context_state_space",
+                            checkpoint_subject_session_context,
+                        )
                     if checkpoint_choice_rule:
-                        checkpoint_plot_payload[
-                            "checkpoint/fig/choice_rule"
-                        ] = wandb.Image(str(checkpoint_choice_rule))
+                        _add_checkpoint_image(
+                            "checkpoint/fig/choice_rule", checkpoint_choice_rule
+                        )
                     for index, update_rule_path in enumerate(checkpoint_update_rules):
-                        checkpoint_plot_payload[
-                            f"checkpoint/fig/update_rule_{index}"
-                        ] = wandb.Image(str(update_rule_path))
+                        _add_checkpoint_image(
+                            f"checkpoint/fig/update_rule_{index}", update_rule_path
+                        )
                     if checkpoint_plot_payload:
                         wandb_run.log(
                             checkpoint_plot_payload,
