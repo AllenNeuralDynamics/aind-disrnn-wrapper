@@ -422,6 +422,7 @@ def load_animal_session_history(
         "animal_response",
         "earned_reward",
         "curriculum_name",
+        "task",  # needed to rebuild the pseudo-curriculum for off-curriculum mice
         "current_stage_actual",
     ]
     logger.info(
@@ -460,6 +461,8 @@ def load_animal_session_history(
             "Snapshot selection resolved to an empty dataset for "
             f"{resolved_run.model_dir} split={resolved_run.split}."
         )
+
+    snapshot_df = _fill_offcurriculum_curriculum_name(snapshot_df)
 
     snapshot_df = _align_snapshot_df_with_ignore_policy(
         snapshot_df,
@@ -5565,6 +5568,19 @@ def _build_curriculum_matched_task(
         return task_mod.UncoupledBlockTask(
             reward_baiting=True, num_trials=int(n_trials), seed=int(seed)
         )
+    if "randomwalk" in norm:
+        # Random Walk is a genuinely different family: reward probabilities diffuse as a bounded
+        # random walk rather than switching in blocks. It is rare but REAL in the training data --
+        # 9 sessions / 3 subjects / 8,284 trials in the D=614 cohort -- because `curricula` gates
+        # which SUBJECTS are drawn, never which of their SESSIONS are used, so a subject admitted
+        # on its modal task contributes all of its sessions.
+        #
+        # Before this, such a session had no family match and was swept into the `norm in ("",
+        # "none")` branch, i.e. silently simulated as a default UNCOUPLED BAITING task -- a
+        # completely different reward structure. Map it to the gym's own RandomWalkTask instead.
+        # Like the other families it is built with the gym's DEFAULT walk parameters (p_min, p_max,
+        # sigma, mean); see the LIMITATION note above.
+        return task_mod.RandomWalkTask(num_trials=int(n_trials), seed=int(seed))
     baiting = "withoutbaiting" not in norm and "nobaiting" not in norm
     if "uncoupled" in norm:
         return task_mod.UncoupledBlockTask(
@@ -8607,6 +8623,83 @@ def _validate_multisubject_params_against_subject_map(
             f"the resolved subject_index_map.json roster: "
             f"rows={int(subject_embeddings.shape[0])}, subjects={int(n_subjects)}."
         )
+
+
+def _fill_offcurriculum_curriculum_name(snapshot_df):
+    """Give off-curriculum sessions a real task family instead of a silent default.
+
+    Some mice were trained OFF-CURRICULUM and carry no ``curriculum_name``. In the database that
+    absence shows up in three different shapes -- a true null (``None``/``NaN``) and, for most
+    rows, the LITERAL STRING ``"None"``. Two things went wrong with that:
+
+    1. ``_build_curriculum_matched_task`` guards with ``curriculum_name is not None``, which
+       catches ``None`` but NOT ``float("nan")`` -- so a null that arrives as NaN produces
+       ``str(nan) == "nan"``, matches no family, and RAISES. That killed 13/15 runs of
+       studies/05-disrnn-scaling-law.
+    2. Worse, the rows it does NOT raise on (the string ``"None"``) fall into its
+       ``norm in ("", "none")`` branch, which SILENTLY rolls the session out as a default
+       ``UncoupledBlockTask(reward_baiting=True)`` -- even when the animal actually ran
+       *Coupled Baiting* or *Coupled Without Baiting*. In one D=10 cohort that is 42/249 sessions
+       (17%) simulated with the wrong task family, without a single warning.
+
+    So the crash was the loud version of a bug that was already there quietly.
+
+    Fix both by resolving the family from data we already have. Preference order:
+
+    * ``curriculum_name`` when it is a real curriculum -- authoritative, so on-curriculum sessions
+      are untouched and prior results stay valid;
+    * else the SESSION's own ``task`` -- this is a per-session, curriculum-MATCHED rollout, and the
+      task is what the animal actually did in that session. (Note a curriculum can span several
+      tasks across stages, so the session's task is strictly better here than any per-subject label);
+    * else the SUBJECT's most-common ``task`` -- the same pseudo-curriculum
+      ``load_mice_database._partition_subjects`` step 3 uses to define ``subject_curriculum``, which
+      is what every training cohort was built from;
+    * else raise, rather than inventing a task family.
+    """
+    if "curriculum_name" not in snapshot_df.columns:
+        return snapshot_df
+
+    def _is_missing(v):
+        if v is None or (isinstance(v, float) and v != v):  # None or NaN
+            return True
+        return str(v).strip().lower() in ("", "none", "nan")
+
+    missing = snapshot_df["curriculum_name"].map(_is_missing)
+    if not bool(missing.any()):
+        return snapshot_df
+    if "task" not in snapshot_df.columns:
+        raise ValueError(
+            "curriculum_name is missing for "
+            f"{int(snapshot_df.loc[missing, 'subject_id'].nunique())} subject(s) and no `task` "
+            "column is available to resolve the task family. Add 'task' to snapshot_cols."
+        )
+
+    snapshot_df = snapshot_df.copy()
+    session_task = snapshot_df["task"].where(~snapshot_df["task"].map(_is_missing))
+
+    modal_task = (
+        snapshot_df.assign(_t=session_task).dropna(subset=["_t"])
+        .groupby(["subject_id", "_t"], sort=False).size().rename("n").reset_index()
+        .sort_values(["subject_id", "n", "_t"], ascending=[True, False, True])
+        .groupby("subject_id", sort=False).first()["_t"]
+    )
+    resolved = session_task.fillna(snapshot_df["subject_id"].map(modal_task))
+    snapshot_df.loc[missing, "curriculum_name"] = resolved[missing]
+
+    still = snapshot_df["curriculum_name"].map(_is_missing)
+    logger.info(
+        "Resolved task family for %d off-curriculum session-row(s) across %d subject(s) "
+        "from the session's own task (falling back to the subject's modal task); "
+        "%d still unresolved.",
+        int(missing.sum()), int(snapshot_df.loc[missing, "subject_id"].nunique()), int(still.sum()),
+    )
+    if bool(still.any()):
+        bad = sorted(snapshot_df.loc[still, "subject_id"].astype(str).unique())[:5]
+        raise ValueError(
+            f"{int(still.sum())} row(s) have neither a curriculum_name nor any usable `task` "
+            f"(subjects e.g. {bad}). Refusing to guess a task family."
+        )
+    return snapshot_df
 
 
 def _align_snapshot_df_with_ignore_policy(snapshot_df: Any, *, ignore_policy: str):
