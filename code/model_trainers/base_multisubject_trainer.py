@@ -489,6 +489,10 @@ class BaseMultisubjectTrainer(ModelTrainer):
         embedding_columns = [
             column for column in plot_df.columns if column.startswith("embedding_")
         ]
+        # Same O(dim^2) blow-up as the embedding state-space plot above, but worse: this figure
+        # stacks a per-subject block under every dim pair, so a 64-dim embedding reached 1.69 GP
+        # and PIL rejected it as a decompression bomb. Cap the dims here too.
+        embedding_columns = embedding_columns[:_EMBEDDING_PLOT_MAX_DIMS]
         if len(embedding_columns) < 2:
             logger.info(
                 "Skipping session-context state-space plot because subject_embedding_size < 2."

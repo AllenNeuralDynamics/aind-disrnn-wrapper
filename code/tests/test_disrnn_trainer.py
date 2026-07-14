@@ -779,6 +779,77 @@ class TestDisrnnTrainer(unittest.TestCase):
         before_warmup = output["initial_evaluations"]["before_warmup"]
         self.assertTrue(before_warmup["plot_paths"]["subject_session_context_state_space"])
 
+    def test_wide_subject_embedding_state_space_plots_are_openable_by_pil(self):
+        """A wide embedding must not produce a figure PIL refuses to open.
+
+        Both state-space plots grid every PAIR of embedding dims, so figure area grows as
+        O(dim^2). Uncapped, subject_embedding_size=64 gave a 554 MP embedding figure and a
+        1.69 GP session-context figure. wandb.Image() opens the PNG with PIL, which raises
+        DecompressionBombError above MAX_IMAGE_PIXELS -- so these cosmetic plots killed real
+        multi-hour training runs. Assert what production actually does: open them.
+        """
+        from PIL import Image as pil_image
+
+        multisubject_bundle = self._make_multisubject_bundle()
+        trainer = DisrnnTrainer(
+            architecture={
+                "multisubject": True,
+                "latent_size": 4,
+                "update_net_n_units_per_layer": 8,
+                "update_net_n_layers": 2,
+                "choice_net_n_units_per_layer": 4,
+                "choice_net_n_layers": 1,
+                "activation": "leaky_relu",
+                "subject_embedding_size": 64,
+                "session_encoding_type": "scalar",
+                "session_integration_type": "direct",
+                "session_delta_n_layers": 2,
+                "session_delta_hidden_size": 11,
+            },
+            penalties={
+                "latent_penalty": 1e-3,
+                "choice_net_latent_penalty": 1e-3,
+                "update_net_obs_penalty": 1e-3,
+                "update_net_latent_penalty": 1e-3,
+                "subject_penalty": 1e-3,
+                "update_net_subject_penalty": 1e-3,
+                "choice_net_subject_penalty": 1e-3,
+            },
+            training={
+                "lr": 1e-3,
+                "n_steps": 0,
+                "n_warmup_steps": 0,
+                "loss": "penalized_categorical",
+                "loss_param": 1.0,
+                "max_grad_norm": 1.0,
+                "checkpoint_every_n_steps": 0,
+                "checkpoint_run_heldout_eval": False,
+                "plot_choice_rule": False,
+                "plot_update_rules": False,
+                "plot_subject_index": 0,
+                "save_output_df": False,
+            },
+            output_dir=str(self.output_dir / "wide_embedding"),
+            seed=42,
+        )
+
+        output = trainer.fit(multisubject_bundle)
+
+        for key in (
+            "subject_embedding_state_space_path",
+            "subject_session_context_state_space_path",
+        ):
+            path = Path(output[key])
+            self.assertTrue(path.exists(), f"{key} was not written")
+            with pil_image.open(path) as image:
+                n_pixels = image.size[0] * image.size[1]
+            self.assertLessEqual(
+                n_pixels,
+                pil_image.MAX_IMAGE_PIXELS,
+                f"{key} is {n_pixels} px, over PIL's {pil_image.MAX_IMAGE_PIXELS} px bomb "
+                "limit -- wandb.Image() would raise DecompressionBombError and kill the run",
+            )
+
     def test_multisubject_session_conditioning_reduces_obs_size(self):
         trainer = DisrnnTrainer(
             architecture={
