@@ -83,5 +83,6 @@ timing_features:
   reaction_time: true
   lick_counts: true
   lick_window_s: 2.0
+  standardize: true             # center/scale continuous channels by fixed population constants
 
 seed: ${seed}

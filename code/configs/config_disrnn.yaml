@@ -134,6 +134,9 @@ data:
     reaction_time: true         # include prev log reaction time (+1 feature)
     lick_counts: true           # include prev n_lick_left + n_lick_right (+2 features)
     lick_window_s: 2.0          # window (s) after go-cue over which licks are counted
+    standardize: true           # center/scale continuous channels by fixed population constants;
+                                # keep true for disRNN (its bottleneck KL is quadratic in input
+                                # magnitude, and per-channel sigma readouts must be comparable)
 
   # ── Batching / splitting ────────────────────────────────────────────────
   eval_every_n: 2               # every Nth session -> eval split (applied per-subject in multisubject mode)

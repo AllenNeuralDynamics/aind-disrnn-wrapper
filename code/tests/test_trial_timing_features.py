@@ -88,13 +88,15 @@ class TestFeatureMap(unittest.TestCase):
 
 @unittest.skipUnless(DEPS, f"deps unavailable: {IMPORT_ERR}")
 class TestEncode(unittest.TestCase):
+    """Raw (native-unit) encoding contract — standardize explicitly disabled."""
+
     def test_log_rt_and_nan_to_zero(self):
         df = pd.DataFrame({
             "reaction_time": [1.0, np.e, np.nan, 0.0],
             "n_lick_left": [0, 3, 1, 2],
             "n_lick_right": [5, 0, 2, 4],
         })
-        out = encode_timing_features(df)
+        out = encode_timing_features(df, standardize=False)
         # log(1)=0, log(e)=1, NaN->0, log(clip(0,1e-3))=log(1e-3)
         self.assertAlmostEqual(out["log_reaction_time"].iloc[0], 0.0)
         self.assertAlmostEqual(out["log_reaction_time"].iloc[1], 1.0)
@@ -104,7 +106,7 @@ class TestEncode(unittest.TestCase):
 
     def test_lick_counts_kept_as_float(self):
         df = pd.DataFrame({"reaction_time": [0.2], "n_lick_left": [3], "n_lick_right": [4]})
-        out = encode_timing_features(df)
+        out = encode_timing_features(df, standardize=False)
         self.assertEqual(out["n_lick_left"].iloc[0], 3.0)
         self.assertEqual(out["n_lick_right"].iloc[0], 4.0)
 
@@ -138,6 +140,49 @@ class TestAttachMerge(unittest.TestCase):
         df = pd.DataFrame({"subject_id": ["1"], "trial": [0]})  # no ses_idx
         with self.assertRaises(ValueError):
             attach_timing_features(df, timing_df=pd.DataFrame())
+
+
+@unittest.skipUnless(DEPS, f"deps unavailable: {IMPORT_ERR}")
+class TestStandardization(unittest.TestCase):
+    def _frame(self):
+        return pd.DataFrame({
+            "reaction_time": [0.14, 0.30, 1.0, np.nan],
+            "n_lick_left": [0, 5, 12, 3],
+            "n_lick_right": [4, 0, 8, 2],
+        })
+
+    def test_standardize_default_on(self):
+        from utils.trial_timing_features import (
+            LICK_CENTER, LICK_SCALE, LOG_RT_CENTER, LOG_RT_SCALE,
+        )
+        out = encode_timing_features(self._frame())
+        expect_rt0 = (np.log(0.14) - LOG_RT_CENTER) / LOG_RT_SCALE
+        self.assertAlmostEqual(out["log_reaction_time"].iloc[0], expect_rt0, places=6)
+        self.assertAlmostEqual(out["n_lick_left"].iloc[1],
+                               (5 - LICK_CENTER) / LICK_SCALE, places=6)
+
+    def test_standardize_off_keeps_native_units(self):
+        out = encode_timing_features(self._frame(), standardize=False)
+        self.assertAlmostEqual(out["log_reaction_time"].iloc[0], float(np.log(0.14)), places=6)
+        self.assertEqual(out["n_lick_left"].iloc[1], 5.0)
+
+    def test_missing_rt_is_neutral_zero_in_both_modes(self):
+        for std in (True, False):
+            out = encode_timing_features(self._frame(), standardize=std)
+            self.assertEqual(out["log_reaction_time"].iloc[3], 0.0)
+            self.assertTrue(np.isfinite(out["log_reaction_time"]).all())
+
+    def test_standardize_flows_through_config(self):
+        self.assertTrue(resolve_timing_config({"enabled": True}).standardize)
+        self.assertFalse(
+            resolve_timing_config({"enabled": True, "standardize": False}).standardize
+        )
+
+    def test_lick_columns_route_to_float_builder(self):
+        """Standardized lick counts are continuous, so routing must catch them."""
+        from utils.trial_timing_features import has_continuous_features
+
+        self.assertTrue(has_continuous_features({"n_lick_left": "prev n_lick_left"}))
 
 
 @unittest.skipUnless(DEPS, f"deps unavailable: {IMPORT_ERR}")
@@ -210,8 +255,11 @@ class TestFloatSafeDatasetBuilder(unittest.TestCase):
         self.assertFalse(has_continuous_features(None))
         self.assertFalse(has_continuous_features({"animal_response": "prev choice",
                                                   "rewarded": "prev reward"}))
-        self.assertFalse(has_continuous_features({"n_lick_left": "prev n_lick_left"}))
         self.assertTrue(has_continuous_features({"log_reaction_time": "prev log RT"}))
+        # Lick columns count as continuous: with standardize=True (the default)
+        # they are no longer integers, and the routing predicate cannot see that
+        # flag — so it must treat them as continuous unconditionally.
+        self.assertTrue(has_continuous_features({"n_lick_left": "prev n_lick_left"}))
 
 
 if __name__ == "__main__":

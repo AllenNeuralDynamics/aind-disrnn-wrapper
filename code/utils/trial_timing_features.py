@@ -184,31 +184,85 @@ def attach_timing_features(
     return merged
 
 
+# ── Standardization constants ────────────────────────────────────────────────
+# FIXED, documented constants rather than per-run fitted statistics. Two reasons:
+#
+# 1. The train and held-out loaders are instantiated INDEPENDENTLY
+#    (`instantiate(hydra_config.data, **heldout_kwargs)`), so a fitted transform
+#    would have to be persisted and threaded between them; any mismatch would
+#    silently apply a different transform to held-out data than to train.
+#    Constants are identical across splits — and across post-hoc analysis — by
+#    construction, with no plumbing and no leakage.
+# 2. They are inspectable and reproducible: the numbers below are population
+#    statistics measured once on a 60-subject / 545k-responded-trial sample of the
+#    20260603 snapshot (see analysis/calibrate_timing_features.py).
+#
+# Standardization is GLOBAL, never per-subject or per-session. Per-subject
+# z-scoring would erase between-mouse differences in reaction time and licking
+# vigor — exactly the individual variation the subject embedding exists to
+# capture — and would make a mouse's own baseline unrecoverable by the model.
+LOG_RT_CENTER: float = -1.822   # mean of log(reaction_time), clipped
+LOG_RT_SCALE: float = 0.599     # std  of log(reaction_time), clipped
+LICK_CENTER: float = 3.139      # mean lick count per side, go-cue + 2 s
+LICK_SCALE: float = 4.159       # std  lick count per side
+
+
 def encode_timing_features(
     df: pd.DataFrame,
     *,
     rt_clip_s: tuple[float, float] = RT_CLIP_S,
+    standardize: bool = True,
 ) -> pd.DataFrame:
     """Add the *encoded* timing columns the disRNN consumes.
 
     Produces ``log_reaction_time`` from the raw ``reaction_time`` (clipped, log).
-    Lick counts are passed through as raw integer counts (kept as float columns
-    for the disRNN dataset). Missing RT (NaN) encodes to 0.0 — a neutral value on
-    the standardized-ish log scale — mirroring how ignore trials carry no RT.
+    Missing RT (NaN) encodes to the channel's neutral value (0.0 after
+    standardization, i.e. the population mean), mirroring how ignore trials carry
+    no reaction time.
 
-    The previous-trial shift itself is done downstream by
-    ``create_disrnn_dataset`` (which builds ``xs`` from row ``t-1`` for the target
-    at row ``t``), so we only need the *current-trial* encoded columns here.
+    ``standardize`` (default True) centers and scales both channels by the fixed
+    population constants above, so every input channel reaches the disRNN's
+    information bottleneck at comparable magnitude. This matters because the
+    bottleneck's KL penalty is QUADRATIC in input magnitude
+    (``elementwise_kl = mus**2 + sigma**2 - 1 - log(sigma**2)``): at multiplier 1
+    the mean ``mus**2`` is ~0.5 for a binary choice/reward channel but ~27 for raw
+    lick counts, a ~54x difference in KL cost for the same information content.
+    The learned per-dimension multiplier can absorb scale in principle, but the
+    early-training optimization path still sees the inflated penalty, and — more
+    importantly — the per-channel sigma readouts (``update_net_obs`` openness /
+    sparsity) are only comparable across channels when their inputs are on
+    comparable scales.
+
+    Set ``standardize=False`` to feed native units (seconds-log and raw counts).
+    That is the right choice when a figure should read in native units, or to
+    reproduce a run launched before this option existed. For a GRU (no
+    bottleneck) the choice is largely cosmetic — Adam's per-parameter scaling
+    adapts — but keep it consistent across model families so an architecture
+    comparison isn't confounded by preprocessing.
+
+    The previous-trial shift itself is done downstream by the dataset builder
+    (row ``t`` of ``xs`` holds trial ``t-1``'s features), so we only produce the
+    *current-trial* encoded columns here.
     """
     out = df.copy()
     lo, hi = rt_clip_s
     rt = out["reaction_time"].to_numpy(dtype=float)
     with np.errstate(invalid="ignore"):
         log_rt = np.log(np.clip(rt, lo, hi))
-    log_rt = np.where(np.isfinite(log_rt), log_rt, 0.0)
-    out["log_reaction_time"] = log_rt
-    out["n_lick_left"] = out["n_lick_left"].astype(float)
-    out["n_lick_right"] = out["n_lick_right"].astype(float)
+
+    lick_l = out["n_lick_left"].to_numpy(dtype=float)
+    lick_r = out["n_lick_right"].to_numpy(dtype=float)
+
+    if standardize:
+        log_rt = (log_rt - LOG_RT_CENTER) / LOG_RT_SCALE
+        lick_l = (lick_l - LICK_CENTER) / LICK_SCALE
+        lick_r = (lick_r - LICK_CENTER) / LICK_SCALE
+
+    # Non-finite RT (no response / unmatched row) -> 0.0, which is the population
+    # mean when standardized and a neutral log-scale value when not.
+    out["log_reaction_time"] = np.where(np.isfinite(log_rt), log_rt, 0.0)
+    out["n_lick_left"] = lick_l
+    out["n_lick_right"] = lick_r
     return out
 
 
@@ -352,10 +406,21 @@ def has_continuous_features(features: Optional[Mapping[str, str]]) -> bool:
     Used to route dataset construction: integer-only feature sets keep using the
     upstream builder (exact reproducibility of prior runs); anything continuous
     must use :func:`create_disrnn_dataset_float` to avoid the truncation bug.
+
+    NOTE the lick-count columns are listed here even though raw counts are
+    integers: with ``standardize=True`` (the default) they become continuous, and
+    routing must not depend on a flag this predicate cannot see. Sending an
+    integer-valued column through the float-safe builder is harmless — it
+    produces identical values — whereas missing a continuous one truncates it.
     """
     if not features:
         return False
-    continuous = {"log_reaction_time", "reaction_time"}
+    continuous = {
+        "log_reaction_time",
+        "reaction_time",
+        "n_lick_left",
+        "n_lick_right",
+    }
     return bool(set(features) & continuous)
 
 
@@ -372,7 +437,9 @@ class TimingConfig:
         Window (s) after go-cue for counting licks.
     """
 
-    __slots__ = ("enabled", "reaction_time", "lick_counts", "lick_window_s")
+    __slots__ = (
+        "enabled", "reaction_time", "lick_counts", "lick_window_s", "standardize",
+    )
 
     def __init__(
         self,
@@ -381,11 +448,13 @@ class TimingConfig:
         reaction_time: bool = True,
         lick_counts: bool = True,
         lick_window_s: float = DEFAULT_LICK_WINDOW_S,
+        standardize: bool = True,
     ) -> None:
         self.enabled = bool(enabled)
         self.reaction_time = bool(reaction_time)
         self.lick_counts = bool(lick_counts)
         self.lick_window_s = float(lick_window_s)
+        self.standardize = bool(standardize)
 
     def feature_map(self) -> dict[str, str]:
         if not self.enabled:
@@ -406,7 +475,8 @@ class TimingConfig:
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return (
             f"TimingConfig(enabled={self.enabled}, reaction_time={self.reaction_time}, "
-            f"lick_counts={self.lick_counts}, lick_window_s={self.lick_window_s})"
+            f"lick_counts={self.lick_counts}, lick_window_s={self.lick_window_s}, "
+            f"standardize={self.standardize})"
         )
 
 
@@ -429,4 +499,5 @@ def resolve_timing_config(source: Optional[Mapping[str, object]]) -> TimingConfi
         reaction_time=bool(source.get("reaction_time", True)),
         lick_counts=bool(source.get("lick_counts", True)),
         lick_window_s=float(source.get("lick_window_s", DEFAULT_LICK_WINDOW_S)),
+        standardize=bool(source.get("standardize", True)),
     )

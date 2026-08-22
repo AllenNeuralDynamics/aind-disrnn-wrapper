@@ -945,7 +945,7 @@ def _augment_features_with_timing(
     df = attach_timing_features(
         df, snapshot=snapshot, lick_window_s=timing_cfg.lick_window_s
     )
-    df = encode_timing_features(df)
+    df = encode_timing_features(df, standardize=timing_cfg.standardize)
 
     # A non-empty features dict fully replaces the library default, so re-list the
     # base inputs explicitly, then add the timing inputs. Preserve any base
