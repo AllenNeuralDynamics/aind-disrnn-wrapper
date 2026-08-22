@@ -17,19 +17,31 @@ columns, and lick counts are only reliably present in the **event** table:
   ``goCue_start_time_in_session`` (RT = choice - go-cue). A COALESCE across the
   two recovers ~100% of responded trials.
 
-  .. warning::
-     The two readers' RT distributions are **not** interchangeable. Measured on a
-     60-subject sample of the 20260603 snapshot: median 0.136 s (co_asset,
-     n=500,867) vs 0.212 s (bonsai_s3, n=54,809) — a 1.56x ratio, with the gap
-     widening in the tail (p99 0.70 s vs 1.40 s; two-sample KS = 0.196, p < 1e-300).
-     Both were validated as *correct* computations of go-cue-to-first-lick, so this
-     is a real difference in the underlying sessions and/or timestamp pipeline, not
-     an extraction artifact. Consequences: (a) ``nwb_data_source`` is confounded
-     with RT, so any RT effect should be checked for robustness to reader
-     composition; (b) the fixed standardization constants below are pooled across
-     both readers, so a reader-imbalanced subject sample will not be exactly
-     zero-mean. Neither blocks use of the feature, but a finding that rests on RT
-     magnitude needs a reader-stratified check.
+  .. note:: ``nwb_data_source`` labels DISJOINT session sets, not re-reads.
+
+     Every session (and every ``(subject, date)`` pair) in the snapshot carries
+     exactly ONE ``nwb_data_source``: the three values (``bpod_s3`` 2019-2023,
+     ``bonsai_s3`` 2023-2026, ``co_asset`` 2023-2026) mark which acquisition /
+     ingest path a session came through — they are never two parsings of the same
+     recording. So a between-source difference is a difference between *cohorts*,
+     never a measurement disagreement.
+
+     This matters because the pooled comparison is misleading. Pooling all
+     responded trials, bonsai_s3 RT looks 1.56x slower than co_asset at the median
+     (0.212 s vs 0.136 s). But 96 subjects have >=5 sessions of each source, and
+     comparing each mouse to ITSELF reverses it: median within-subject ratio 0.946
+     (bonsai marginally FASTER; 12/33 slower, Wilcoxon p=0.04). Textbook Simpson's
+     paradox — the pooled gap is cohort composition, since co_asset covers 432
+     mature-subset subjects that bonsai_s3 never sees (bonsai 23; 165 shared), and
+     22% of bonsai's mature sessions come from subjects exclusive to it.
+
+     Practical consequences are the ordinary ones, not a pipeline caveat: RT
+     differs substantially BETWEEN MICE (within-subject medians here span
+     0.12-0.86 s), which is exactly the individual variation the subject embedding
+     is there to absorb — and a further reason the standardization below is global
+     rather than per-subject. The fixed constants are pooled over all sources, so a
+     cohort-skewed subject sample will not be exactly zero-mean; that is a
+     centering detail, not a confound.
 * Lick counts — ``co_asset`` trial-table lick-time arrays are unpopulated;
   ``bonsai_s3`` stores them as VARCHAR arrays. The **event** table
   (``left_lick_time`` / ``right_lick_time`` on the session clock) is populated
