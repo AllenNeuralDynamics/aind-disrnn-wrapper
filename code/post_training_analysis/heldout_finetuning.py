@@ -143,6 +143,13 @@ def _heldout_selector_from_data_config(data_cfg: Mapping[str, Any]) -> dict[str,
         "mature_only": bool(data_cfg.get("mature_only", True)),
         "cols_to_retain": data_cfg.get("cols_to_retain"),
         "snapshot": data_cfg.get("snapshot"),
+        # Optional timing inputs (previous-trial reaction time / lick counts).
+        # MUST be carried: the held-out bundle is built by an INDEPENDENT loader
+        # path, so if this is dropped the held-out tensor is narrower than the
+        # trained model's input and restore fails with a shape mismatch on
+        # 'multisubject_gru/~/gru/w_i' — losing the held-out metric for the whole
+        # arm while training itself looks perfectly healthy.
+        "timing_features": data_cfg.get("timing_features"),
     }
 
 
@@ -176,6 +183,13 @@ def _resolve_heldout_selector(
         "heldout_every_n": _coerce_optional_int(_pick("heldout_every_n", 5)) or 5,
         "mature_only": bool(_pick("mature_only", True)),
         "cols_to_retain": _pick("cols_to_retain", None),
+        # Carried for the same reason as in _heldout_selector_from_data_config:
+        # dropping either of these makes the held-out bundle disagree with the
+        # trained model's input width / data snapshot. This branch previously
+        # omitted BOTH, so an explicit heldout_subjects override silently lost
+        # them even when the source config set them.
+        "snapshot": _pick("snapshot", None),
+        "timing_features": _pick("timing_features", None),
     }
     logger.info(
         "Using held-out subject selectors from the fine-tuning config: "
@@ -441,6 +455,57 @@ def _load_heldout_snapshot_selection(
     if len(df) == 0:
         raise ValueError("Held-out subject selection resolved to an empty snapshot.")
     return df, list(subject_ids)
+
+
+def _attach_heldout_timing_features(
+    df: pd.DataFrame,
+    *,
+    heldout_selector: Mapping[str, Any],
+    source_data_cfg: Mapping[str, Any],
+) -> tuple[pd.DataFrame, dict[str, str] | None]:
+    """Derive the optional timing inputs on the HELD-OUT dataframe.
+
+    The held-out bundle is built by this module, not by
+    ``data_loaders.mice.MiceSnapshotDatasetLoader``, so the timing derivation the
+    training loader performs does NOT happen here for free. Without this the
+    held-out tensor is narrower than the trained model's input and restoring the
+    checkpoint fails with e.g.::
+
+        'multisubject_gru/~/gru/w_i' with retrieved shape (9, 384)
+        does not match shape=[6, 384]
+
+    which loses the held-out metric for the entire arm while training itself
+    reports success — the exact failure observed in study-07 `d100-bridge`
+    (2026-08-22). Returns the augmented frame plus the feature map to use, or
+    ``(df, None)`` when timing inputs are disabled so the base path is untouched.
+    """
+    from utils.trial_timing_features import resolve_timing_config
+
+    raw_timing_cfg = (
+        heldout_selector.get("timing_features")
+        if heldout_selector.get("timing_features") is not None
+        else source_data_cfg.get("timing_features")
+    )
+    # Resolve only to test the enabled flag; pass the RAW config downstream --
+    # _augment_features_with_timing resolves it itself and rejects an
+    # already-resolved TimingConfig.
+    if not resolve_timing_config(raw_timing_cfg).enabled:
+        return df, None
+
+    from data_loaders.mice import _augment_features_with_timing
+
+    df, feature_map = _augment_features_with_timing(
+        df,
+        base_features=source_data_cfg.get("features"),
+        timing_features_cfg=raw_timing_cfg,
+        snapshot=heldout_selector.get("snapshot") or source_data_cfg.get("snapshot"),
+    )
+    logger.info(
+        "Held-out bundle: attached timing features -> %d input feature(s): %s",
+        len(feature_map),
+        list(feature_map.values()),
+    )
+    return df, feature_map
 
 
 def _build_local_heldout_bundle(
@@ -728,6 +793,16 @@ def _build_global_heldout_bundle(
     heldout_df, heldout_subject_ids = _load_heldout_snapshot_selection(
         heldout_selector=heldout_selector
     )
+    # Derive the optional timing inputs on the held-out frame BEFORE building the
+    # bundle, so its input width matches the trained model's. See
+    # _attach_heldout_timing_features for why this cannot be skipped.
+    heldout_df, timing_feature_map = _attach_heldout_timing_features(
+        heldout_df,
+        heldout_selector=heldout_selector,
+        source_data_cfg=source_data_cfg,
+    )
+    if timing_feature_map is not None:
+        source_data_cfg = {**source_data_cfg, "features": timing_feature_map}
     local_bundle = _build_local_heldout_bundle(
         heldout_df=heldout_df,
         heldout_subject_ids=heldout_subject_ids,
