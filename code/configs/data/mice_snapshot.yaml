@@ -84,5 +84,13 @@ timing_features:
   lick_counts: true
   lick_window_s: 2.0
   standardize: true             # center/scale continuous channels by fixed population constants
+  # CONTROL ARM. Permutes the raw response columns WITHIN each session before the
+  # previous-trial shift: per-session marginals, observation width and input scale
+  # are all preserved, only trial alignment is destroyed. The shuffled arm is
+  # therefore parameter- and scale-matched to the real arm, so
+  # real-minus-shuffled isolates trial-aligned INFORMATION from the capacity that
+  # simply widening the input vector confers. Must stay false on any real arm.
+  shuffle: false
+  shuffle_seed: 0
 
 seed: ${seed}

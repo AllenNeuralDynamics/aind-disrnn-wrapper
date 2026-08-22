@@ -28,6 +28,7 @@ from utils.trial_timing_features import (
     encode_timing_features,
     has_continuous_features,
     resolve_timing_config,
+    shuffle_raw_response_columns,
     timing_feature_map,
 )
 
@@ -945,6 +946,12 @@ def _augment_features_with_timing(
     df = attach_timing_features(
         df, snapshot=snapshot, lick_window_s=timing_cfg.lick_window_s
     )
+    if timing_cfg.shuffle:
+        # CONTROL ARM. Permute within session on the RAW columns, before encoding
+        # and before the previous-trial shift, so the shuffled arm travels the
+        # identical downstream path and differs from the real arm in exactly one
+        # respect: trial alignment.
+        df = shuffle_raw_response_columns(df, seed=timing_cfg.shuffle_seed)
     df = encode_timing_features(df, standardize=timing_cfg.standardize)
 
     # A non-empty features dict fully replaces the library default, so re-list the

@@ -264,3 +264,139 @@ class TestFloatSafeDatasetBuilder(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ShuffleControlArmTests(unittest.TestCase):
+    """The shuffled-response control arm.
+
+    The arm's whole scientific value rests on preserving everything EXCEPT
+    trial alignment, so each invariant is asserted separately: if any one of them
+    silently breaks, `real - shuffled` stops isolating information and starts
+    measuring some second, unintended manipulation.
+    """
+
+    def _frame(self, n_per=40, n_ses=3, seed=0):
+        import numpy as np
+        import pandas as pd
+
+        rng = np.random.default_rng(seed)
+        n = n_per * n_ses
+        return pd.DataFrame({
+            "subject_id": ["m1"] * n,
+            "ses_idx": np.repeat(list(range(n_ses)), n_per).astype(str),
+            "trial": list(range(n_per)) * n_ses,
+            "reaction_time": rng.lognormal(-1.8, 0.6, n),
+            "n_lick_left": rng.poisson(3, n),
+            "n_lick_right": rng.poisson(3, n),
+        })
+
+    def test_per_session_marginals_are_preserved(self):
+        import numpy as np
+        import pandas as pd
+
+        from utils import trial_timing_features as tf
+        df = self._frame()
+        out = tf.shuffle_raw_response_columns(df, seed=0)
+        for ses, g in df.groupby("ses_idx"):
+            h = out[out.ses_idx == ses]
+            for col in tf.RAW_TIMING_COLUMNS:
+                np.testing.assert_allclose(
+                    np.sort(g[col].to_numpy().astype(float)),
+                    np.sort(h[col].to_numpy().astype(float)),
+                    err_msg=f"marginal changed for {col} in session {ses}",
+                )
+
+    def test_trial_alignment_is_destroyed(self):
+        import numpy as np
+        import pandas as pd
+
+        from utils import trial_timing_features as tf
+        df = self._frame()
+        out = tf.shuffle_raw_response_columns(df, seed=0)
+        moved = (df.reaction_time.to_numpy() != out.reaction_time.to_numpy()).mean()
+        self.assertGreater(moved, 0.5)
+
+    def test_columns_are_permuted_jointly(self):
+        import numpy as np
+        import pandas as pd
+
+        from utils import trial_timing_features as tf
+        # Independent per-column permutation would ALSO break the within-trial
+        # RT/lick coupling, making the contrast ambiguous. The set of (rt, L, R)
+        # triples must therefore survive intact.
+        df = self._frame()
+        out = tf.shuffle_raw_response_columns(df, seed=0)
+        cols = list(tf.RAW_TIMING_COLUMNS)
+        self.assertEqual(
+            set(map(tuple, df[cols].to_numpy().round(9))),
+            set(map(tuple, out[cols].to_numpy().round(9))),
+        )
+
+    def test_values_never_cross_sessions(self):
+        import numpy as np
+        import pandas as pd
+
+        from utils import trial_timing_features as tf
+        df = self._frame()
+        out = tf.shuffle_raw_response_columns(df, seed=0)
+        for ses, g in df.groupby("ses_idx"):
+            self.assertEqual(
+                set(g.reaction_time.round(9)),
+                set(out[out.ses_idx == ses].reaction_time.round(9)),
+            )
+
+    def test_deterministic_and_seed_dependent(self):
+        import numpy as np
+        import pandas as pd
+
+        from utils import trial_timing_features as tf
+        df = self._frame()
+        a = tf.shuffle_raw_response_columns(df, seed=0).reaction_time.to_numpy()
+        b = tf.shuffle_raw_response_columns(df, seed=0).reaction_time.to_numpy()
+        c = tf.shuffle_raw_response_columns(df, seed=1).reaction_time.to_numpy()
+        np.testing.assert_allclose(a, b)
+        self.assertFalse(np.allclose(a, c))
+
+    def test_row_order_and_length_preserved(self):
+        import numpy as np
+        import pandas as pd
+
+        from utils import trial_timing_features as tf
+        df = self._frame()
+        out = tf.shuffle_raw_response_columns(df, seed=0)
+        self.assertEqual(list(out.index), list(df.index))
+        self.assertEqual(len(out), len(df))
+        pd.testing.assert_series_equal(out.trial, df.trial)
+
+    def test_requires_raw_columns_present(self):
+        import numpy as np
+        import pandas as pd
+
+        from utils import trial_timing_features as tf
+        bad = pd.DataFrame({"subject_id": ["m1"], "ses_idx": ["0"], "trial": [0]})
+        with self.assertRaises(ValueError):
+            tf.shuffle_raw_response_columns(bad)
+
+    def test_config_parses_shuffle_flags(self):
+        import numpy as np
+        import pandas as pd
+
+        from utils import trial_timing_features as tf
+        cfg = tf.resolve_timing_config(
+            {"enabled": True, "shuffle": True, "shuffle_seed": 7}
+        )
+        self.assertTrue(cfg.shuffle)
+        self.assertEqual(cfg.shuffle_seed, 7)
+        # default must stay OFF so no existing arm silently becomes a control
+        self.assertFalse(tf.resolve_timing_config({"enabled": True}).shuffle)
+
+    def test_shuffled_arm_has_same_observation_width(self):
+        import numpy as np
+        import pandas as pd
+
+        from utils import trial_timing_features as tf
+        # Parameter-matching is the point: identical feature map to the real arm.
+        real = tf.resolve_timing_config({"enabled": True})
+        shuf = tf.resolve_timing_config({"enabled": True, "shuffle": True})
+        self.assertEqual(real.feature_map(), shuf.feature_map())
+        self.assertEqual(real.raw_columns(), shuf.raw_columns())

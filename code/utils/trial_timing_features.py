@@ -66,6 +66,7 @@ Design decisions (see the calibration notebook / session notes)
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from typing import List, Mapping, Optional, Sequence
 
@@ -228,6 +229,77 @@ def attach_timing_features(
             len(merged),
         )
     return merged
+
+
+def shuffle_raw_response_columns(
+    df: pd.DataFrame,
+    *,
+    seed: int = 0,
+    columns: Sequence[str] = RAW_TIMING_COLUMNS,
+) -> pd.DataFrame:
+    """Permute the raw response columns WITHIN each session (control arm).
+
+    This is the negative control for the response-feature arms. It must be applied
+    to the RAW columns *before* the previous-trial shift and before encoding, so
+    that the shuffled arm travels the identical downstream path.
+
+    What is preserved, and why it matters:
+
+    * **Per-session marginals.** The permutation is within ``(subject_id, ses_idx)``,
+      so every session keeps its own exact multiset of reaction times and lick
+      counts. Between-mouse and between-session differences in latency and vigor —
+      the structure the subject embedding can exploit — survive untouched.
+    * **Observation width and scale.** Same number of channels, same magnitudes,
+      hence the same information-bottleneck / regularization budget as the real
+      arm. This is what makes the arm parameter- and scale-matched.
+
+    What is destroyed: the trial-by-trial correspondence between a response
+    feature and the choice it is supposed to inform. So
+
+        real_arm − shuffled_arm
+
+    isolates the value of *trial-aligned information*, separating it from the
+    capacity and scale advantage that simply widening the input vector confers.
+    A shuffled arm scoring at baseline says the gain is informational; a shuffled
+    arm scoring near the real arm says the gain came from capacity.
+
+    The columns are permuted **jointly** (one permutation per session applied to
+    all of them) rather than independently. Independent permutations would also
+    destroy the within-trial coupling between RT and lick counts — a second,
+    separate manipulation — leaving the contrast ambiguous. Joint permutation
+    changes exactly one thing: alignment to the trial.
+
+    ``seed`` is combined with a stable hash of the session key, so the permutation
+    is deterministic and reproducible per session, and independent across sessions.
+    """
+    present = [c for c in columns if c in df.columns]
+    if not present:
+        raise ValueError(
+            f"shuffle_raw_response_columns found none of {list(columns)} in the frame; "
+            "it must run AFTER attach_timing_features."
+        )
+    for col in ("subject_id", "ses_idx"):
+        if col not in df.columns:
+            raise ValueError(f"shuffle_raw_response_columns requires a '{col}' column.")
+
+    out = df.copy()
+    n_sessions = 0
+    for key, idx in out.groupby(["subject_id", "ses_idx"], sort=False).indices.items():
+        # Stable per-session seed: independent of row order and of iteration order,
+        # so a re-run (or a re-score in a different process) reproduces it exactly.
+        digest = hashlib.sha256(f"{seed}|{key[0]}|{key[1]}".encode()).digest()
+        rng = np.random.default_rng(int.from_bytes(digest[:8], "little"))
+        perm = rng.permutation(len(idx))
+        for col in present:
+            values = out[col].to_numpy()[idx]
+            out.loc[out.index[idx], col] = values[perm]
+        n_sessions += 1
+    logger.info(
+        "shuffle_raw_response_columns: permuted %s within %d sessions (seed=%d) — "
+        "marginals preserved, trial alignment destroyed.",
+        present, n_sessions, seed,
+    )
+    return out
 
 
 # ── Standardization constants ────────────────────────────────────────────────
@@ -482,24 +554,40 @@ class TimingConfig:
         Master switch. When False, the loader behaves exactly as before.
     reaction_time / lick_counts : bool
         Which feature groups to include.
+    shuffle : bool
+        CONTROL ARM. When True, the raw response columns are permuted WITHIN each
+        session before the previous-trial shift, destroying trial-by-trial
+        alignment while preserving every marginal and each session's own
+        distribution. The arm is therefore parameter-matched and scale-matched to
+        the real arm: same observation width, same input magnitudes, same
+        bottleneck/regularization budget. real-minus-shuffled isolates the
+        contribution of trial-aligned INFORMATION from the contribution of extra
+        capacity.
+    shuffle_seed : int
+        Seed offset for the permutation, so shuffle replicates differ.
     lick_window_s : float
         Window (s) after go-cue for counting licks.
     """
 
     __slots__ = (
         "enabled", "reaction_time", "lick_counts", "lick_window_s", "standardize",
+        "shuffle", "shuffle_seed",
     )
 
     def __init__(
         self,
         *,
         enabled: bool = False,
+        shuffle: bool = False,
+        shuffle_seed: int = 0,
         reaction_time: bool = True,
         lick_counts: bool = True,
         lick_window_s: float = DEFAULT_LICK_WINDOW_S,
         standardize: bool = True,
     ) -> None:
         self.enabled = bool(enabled)
+        self.shuffle = bool(shuffle)
+        self.shuffle_seed = int(shuffle_seed)
         self.reaction_time = bool(reaction_time)
         self.lick_counts = bool(lick_counts)
         self.lick_window_s = float(lick_window_s)
@@ -525,7 +613,8 @@ class TimingConfig:
         return (
             f"TimingConfig(enabled={self.enabled}, reaction_time={self.reaction_time}, "
             f"lick_counts={self.lick_counts}, lick_window_s={self.lick_window_s}, "
-            f"standardize={self.standardize})"
+            f"standardize={self.standardize}, shuffle={self.shuffle}, "
+            f"shuffle_seed={self.shuffle_seed})"
         )
 
 
@@ -545,6 +634,8 @@ def resolve_timing_config(source: Optional[Mapping[str, object]]) -> TimingConfi
         )
     return TimingConfig(
         enabled=bool(source.get("enabled", False)),
+        shuffle=bool(source.get("shuffle", False)),
+        shuffle_seed=int(source.get("shuffle_seed", 0)),
         reaction_time=bool(source.get("reaction_time", True)),
         lick_counts=bool(source.get("lick_counts", True)),
         lick_window_s=float(source.get("lick_window_s", DEFAULT_LICK_WINDOW_S)),
