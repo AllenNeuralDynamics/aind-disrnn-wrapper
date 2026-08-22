@@ -91,6 +91,6 @@ timing_features:
   # real-minus-shuffled isolates trial-aligned INFORMATION from the capacity that
   # simply widening the input vector confers. Must stay false on any real arm.
   shuffle: false
-  shuffle_seed: 0
+  shuffle_seed: -1             # -1 = derive from the run seed (see resolve_timing_config)
 
 seed: ${seed}
