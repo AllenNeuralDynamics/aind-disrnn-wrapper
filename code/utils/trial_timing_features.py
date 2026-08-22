@@ -251,6 +251,114 @@ def required_raw_columns(
     return cols
 
 
+def create_disrnn_dataset_float(
+    df_trials: pd.DataFrame,
+    *,
+    ignore_policy: str = "include",
+    batch_size: Optional[int] = None,
+    batch_mode: str = "random",
+    features: Optional[Mapping[str, str]] = None,
+):
+    """Float-safe re-implementation of ``aind_disrnn_utils.create_disrnn_dataset``.
+
+    WHY THIS EXISTS — upstream integer-truncation bug
+    -------------------------------------------------
+    The upstream builder allocates the input tensor with::
+
+        xs = np.full((n_timesteps, n_sessions, n_features), -1)   # int64!
+
+    ``np.full`` with an integer fill value yields an **int64** array, so assigning
+    float feature columns into it TRUNCATES them toward zero; the later
+    ``xs.astype(float)`` is too late — the precision is already gone. This is
+    invisible for the stock features (``animal_response`` in {0,1,2} and
+    ``rewarded`` in {0,1} are already integers) but destroys any CONTINUOUS
+    feature: in testing, 24,149 distinct log-reaction-time values collapsed to 7
+    integers (-6 … 0).
+
+    Verified present in the SHA pinned by this repo's ``pyproject.toml`` AND in
+    the latest release (aind-disrnn-utils 0.0.16) as of 2026-08. This function is
+    a faithful copy of the upstream semantics with the tensors allocated as float
+    from the start. It is used ONLY when continuous features are requested, so
+    integer-only runs keep calling upstream and stay bit-for-bit reproducible.
+
+    TODO: upstream this as a one-line dtype fix in aind_disrnn_utils
+    (``np.full(..., -1, dtype=float)``) and drop this shim once the pin moves.
+
+    Semantics preserved exactly
+    ---------------------------
+    * ``ignore_policy`` "exclude" drops ``animal_response == 2`` rows and yields
+      2 classes; "include" keeps them and yields 3.
+    * ``rewarded`` is derived from ``earned_reward`` as int.
+    * Inputs are the PREVIOUS trial's feature values: row ``t`` of ``xs`` holds
+      trial ``t-1``'s features, with row 0 left at the -1 fill.
+    * Targets ``ys`` are the current trial's ``animal_response``.
+    * Padding beyond a session's length stays at -1 (masked downstream via the
+      negative-target rule).
+    """
+    from disentangled_rnns.library import rnn_utils  # noqa: PLC0415
+
+    if "ses_idx" not in df_trials:
+        raise ValueError("df_trials must contain index of sessions ses_idx")
+    if ignore_policy not in ("include", "exclude"):
+        raise ValueError('ignore_policy must be either "include" or "exclude"')
+
+    df_trials = df_trials.copy()
+    if ignore_policy == "include":
+        n_classes = 3
+    else:
+        n_classes = 2
+        df_trials = df_trials[df_trials["animal_response"] != 2]
+
+    df_trials["rewarded"] = df_trials["earned_reward"].astype(int)
+
+    if features is None:
+        features = {"animal_response": "prev choice", "rewarded": "prev reward"}
+    feature_cols = list(features.keys())
+    feature_labels = [features[c] for c in feature_cols]
+    for col in feature_cols:
+        if col not in df_trials.columns:
+            raise ValueError(f"input feature '{col}' not in df_trials")
+
+    max_session_length = df_trials.groupby("ses_idx")["trial"].count().max()
+    session_ids = df_trials["ses_idx"].unique()
+    num_sessions = len(session_ids)
+
+    # The fix: allocate as float so continuous features are not truncated.
+    xs = np.full(
+        (max_session_length, num_sessions, len(feature_cols)), -1.0, dtype=float
+    )
+    ys = np.full((max_session_length, num_sessions, 1), -1.0, dtype=float)
+
+    for dex, ses_idx in enumerate(session_ids):
+        temp = df_trials[df_trials["ses_idx"] == ses_idx]
+        xs[1 : len(temp), dex, :] = temp[feature_cols].to_numpy(dtype=float)[:-1, :]
+        ys[0 : len(temp), dex, :] = temp[["animal_response"]].to_numpy(dtype=float)
+
+    return rnn_utils.DatasetRNN(
+        ys=ys,
+        xs=xs,
+        y_type="categorical",
+        n_classes=n_classes,
+        x_names=feature_labels,
+        y_names=["choice"],
+        batch_size=batch_size,
+        batch_mode=batch_mode,
+    )
+
+
+def has_continuous_features(features: Optional[Mapping[str, str]]) -> bool:
+    """True if ``features`` includes any column that is not integer-valued.
+
+    Used to route dataset construction: integer-only feature sets keep using the
+    upstream builder (exact reproducibility of prior runs); anything continuous
+    must use :func:`create_disrnn_dataset_float` to avoid the truncation bug.
+    """
+    if not features:
+        return False
+    continuous = {"log_reaction_time", "reaction_time"}
+    return bool(set(features) & continuous)
+
+
 class TimingConfig:
     """Resolved timing-feature options (from the data-config ``timing_features`` block).
 

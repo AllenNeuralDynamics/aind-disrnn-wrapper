@@ -24,7 +24,9 @@ from utils.multisubject import (
 )
 from utils.trial_timing_features import (
     attach_timing_features,
+    create_disrnn_dataset_float,
     encode_timing_features,
+    has_continuous_features,
     resolve_timing_config,
     timing_feature_map,
 )
@@ -519,7 +521,7 @@ def _build_multisubject_bundle(
             }
         )
 
-        dataset = dl.create_disrnn_dataset(
+        dataset = _create_disrnn_dataset(
             subject_df,
             ignore_policy=ignore_policy,
             features=features or None,
@@ -897,6 +899,21 @@ class MiceDatasetLoaderFromFile(DatasetLoader):
         )
 
 
+def _create_disrnn_dataset(df, **kwargs):
+    """Build a disRNN dataset, choosing a float-safe builder when needed.
+
+    The upstream ``dl.create_disrnn_dataset`` allocates the input tensor as int64
+    (``np.full(..., -1)``) and truncates float features. That is harmless for the
+    integer-valued stock features but destroys continuous ones, so any feature set
+    containing a continuous column is routed to the float-safe re-implementation.
+    Integer-only feature sets keep calling upstream, so existing runs remain
+    bit-for-bit reproducible. See utils.trial_timing_features for details.
+    """
+    if has_continuous_features(kwargs.get("features")):
+        return create_disrnn_dataset_float(df, **kwargs)
+    return dl.create_disrnn_dataset(df, **kwargs)
+
+
 def _augment_features_with_timing(
     df: pd.DataFrame,
     *,
@@ -1098,7 +1115,7 @@ class MiceSnapshotDatasetLoader(DatasetLoader):
             )
 
         logger.info("Building disRNN datasets …")
-        dataset = dl.create_disrnn_dataset(
+        dataset = _create_disrnn_dataset(
             df,
             ignore_policy=self.ignore_policy,
             features=self.features or None,  # pass None to use library defaults when empty

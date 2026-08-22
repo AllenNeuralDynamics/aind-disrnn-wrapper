@@ -140,5 +140,79 @@ class TestAttachMerge(unittest.TestCase):
             attach_timing_features(df, timing_df=pd.DataFrame())
 
 
+@unittest.skipUnless(DEPS, f"deps unavailable: {IMPORT_ERR}")
+class TestFloatSafeDatasetBuilder(unittest.TestCase):
+    """Regression tests for the upstream int64 truncation bug.
+
+    Upstream ``create_disrnn_dataset`` allocates ``xs`` via ``np.full(..., -1)``,
+    which is int64, so continuous feature columns are truncated toward zero
+    before the later ``astype(float)``. These tests pin the float-safe behavior.
+    """
+
+    def _frame(self):
+        # Two sessions, continuous log-RT values that would truncate to the same
+        # integer if the tensor were allocated as int.
+        rows = []
+        for ses, rts in (("s0", [0.11, 0.19, 0.87, 0.42]), ("s1", [0.55, 0.62, 0.71])):
+            for i, rt in enumerate(rts):
+                rows.append({
+                    "ses_idx": ses, "trial": i,
+                    "animal_response": i % 2, "earned_reward": bool(i % 2),
+                    "log_reaction_time": float(np.log(rt)),
+                    "n_lick_left": float(i), "n_lick_right": float(i + 1),
+                })
+        return pd.DataFrame(rows)
+
+    def test_continuous_values_survive(self):
+        from utils.trial_timing_features import create_disrnn_dataset_float
+
+        df = self._frame()
+        feats = {"animal_response": "prev choice", "rewarded": "prev reward",
+                 "log_reaction_time": "prev log RT"}
+        ds = create_disrnn_dataset_float(
+            df, ignore_policy="exclude", features=feats, batch_size=None,
+            batch_mode="single",
+        )
+        xs = ds.get_all()["xs"]
+        self.assertEqual(xs.dtype.kind, "f")
+        col = xs[:, :, 2]
+        non_sentinel = col[col != -1]
+        # All log-RT values are negative fractions in (-2.3, 0); if truncated they
+        # would all collapse to 0 or -1.
+        self.assertTrue(np.any(~np.isclose(non_sentinel, np.round(non_sentinel))),
+                        "continuous values were truncated to integers")
+
+    def test_prev_trial_shift_and_padding(self):
+        from utils.trial_timing_features import create_disrnn_dataset_float
+
+        df = self._frame()
+        feats = {"animal_response": "prev choice", "rewarded": "prev reward",
+                 "log_reaction_time": "prev log RT"}
+        ds = create_disrnn_dataset_float(
+            df, ignore_policy="include", features=feats, batch_size=None,
+            batch_mode="single",
+        )
+        xs, ys = ds.get_all()["xs"], ds.get_all()["ys"]
+        # Row 0 of every session is the -1 fill (no previous trial).
+        self.assertTrue(np.all(xs[0, :, :] == -1))
+        # Session 0 row 1 must carry session 0 trial 0's log RT.
+        s0 = df[df.ses_idx == "s0"].sort_values("trial")
+        self.assertAlmostEqual(float(xs[1, 0, 2]), float(s0["log_reaction_time"].iloc[0]))
+        # Targets are the CURRENT trial's response.
+        self.assertAlmostEqual(float(ys[0, 0, 0]), float(s0["animal_response"].iloc[0]))
+        # Shorter session (s1, 3 trials) is padded at the tail.
+        self.assertEqual(xs.shape[0], 4)
+        self.assertTrue(np.all(xs[3, 1, :] == -1))
+
+    def test_has_continuous_features_routing(self):
+        from utils.trial_timing_features import has_continuous_features
+
+        self.assertFalse(has_continuous_features(None))
+        self.assertFalse(has_continuous_features({"animal_response": "prev choice",
+                                                  "rewarded": "prev reward"}))
+        self.assertFalse(has_continuous_features({"n_lick_left": "prev n_lick_left"}))
+        self.assertTrue(has_continuous_features({"log_reaction_time": "prev log RT"}))
+
+
 if __name__ == "__main__":
     unittest.main()
