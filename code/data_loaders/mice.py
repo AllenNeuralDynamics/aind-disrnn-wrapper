@@ -22,6 +22,21 @@ from utils.multisubject import (
     subject_sort_key,
     unique_subject_ids_preserve_order,
 )
+from utils.trial_timing_features import (
+    attach_timing_features,
+    encode_timing_features,
+    resolve_timing_config,
+    timing_feature_map,
+)
+
+# The disRNN library defaults when ``features`` is None: previous choice + previous
+# reward. When we add timing features we must re-list these explicitly, because a
+# non-empty ``features`` dict fully REPLACES the library default (it does not
+# extend it) — so an omitted base feature would be silently dropped.
+BASE_DISRNN_FEATURES: Mapping[str, str] = {
+    "animal_response": "prev choice",
+    "rewarded": "prev reward",
+}
 
 logger = logging.getLogger(__name__)
 
@@ -882,6 +897,48 @@ class MiceDatasetLoaderFromFile(DatasetLoader):
         )
 
 
+def _augment_features_with_timing(
+    df: pd.DataFrame,
+    *,
+    base_features: Mapping[str, str] | None,
+    timing_features_cfg: object,
+    snapshot: Optional[str],
+) -> tuple[pd.DataFrame, dict[str, str]]:
+    """Attach timing features to ``df`` and return the widened ``features`` map.
+
+    When timing is disabled (default), returns ``df`` unchanged and a plain dict
+    copy of ``base_features`` (possibly empty, meaning "use library defaults").
+
+    When enabled, this:
+
+    1. derives reaction-time / lick-count columns from the database (scoped to
+       the subjects in ``df``) and merges them on ``(ses_idx, trial)``;
+    2. encodes them (log RT; raw lick counts);
+    3. returns a ``features`` map that EXPLICITLY lists the base disRNN inputs
+       (prev choice + prev reward) plus the requested timing inputs — because a
+       non-empty ``features`` dict replaces, rather than extends, the library
+       default.
+    """
+    timing_cfg = resolve_timing_config(timing_features_cfg)
+    features = dict(base_features) if base_features else {}
+    if not timing_cfg.enabled:
+        return df, features
+
+    logger.info("Timing features enabled: %s", timing_cfg)
+    df = attach_timing_features(
+        df, snapshot=snapshot, lick_window_s=timing_cfg.lick_window_s
+    )
+    df = encode_timing_features(df)
+
+    # A non-empty features dict fully replaces the library default, so re-list the
+    # base inputs explicitly, then add the timing inputs. Preserve any base
+    # features the caller passed (e.g. a custom mapping) instead of the default.
+    widened: dict[str, str] = dict(features) if features else dict(BASE_DISRNN_FEATURES)
+    widened.update(timing_cfg.feature_map())
+    logger.info("disRNN feature set widened to: %s", widened)
+    return df, widened
+
+
 class MiceSnapshotDatasetLoader(DatasetLoader):
     """Load mice behavioral data from the foraging database.
 
@@ -1002,6 +1059,15 @@ class MiceSnapshotDatasetLoader(DatasetLoader):
             subject_sample_seed=self.subject_sample_seed,
             mature_only=self.mature_only,
             cols_to_retain=self.cols_to_retain,
+            snapshot=self.snapshot,
+        )
+
+        # Optionally derive + attach reaction-time / lick-count inputs and widen
+        # the disRNN feature set. No-op unless data.timing_features.enabled.
+        df, self.features = _augment_features_with_timing(
+            df,
+            base_features=self.features,
+            timing_features_cfg=self.extras.get("timing_features"),
             snapshot=self.snapshot,
         )
 
