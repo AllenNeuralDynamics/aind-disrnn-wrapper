@@ -618,11 +618,23 @@ class TimingConfig:
         )
 
 
-def resolve_timing_config(source: Optional[Mapping[str, object]]) -> TimingConfig:
+def resolve_timing_config(
+    source: Optional[Mapping[str, object]],
+    *,
+    run_seed: Optional[int] = None,
+) -> TimingConfig:
     """Build a :class:`TimingConfig` from a ``timing_features`` mapping.
 
     Accepts the value of the data-config ``timing_features`` key (a dict / OmegaConf
     mapping), or ``None`` / a bare bool for convenience. Unknown keys are ignored.
+
+    ``run_seed`` supplies the shuffle seed when the config leaves ``shuffle_seed``
+    unset (sentinel ``-1``). This matters scientifically for the shuffled control
+    arm: the seed replicates of that arm should each see a DIFFERENT permutation,
+    otherwise the three "replicates" are three fits of one permutation and the
+    reported seed spread understates permutation variance — making the arm look
+    more precise than it is. Tying the permutation to the run seed costs nothing
+    and is reproducible, since the run seed is recorded in the run config.
     """
     if source is None:
         return TimingConfig(enabled=False)
@@ -632,12 +644,19 @@ def resolve_timing_config(source: Optional[Mapping[str, object]]) -> TimingConfi
         raise TypeError(
             f"timing_features must be a mapping, bool, or None; got {type(source)!r}."
         )
-    return TimingConfig(
+    cfg = TimingConfig(
         enabled=bool(source.get("enabled", False)),
         shuffle=bool(source.get("shuffle", False)),
-        shuffle_seed=int(source.get("shuffle_seed", 0)),
+        # Default -1 is a SENTINEL meaning "derive from the run seed" (see
+        # resolve_timing_config's run_seed argument). An explicit value pins the
+        # permutation regardless of run seed, which is what you want only when
+        # deliberately re-fitting one fixed permutation.
+        shuffle_seed=int(source.get("shuffle_seed", -1)),
         reaction_time=bool(source.get("reaction_time", True)),
         lick_counts=bool(source.get("lick_counts", True)),
         lick_window_s=float(source.get("lick_window_s", DEFAULT_LICK_WINDOW_S)),
         standardize=bool(source.get("standardize", True)),
     )
+    if cfg.shuffle_seed < 0:
+        cfg.shuffle_seed = int(run_seed) if run_seed is not None else 0
+    return cfg

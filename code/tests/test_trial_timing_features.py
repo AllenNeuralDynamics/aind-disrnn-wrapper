@@ -400,3 +400,42 @@ class ShuffleControlArmTests(unittest.TestCase):
         shuf = tf.resolve_timing_config({"enabled": True, "shuffle": True})
         self.assertEqual(real.feature_map(), shuf.feature_map())
         self.assertEqual(real.raw_columns(), shuf.raw_columns())
+
+
+class ShuffleSeedDerivationTests(unittest.TestCase):
+    """`shuffle_seed` defaults to the RUN seed, not to a constant.
+
+    If it defaulted to a constant, the three seed replicates of the shuffled arm
+    would be three fits of ONE permutation: the reported seed spread would measure
+    optimizer noise only and understate permutation variance, making the control
+    arm look more precise than it is.
+    """
+
+    def test_sentinel_derives_from_run_seed(self):
+        from utils import trial_timing_features as tf
+
+        for run_seed in (0, 1, 2, 17):
+            cfg = tf.resolve_timing_config(
+                {"enabled": True, "shuffle": True}, run_seed=run_seed
+            )
+            self.assertEqual(cfg.shuffle_seed, run_seed)
+
+    def test_explicit_value_overrides_run_seed(self):
+        from utils import trial_timing_features as tf
+
+        cfg = tf.resolve_timing_config(
+            {"enabled": True, "shuffle": True, "shuffle_seed": 7}, run_seed=2
+        )
+        self.assertEqual(cfg.shuffle_seed, 7)
+
+    def test_missing_run_seed_falls_back_to_zero(self):
+        from utils import trial_timing_features as tf
+
+        cfg = tf.resolve_timing_config({"enabled": True, "shuffle": True})
+        self.assertEqual(cfg.shuffle_seed, 0)
+
+    def test_real_arm_is_unaffected(self):
+        from utils import trial_timing_features as tf
+
+        cfg = tf.resolve_timing_config({"enabled": True}, run_seed=5)
+        self.assertFalse(cfg.shuffle)

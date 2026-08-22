@@ -494,11 +494,22 @@ def _attach_heldout_timing_features(
 
     from data_loaders.mice import _augment_features_with_timing
 
+    # The shuffled control arm derives its permutation from the RUN seed when
+    # `shuffle_seed` is left at the sentinel. The held-out loader is instantiated
+    # independently of the training loader, so if the run seed were not passed
+    # here the held-out frame would be permuted with seed 0 while training used
+    # the run's own seed — a silent train/eval mismatch that is invisible in the
+    # logs (correct tensor width, plausible numbers, wrong permutation). Same
+    # class of bug as the missing timing columns fixed in 35d6a19.
+    run_seed = source_data_cfg.get("seed")
+    if run_seed is None:
+        run_seed = heldout_selector.get("seed")
     df, feature_map = _augment_features_with_timing(
         df,
         base_features=source_data_cfg.get("features"),
         timing_features_cfg=raw_timing_cfg,
         snapshot=heldout_selector.get("snapshot") or source_data_cfg.get("snapshot"),
+        run_seed=int(run_seed) if run_seed is not None else None,
     )
     logger.info(
         "Held-out bundle: attached timing features -> %d input feature(s): %s",

@@ -919,6 +919,7 @@ def _augment_features_with_timing(
     df: pd.DataFrame,
     *,
     base_features: Mapping[str, str] | None,
+    run_seed: int | None = None,
     timing_features_cfg: object,
     snapshot: Optional[str],
 ) -> tuple[pd.DataFrame, dict[str, str]]:
@@ -937,7 +938,7 @@ def _augment_features_with_timing(
        non-empty ``features`` dict replaces, rather than extends, the library
        default.
     """
-    timing_cfg = resolve_timing_config(timing_features_cfg)
+    timing_cfg = resolve_timing_config(timing_features_cfg, run_seed=run_seed)
     features = dict(base_features) if base_features else {}
     if not timing_cfg.enabled:
         return df, features
@@ -1093,6 +1094,9 @@ class MiceSnapshotDatasetLoader(DatasetLoader):
             base_features=self.features,
             timing_features_cfg=self.extras.get("timing_features"),
             snapshot=self.snapshot,
+            # Ties the shuffled-arm permutation to the run seed, so seed
+            # replicates of that arm see DIFFERENT permutations.
+            run_seed=self.seed,
         )
 
         if self.multisubject:
