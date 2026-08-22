@@ -16,6 +16,20 @@ columns, and lick counts are only reliably present in the **event** table:
   ``co_asset`` leaves it NULL but populates ``choice_time_in_session`` and
   ``goCue_start_time_in_session`` (RT = choice - go-cue). A COALESCE across the
   two recovers ~100% of responded trials.
+
+  .. warning::
+     The two readers' RT distributions are **not** interchangeable. Measured on a
+     60-subject sample of the 20260603 snapshot: median 0.136 s (co_asset,
+     n=500,867) vs 0.212 s (bonsai_s3, n=54,809) — a 1.56x ratio, with the gap
+     widening in the tail (p99 0.70 s vs 1.40 s; two-sample KS = 0.196, p < 1e-300).
+     Both were validated as *correct* computations of go-cue-to-first-lick, so this
+     is a real difference in the underlying sessions and/or timestamp pipeline, not
+     an extraction artifact. Consequences: (a) ``nwb_data_source`` is confounded
+     with RT, so any RT effect should be checked for robustness to reader
+     composition; (b) the fixed standardization constants below are pooled across
+     both readers, so a reader-imbalanced subject sample will not be exactly
+     zero-mean. Neither blocks use of the feature, but a finding that rests on RT
+     magnitude needs a reader-stratified check.
 * Lick counts — ``co_asset`` trial-table lick-time arrays are unpopulated;
   ``bonsai_s3`` stores them as VARCHAR arrays. The **event** table
   (``left_lick_time`` / ``right_lick_time`` on the session clock) is populated
@@ -48,20 +62,19 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-# Semantic feature labels (values of the ``features`` dict) for the timing inputs.
-# Keys are the dataframe column names produced by :func:`attach_timing_features`.
-TIMING_FEATURE_LABELS: Mapping[str, str] = {
-    "prev_log_reaction_time": "prev log RT",
-    "prev_n_lick_left": "prev n_lick_left",
-    "prev_n_lick_right": "prev n_lick_right",
-}
-
 # Raw derived columns (before the previous-trial shift / encoding).
 RAW_TIMING_COLUMNS: tuple[str, ...] = ("reaction_time", "n_lick_left", "n_lick_right")
 
 DEFAULT_LICK_WINDOW_S: float = 2.0
-# RT is clipped to this range before the log to tame a handful of extreme
-# outliers (the p99 is <1 s; values >~5 s are almost always mis-scored).
+# RT is clipped to this range before the log, to bound extreme outliers without
+# discarding trials. The upper bound is deliberately LOOSE relative to the
+# distribution: the goal is to keep log() finite and bounded, not to police
+# plausibility. Measured on a 60-subject / 555,676-responded-trial sample of the
+# 20260603 snapshot: p99 = 0.79 s, p99.99 = 1.92 s, max = 3154 s (clearly a
+# mis-scored session boundary). Only 7 trials (1.3e-5) exceed 10 s -- and the
+# same 7 exceed 5 s, so the exact upper bound is immaterial; a much tighter bound
+# would start reshaping the tail the model may legitimately use. The lower bound
+# affects 326 trials (5.9e-4) with a recorded RT of ~0 and keeps log() finite.
 RT_CLIP_S: tuple[float, float] = (1e-3, 10.0)
 
 
@@ -329,8 +342,11 @@ def create_disrnn_dataset_float(
     feature: in testing, 24,149 distinct log-reaction-time values collapsed to 7
     integers (-6 … 0).
 
-    Verified present in the SHA pinned by this repo's ``pyproject.toml`` AND in
-    the latest release (aind-disrnn-utils 0.0.16) as of 2026-08. This function is
+    Verified present in BOTH the SHA pinned by this repo's ``pyproject.toml``
+    (``aind_disrnn_utils@74de874d``, ``src/aind_disrnn_utils/data_loader.py`` L76:
+    ``xs = np.full((max_session_length, num_sessions, num_input_features), -1)``,
+    with the too-late ``xs.astype(float)`` at L99) and in the latest release
+    (aind-disrnn-utils 0.0.16), as of 2026-08. This function is
     a faithful copy of the upstream semantics with the tensors allocated as float
     from the start. It is used ONLY when continuous features are requested, so
     integer-only runs keep calling upstream and stay bit-for-bit reproducible.
