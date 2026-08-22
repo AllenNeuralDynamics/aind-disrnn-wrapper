@@ -301,6 +301,89 @@ split (applied **per subject** in multisubject mode via
 `subject_index` prepended). `ignore_policy` controls no-response trials
 (`exclude` → 2 classes, `include` → 3).
 
+### Optional timing inputs — reaction time & lick counts (`data.timing_features`)
+
+Off by default. When enabled, the loader appends **previous-trial** reaction time
+and post-go-cue lick counts to the observation vector, alongside the standard
+prev-choice + prev-reward:
+
+```yaml
+data:
+  timing_features:
+    enabled: true        # master switch; false -> bit-identical to the base model
+    reaction_time: true  # +1 feature: prev log RT
+    lick_counts: true    # +2 features: prev n_lick_left, prev n_lick_right
+    lick_window_s: 2.0   # licks counted in [go_cue, go_cue + this)
+    standardize: true    # center/scale continuous channels (see below)
+```
+
+`obs_size` **widens automatically** — the trainers derive it from the input tensor
+width (`dataset._xs.shape[2]` minus packed context features), so no MODEL block
+change is needed. With all features on, `obs_size` goes 2 → 5 and `x_names`
+becomes `[prev choice, prev reward, prev log RT, prev n_lick_left,
+prev n_lick_right]`.
+
+**Where the numbers come from (two readers, two conventions).** The parquet cache
+is built by two NWB readers that store timing differently, so
+`utils/trial_timing_features.py` normalizes both:
+
+| quantity | `bonsai_s3` | `co_asset` |
+|---|---|---|
+| reaction time | `reaction_time` column | `choice_time_in_session − goCue_start_time_in_session` |
+| go-cue | `goCue_start_time` | `goCue_start_time_in_session` |
+| lick times | trial-table VARCHAR arrays | **absent** — trial-table arrays unpopulated |
+
+A `COALESCE` recovers reaction time on ~100% of responded trials. Lick counts are
+always taken from the **event table** (`left_lick_time` / `right_lick_time` on the
+session clock), which is populated for both readers; event-derived counts were
+cross-validated to exact equality against the bonsai trial-table arrays.
+
+**`features` REPLACES, it does not extend.** A non-empty `features` dict fully
+overrides the library default, so `_augment_features_with_timing()` re-lists
+prev-choice/prev-reward explicitly. Omitting them would silently drop the base
+inputs — the failure mode to watch for if you hand-write a `features` mapping.
+
+**`standardize` (default true).** Centers/scales the continuous channels by fixed
+documented population constants. This matters because the disRNN bottleneck's KL
+penalty is *quadratic* in input magnitude
+(`elementwise_kl = mus**2 + sigma**2 - 1 - log(sigma**2)`): measured at
+multiplier 1, mean `mus**2` was 0.37 for a binary choice channel but 32.1 for raw
+lick counts — an ~87× spread in KL cost for the same information. Standardizing
+brings all five channels into 0.37–1.10. The learned per-dimension multiplier can
+absorb scale in principle, but (a) early training still pays the inflated penalty
+and (b) the **per-channel σ readouts** (`bottlenecks/update_net_obs_*`) are only
+comparable across channels when inputs are on comparable scales. For a **GRU**
+(no bottleneck) the choice is largely cosmetic, but keep it consistent across
+model families so an architecture comparison is not confounded by preprocessing.
+
+The constants are *fixed*, not per-run fitted, because the train and held-out
+loaders are instantiated independently — a fitted transform would have to be
+persisted and threaded between them, with a silent train/held-out mismatch as the
+failure mode. Standardization is **global, never per-subject**: per-subject
+z-scoring would erase the between-mouse differences in reaction time and licking
+vigor that the subject embedding exists to capture.
+
+> **⚠️ Upstream int64 truncation bug (worked around here).**
+> `aind_disrnn_utils.create_disrnn_dataset` allocates the input tensor as
+> `np.full((...), -1)` — an **int64** array — so float feature columns are
+> truncated toward zero on assignment; the later `.astype(float)` is too late.
+> This is invisible for the stock integer features (`animal_response`,
+> `rewarded`) but destroys continuous ones: on real data, 24,149 distinct log-RT
+> values collapsed to **7** integers. Present both in the SHA pinned by
+> `pyproject.toml` and in the latest release (0.0.16). `_create_disrnn_dataset()`
+> therefore routes any feature set containing a continuous column to
+> `utils.trial_timing_features.create_disrnn_dataset_float`, which is semantically
+> identical but allocates float. Integer-only feature sets still call upstream, so
+> **existing runs remain bit-for-bit reproducible**. Remove the shim once the
+> upstream dtype is fixed and the pin moves.
+
+**Calibrating before you spend GPU.** `analysis/calibrate_timing_features.py`
+fits nested logistic models with a session-held-out split to measure the
+*incremental* predictive value of these inputs over a choice+reward history
+baseline. It is a linear lower bound — a disRNN can exploit structure a logistic
+model cannot — so treat a positive Δ as a conservative go-signal and a near-zero Δ
+as an argument against.
+
 ---
 
 ## 7. Outputs & Weights & Biases
@@ -431,6 +514,37 @@ environment.
 ## Changelog
 
 > Add a dated entry (newest first) whenever you add or change a feature.
+
+### 2026-08-22
+- **New optional inputs: previous-trial reaction time + lick counts**
+  (`data.timing_features`, off by default → base model bit-identical). See §6
+  "Optional timing inputs". `utils/trial_timing_features.py` derives reaction time
+  by COALESCE-ing the two NWB readers' different columns and counts licks from the
+  **event** table (co_asset's trial-table lick arrays are unpopulated;
+  event-derived counts cross-validate exactly against bonsai's arrays). `obs_size`
+  widens automatically 2 → 5; no MODEL block change. Verified on real data: base
+  feature columns and targets stay bit-identical with the switch off, and
+  previous-trial features come from the previous *retained* trial (no leakage
+  across excluded ignore trials).
+- **Fixed an upstream int64 truncation bug for continuous features.**
+  `aind_disrnn_utils.create_disrnn_dataset` allocates `xs` via
+  `np.full((...), -1)` (int64), truncating float feature columns before the later
+  `.astype(float)`. Harmless for the integer stock features, but it collapsed
+  24,149 distinct log-RT values to 7 integers. Present in the pinned SHA *and* the
+  latest release (0.0.16). `_create_disrnn_dataset()` now routes continuous
+  feature sets to a float-safe re-implementation; integer-only sets still call
+  upstream, so prior runs stay bit-for-bit reproducible. **Remove the shim when
+  upstream is fixed.**
+- **`standardize` switch (default true)** for the continuous channels. The disRNN
+  bottleneck KL is quadratic in input magnitude, and raw lick counts entered at
+  ~87× the KL cost of a binary channel (mean `mus**2` 32.1 vs 0.37); standardizing
+  brings all channels to 0.37–1.10 and makes the per-channel σ/openness readouts
+  comparable. Constants are fixed and global (not per-run fitted, not per-subject)
+  — see §6 for why.
+- **New:** `analysis/calibrate_timing_features.py` — session-held-out nested
+  logistic probe quantifying the incremental value of the new inputs before
+  spending GPU. `tests/test_trial_timing_features.py` covers the transforms, the
+  float-safe builder, and the routing predicate.
 
 ### 2026-07-04
 - **Threshold-free bottleneck-sparsity metrics.** `compute_bottleneck_sparsity_metrics`
