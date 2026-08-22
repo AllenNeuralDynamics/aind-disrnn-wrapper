@@ -77,6 +77,27 @@ logger = logging.getLogger(__name__)
 # Raw derived columns (before the previous-trial shift / encoding).
 RAW_TIMING_COLUMNS: tuple[str, ...] = ("reaction_time", "n_lick_left", "n_lick_right")
 
+# ── Naming caveat (READ THIS before writing it up) ──────────────────────────
+# "timing" is a MISNOMER for this feature block. Of the two quantities only
+# reaction time is a timing measure (a latency). The lick features are COUNTS
+# over the window [go cue, go cue + lick_window_s) — a vigor/rate measure that
+# is merely *defined over* a time window. No lick latency, first-lick time, or
+# inter-lick interval is used anywhere in this module.
+#
+# The accurate umbrella for both is the previous trial's RESPONSE: its latency
+# (how fast) and its vigor (how much). Prefer that language in figures, talks
+# and papers: "previous-trial response features (latency + vigor)".
+#
+# The config key `data.timing_features` is deliberately NOT renamed. It is read
+# back out of each FINISHED run's own W&B config by
+# post_training_analysis.heldout_finetuning in order to re-score held-out
+# metrics, and every run launched so far has that key baked in. Renaming (even
+# with a compatibility alias) buys a better internal name at the cost of a
+# second read path through the exact code whose failure mode is silent: the
+# held-out selector finds nothing, builds a narrower tensor, and the checkpoint
+# restore fails — the bug fixed in 35d6a19. Not worth it mid-study; the name
+# that matters scientifically is the one in the write-up, not the YAML key.
+
 DEFAULT_LICK_WINDOW_S: float = 2.0
 # RT is clipped to this range before the log, to bound extreme outliers without
 # discarding trials. The upper bound is deliberately LOOSE relative to the
