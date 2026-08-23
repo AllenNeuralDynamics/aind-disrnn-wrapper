@@ -31,6 +31,10 @@ _CHECKPOINT_POLICY_BEST_EVAL = "best_eval"
 _CHECKPOINT_POLICY_BEST_HELDOUT = "best_heldout"
 _CHECKPOINT_POLICY_FINAL = "final"
 _ROLLOUT_MODE_CURRICULUM_MATCHED = "curriculum_matched"
+# Action-class index of the "ignore"/no-response action in 3-way
+# (ignore_policy="include") models. Matches the data loader's animal_response
+# encoding (0=left, 1=right, 2=ignore) and gru_trainer's _IGNORE_CLASS_INDEX.
+_IGNORE_ACTION = 2
 _DEFAULT_WINDOW_SIZE = 10
 _DEFAULT_HISTORY_MAX_TRIALS_BACK = 3
 _DEFAULT_HISTORY_AGGREGATE_MIN_TRIALS = 10
@@ -569,6 +573,14 @@ def _run_batched_rollout(runner, lanes, *, n_actions: int):
     reward_histories: list[list[float]] = [[] for _ in range(n_lanes)]
     state = runner.initial_state_batch(n_lanes)
 
+    # 3-way (ignore_policy="include") models emit an extra "ignore" action at
+    # class index _IGNORE_ACTION (=2), matching the data loader's animal_response
+    # convention (0=left, 1=right, 2=ignore/no-response). An ignore is a
+    # NON-ACTION: the mouse made no port choice, so we do NOT step the foraging
+    # task (no poke registered, block/bait state does not advance), earn no
+    # reward, and feed (prev_choice=2, prev_reward=0) back to the model — exactly
+    # how a real ignore trial appears in the training inputs. For 2-way models
+    # (n_actions==2) this branch never fires and behaviour is unchanged.
     for trial_index in range(max_trials):
         logits_batch, state = runner.step_batch(inputs_np, state)
         for lane_index in range(n_lanes):
@@ -576,7 +588,10 @@ def _run_batched_rollout(runner, lanes, *, n_actions: int):
                 continue  # finished lane: leave its RNG/history untouched
             probs = _softmax(logits_batch[lane_index])
             choice = int(rngs[lane_index].choice(n_actions, p=probs))
-            reward = _step_task_reward(tasks[lane_index], choice)
+            if choice == _IGNORE_ACTION:
+                reward = 0.0  # no port chosen -> no reward, task not stepped
+            else:
+                reward = _step_task_reward(tasks[lane_index], choice)
             choice_histories[lane_index].append(float(choice))
             reward_histories[lane_index].append(float(reward))
             inputs_np[lane_index, -2] = float(choice)
@@ -604,10 +619,19 @@ def simulate_model_sessions(
 
     run = _coerce_resolved_run(resolved_run)
     _validate_multisubject_analysis_split(run)
-    if run.ignore_policy != "exclude":
+    if run.ignore_policy not in ("exclude", "include"):
         raise NotImplementedError(
-            "V1 post-training simulation expects ignore_policy='exclude'. "
+            "Post-training simulation supports ignore_policy in "
+            "{'exclude','include'}. "
             f"Received {run.ignore_policy!r}."
+        )
+    # ignore_policy="include" -> 3-way (L/R/ignore) model: the rollout samples an
+    # extra ignore action (class 2) and treats it as a non-action (see
+    # _run_batched_rollout). baseline_rl remains 2-way only.
+    if run.ignore_policy == "include" and run.model_type == "baseline_rl":
+        raise NotImplementedError(
+            "ignore_policy='include' (3-way) simulation is not supported for "
+            "baseline_rl models (2-action generative model only)."
         )
 
     if run.model_type == "baseline_rl":
@@ -5393,9 +5417,10 @@ def _restore_model_runner(resolved_run: ResolvedModelRun):
     else:
         raise ValueError(f"Unsupported model_type={model_type!r}")
 
-    if n_actions != 2:
+    if n_actions not in (2, 3):
         raise NotImplementedError(
-            "V1 generative simulation supports two-action models only. "
+            "Generative simulation supports 2-action (L/R) or 3-action "
+            "(L/R/ignore) models only. "
             f"Resolved output size: {n_actions}."
         )
 
@@ -8610,7 +8635,13 @@ def _validate_multisubject_params_against_subject_map(
 
 
 def _align_snapshot_df_with_ignore_policy(snapshot_df: Any, *, ignore_policy: str):
-    if str(ignore_policy).strip().lower() != "exclude":
+    # "exclude": drop whole sessions containing any ignore trial, matching how the
+    #   data loader (_align_raw_df_with_valid_sessions) builds the 2-way training
+    #   set. "include": keep the snapshot as-is (ignore trials are class 2 and are
+    #   part of the real-data comparison target for a 3-way model). Any other
+    #   policy is passed through unchanged.
+    policy = str(ignore_policy).strip().lower()
+    if policy != "exclude":
         return snapshot_df
     if not hasattr(snapshot_df, "columns") or "animal_response" not in snapshot_df.columns:
         return snapshot_df
