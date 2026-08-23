@@ -4952,7 +4952,18 @@ def _resolve_artifact_path(
 def _load_structured_file(path: Path) -> Any:
     if path.suffix.lower() == ".json":
         return json.loads(path.read_text())
-    return _parse_simple_yaml(path.read_text())
+    text = path.read_text()
+    # Prefer a real YAML parser when available: saved Hydra inputs.yaml can
+    # contain folded/wrapped scalars (e.g. a long meta.launcher_cmd continued on
+    # an over-indented next line), which the minimal fallback parser below
+    # rejects with "Unexpected indentation". PyYAML handles these correctly.
+    # Fall back to the simple parser only if PyYAML is unavailable.
+    try:
+        import yaml  # type: ignore[import-not-found]
+
+        return yaml.safe_load(text)
+    except ModuleNotFoundError:
+        return _parse_simple_yaml(text)
 
 
 def _parse_simple_yaml(text: str) -> Any:
