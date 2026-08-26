@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import os
 import unittest
+from unittest import mock
 
 try:
     from omegaconf import OmegaConf
 
     from utils.run_helpers import (
+        _code_versions,
         apply_dynamic_run_name_components,
         apply_model_penalty_multipliers,
         resolve_disrnn_penalties,
@@ -26,6 +29,22 @@ except ModuleNotFoundError as exc:
     f"run helper dependencies unavailable: {RUN_HELPERS_IMPORT_ERROR}",
 )
 class TestRunHelpers(unittest.TestCase):
+    def test_code_versions_prefers_all_runtime_commit_env_vars(self):
+        commits = {
+            "WRAPPER_COMMIT": "wrapper-sha",
+            "DISPATCHER_COMMIT": "dispatcher-sha",
+            "FORAGING_MODELS_COMMIT": "foraging-models-sha",
+        }
+
+        with mock.patch.dict(os.environ, commits, clear=False):
+            versions = _code_versions()
+
+        self.assertEqual(versions["wrapper_commit"], "wrapper-sha")
+        self.assertEqual(versions["dispatcher_commit"], "dispatcher-sha")
+        self.assertEqual(
+            versions["foraging_models_commit"], "foraging-models-sha"
+        )
+
     def test_resolve_disrnn_penalties_uses_beta_as_default_base(self):
         resolved = resolve_disrnn_penalties(
             {

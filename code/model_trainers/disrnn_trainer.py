@@ -666,27 +666,39 @@ class DisrnnTrainer(BaseMultisubjectTrainer):
             logger.warning("Initialization plotting failed for %s: %s", stage_name, exc)
 
         if wandb_run is not None:
+            # Building the W&B images is part of DIAGNOSTIC PLOTTING and must never be able to kill
+            # training. The plotting above is already guarded, but these wandb.Image() calls were
+            # not -- and PIL raises DecompressionBombError while OPENING an oversized figure, so a
+            # cosmetic plot took down six 18-hour runs (subject_embedding_size=64 -> a 554 MP
+            # state-space figure). Guard each conversion: a figure we cannot log is a warning, not
+            # a failed run. Metrics are unaffected -- the bottleneck numbers
+            # (final/bottlenecks/*_total_openness) come from params, not from these figures.
             plot_payload = {}
+
+            def _add_image(key: str, path: Any) -> None:
+                try:
+                    plot_payload[key] = wandb.Image(str(path))
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "Skipping W&B image %s for %s (%s): %s", key, stage_name, path, exc
+                    )
+
             if plot_paths["bottlenecks"]:
-                plot_payload["checkpoint/fig/bottlenecks"] = wandb.Image(
-                    str(plot_paths["bottlenecks"])
-                )
+                _add_image("checkpoint/fig/bottlenecks", plot_paths["bottlenecks"])
             if plot_paths["subject_embedding_state_space"]:
-                plot_payload["checkpoint/fig/subject_embedding_state_space"] = wandb.Image(
-                    str(plot_paths["subject_embedding_state_space"])
+                _add_image(
+                    "checkpoint/fig/subject_embedding_state_space",
+                    plot_paths["subject_embedding_state_space"],
                 )
             if plot_paths["subject_session_context_state_space"]:
-                plot_payload["checkpoint/fig/subject_session_context_state_space"] = (
-                    wandb.Image(str(plot_paths["subject_session_context_state_space"]))
+                _add_image(
+                    "checkpoint/fig/subject_session_context_state_space",
+                    plot_paths["subject_session_context_state_space"],
                 )
             if plot_paths["choice_rule"]:
-                plot_payload["checkpoint/fig/choice_rule"] = wandb.Image(
-                    str(plot_paths["choice_rule"])
-                )
+                _add_image("checkpoint/fig/choice_rule", plot_paths["choice_rule"])
             for index, update_rule_path in enumerate(plot_paths["update_rules"]):
-                plot_payload[f"checkpoint/fig/update_rule_{index}"] = wandb.Image(
-                    str(update_rule_path)
-                )
+                _add_image(f"checkpoint/fig/update_rule_{index}", update_rule_path)
             if plot_payload:
                 if wandb_step is None:
                     wandb_run.log(plot_payload)
@@ -1714,19 +1726,21 @@ class DisrnnTrainer(BaseMultisubjectTrainer):
                     )
                 )
                 if should_plot_split_examples_ckpt or should_save_output_df_ckpt:
-                    yhat_full_ckpt, network_states_full_ckpt = rnn_utils.eval_network(
+                    yhat_full_ckpt, network_states_full_ckpt = self._eval_network_full(
                         current_noiseless_eval_network,
                         params,
                         xs_full_for_checkpoint,
                     )
-                    output_df_ckpt = dl.add_model_results(
-                        df_for_checkpoint.copy(),
-                        np.asarray(network_states_full_ckpt),
-                        yhat_full_ckpt,
-                        ignore_policy=ignore_policy,
-                    )
-
+                    # Only build the whole-cohort frame when it is persisted;
+                    # plotting builds per-subject frames on demand below.
+                    output_df_ckpt = None
                     if should_save_output_df_ckpt:
+                        output_df_ckpt = dl.add_model_results(
+                            df_for_checkpoint.copy(),
+                            np.asarray(network_states_full_ckpt),
+                            np.asarray(yhat_full_ckpt),
+                            ignore_policy=ignore_policy,
+                        )
                         output_df_ckpt_path = checkpoint_dir / "output_df.csv"
                         output_df_ckpt.to_csv(output_df_ckpt_path, index=False)
                         checkpoint_record["output_df_path"] = str(output_df_ckpt_path)
@@ -1734,12 +1748,14 @@ class DisrnnTrainer(BaseMultisubjectTrainer):
                     if should_plot_split_examples_ckpt:
                         n_action_logits_ckpt_full = _require_n_action_logits(
                             dataset_eval,
-                            yhat_full_ckpt,
+                            np.asarray(yhat_full_ckpt),
                             context="checkpoint full-dataset plotting",
                         )
                         split_summaries_ckpt = self._generate_split_examples(
                             output_dir=checkpoint_dir,
                             output_df=output_df_ckpt,
+                            raw_df=df_for_checkpoint,
+                            ignore_policy=ignore_policy,
                             network_states_full=np.asarray(network_states_full_ckpt),
                             yhat_full=np.asarray(yhat_full_ckpt),
                             params=params,
@@ -1827,26 +1843,45 @@ class DisrnnTrainer(BaseMultisubjectTrainer):
                         "subject_session_context_state_space"
                     )
                     checkpoint_update_rules = checkpoint_plot_paths.get("update_rules", [])
+
+                    # Same guard as the warmup/final stage block above: PIL raises
+                    # DecompressionBombError while OPENING an oversized figure, so an unguarded
+                    # conversion lets a cosmetic plot kill a multi-hour training run. A figure we
+                    # cannot log is a warning, not a failed run.
+                    def _add_checkpoint_image(key: str, path: Any) -> None:
+                        try:
+                            checkpoint_plot_payload[key] = wandb.Image(str(path))
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning(
+                                "Skipping W&B image %s at checkpoint step %s (%s): %s",
+                                key,
+                                int(steps_completed),
+                                path,
+                                exc,
+                            )
+
                     if checkpoint_bottlenecks:
-                        checkpoint_plot_payload[
-                            "checkpoint/fig/bottlenecks"
-                        ] = wandb.Image(str(checkpoint_bottlenecks))
+                        _add_checkpoint_image(
+                            "checkpoint/fig/bottlenecks", checkpoint_bottlenecks
+                        )
                     if checkpoint_subject_embeddings:
-                        checkpoint_plot_payload[
-                            "checkpoint/fig/subject_embedding_state_space"
-                        ] = wandb.Image(str(checkpoint_subject_embeddings))
+                        _add_checkpoint_image(
+                            "checkpoint/fig/subject_embedding_state_space",
+                            checkpoint_subject_embeddings,
+                        )
                     if checkpoint_subject_session_context:
-                        checkpoint_plot_payload[
-                            "checkpoint/fig/subject_session_context_state_space"
-                        ] = wandb.Image(str(checkpoint_subject_session_context))
+                        _add_checkpoint_image(
+                            "checkpoint/fig/subject_session_context_state_space",
+                            checkpoint_subject_session_context,
+                        )
                     if checkpoint_choice_rule:
-                        checkpoint_plot_payload[
-                            "checkpoint/fig/choice_rule"
-                        ] = wandb.Image(str(checkpoint_choice_rule))
+                        _add_checkpoint_image(
+                            "checkpoint/fig/choice_rule", checkpoint_choice_rule
+                        )
                     for index, update_rule_path in enumerate(checkpoint_update_rules):
-                        checkpoint_plot_payload[
-                            f"checkpoint/fig/update_rule_{index}"
-                        ] = wandb.Image(str(update_rule_path))
+                        _add_checkpoint_image(
+                            f"checkpoint/fig/update_rule_{index}", update_rule_path
+                        )
                     if checkpoint_plot_payload:
                         wandb_run.log(
                             checkpoint_plot_payload,

@@ -152,7 +152,6 @@ second still runs and produces `heldout/final/eval_likelihood`. Full detail in �
 | `post_training_analysis/` | `generative_analysis.py`, `embedding_space_analysis.py`, `likelihood_comparison.py`, `likelihood_advantage_analysis.py`, `baseline_rl_analysis.py`, `heldout_finetuning.py` — see **[POST_TRAINING_ANALYSIS.md](POST_TRAINING_ANALYSIS.md)** |
 | `run_analysis.py` | **Unified post-training-analysis CLI** (see [POST_TRAINING_ANALYSIS.md](POST_TRAINING_ANALYSIS.md)) |
 | `run_heldout_subject_finetuning.py`, `run_embedding_space_analysis.py` | Older single-purpose analysis CLIs (superseded by `run_analysis.py`) |
-| `run_capsule-test_*.py` | **Deprecated** scratch scripts — now stubs pointing at `run_analysis.py` |
 | `tests/` | `unittest` suites (see [§9 Testing](#9-testing)) |
 | `load_mice_data.py` | Pull/cache mouse data snapshots from the database |
 
@@ -176,8 +175,8 @@ or import and drive the trainers directly (see how `tests/` construct
 
 ### Selecting what runs
 The `run` script has commented alternates (baseline-RL, fine-tuning, analysis,
-data loading). Uncomment the desired line, or call the corresponding
-`run_capsule-test_*.py` / `run_*.py` script.
+data loading). Uncomment the desired line, or call `run_analysis.py <sub-command>`
+(see **[POST_TRAINING_ANALYSIS.md](POST_TRAINING_ANALYSIS.md)**).
 
 ---
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import shutil
 import tempfile
 import unittest
@@ -19,7 +20,11 @@ try:
     from base.types import DatasetBundle
     from data_loaders.synthetic import SyntheticCognitiveAgents
     from model_trainers.disrnn_trainer import DisrnnTrainer, _require_n_action_logits
-    from model_trainers.base_multisubject_trainer import BaseMultisubjectTrainer
+    from model_trainers.base_multisubject_trainer import (
+        BaseMultisubjectTrainer,
+        _EMBEDDING_PLOT_N_PCS,
+        _project_embedding_columns_for_plot,
+    )
     from models import MultisubjectDisRnn, MultisubjectDisRnnConfig
     from models.session_conditioning import compute_session_curriculum_lambda
     from models.subject_embedding_initialization import (
@@ -291,6 +296,127 @@ class TestDisrnnTrainer(unittest.TestCase):
         self.assertGreaterEqual(output["likelihood_train"], 0.0)
         self.assertLessEqual(output["likelihood_train"], 1.0)
         self.assertTrue((self.output_dir / "checkpoints" / "index.json").exists())
+
+    def _checkpoint_plotting_trainer(self, **training_overrides):
+        training = {
+            "lr": 1e-3,
+            "n_steps": 4,
+            "n_warmup_steps": 1,
+            "loss": "penalized_categorical",
+            "loss_param": 1.0,
+            "max_grad_norm": 1.0,
+            "checkpoint_every_n_steps": 2,
+            "checkpoint_plot_split_examples_every_n": 2,  # plotting ON at every checkpoint
+            "checkpoint_save_output_df_every_n": 0,  # whole-cohort frame NOT persisted
+            "checkpoint_log_eval_to_wandb": False,
+            "checkpoint_log_train_to_wandb": False,
+            "checkpoint_log_split_examples_to_wandb": False,
+            "checkpoint_run_heldout_eval": False,
+            "checkpoint_plot_choice_rule": False,
+            "checkpoint_plot_update_rules": False,
+            "plot_choice_rule": False,
+            "plot_update_rules": False,
+            "save_output_df": False,
+        }
+        training.update(training_overrides)
+        return DisrnnTrainer(
+            architecture={
+                "multisubject": True,
+                "latent_size": 4,
+                "update_net_n_units_per_layer": 8,
+                "update_net_n_layers": 2,
+                "choice_net_n_units_per_layer": 4,
+                "choice_net_n_layers": 1,
+                "activation": "leaky_relu",
+                "subject_embedding_size": 3,
+            },
+            penalties={
+                "latent_penalty": 1e-3,
+                "choice_net_latent_penalty": 1e-3,
+                "update_net_obs_penalty": 1e-3,
+                "update_net_latent_penalty": 1e-3,
+                "subject_penalty": 1e-3,
+                "update_net_subject_penalty": 1e-3,
+                "choice_net_subject_penalty": 1e-3,
+            },
+            training=training,
+            output_dir=str(self.output_dir),
+            seed=42,
+        )
+
+    def test_checkpoint_plotting_does_not_materialize_whole_cohort_frame(self):
+        """Checkpoint example-plotting must NOT build the whole-cohort per-trial
+        frame when it is not being persisted.
+
+        Only a couple of subjects are ever plotted, but the checkpoint used to
+        call `dl.add_model_results` over the ENTIRE cohort on every checkpoint --
+        purely to feed those few plots. At D=614 that cost ~50 min per checkpoint
+        (~5 h per run). `gru_trainer` already avoids this by passing `raw_df` and
+        leaving `output_df=None` so each split's frame is built on demand; this
+        test pins the same contract for the disRNN.
+        """
+        trainer = self._checkpoint_plotting_trainer()
+        bundle = self._make_multisubject_bundle()
+        whole_cohort_rows = len(bundle.raw)
+
+        seen_kwargs = []
+        real = BaseMultisubjectTrainer._generate_split_examples
+
+        def spy(self, **kwargs):
+            seen_kwargs.append(kwargs)
+            return real(self, **kwargs)
+
+        # Record the SIZE of every frame handed to add_model_results. The lazy path
+        # still calls it -- more often, in fact -- but on small per-split slices, so
+        # the CALL COUNT is not the signal. The number of WHOLE-COHORT frames is.
+        frame_rows = []
+        real_add = dl.add_model_results
+
+        def add_spy(raw_df, *args, **kwargs):
+            frame_rows.append(len(raw_df))
+            return real_add(raw_df, *args, **kwargs)
+
+        with patch.object(BaseMultisubjectTrainer, "_generate_split_examples", spy), \
+                patch.object(dl, "add_model_results", add_spy):
+            trainer.fit(bundle)
+
+        # PRIMARY CONTRACT: building the whole-cohort per-trial frame is what cost
+        # ~50 min per checkpoint at D=614. It is still built ONCE at the end of
+        # training (the final eval legitimately needs it), but must never be built
+        # inside the checkpoint loop.
+        whole_cohort_builds = [n for n in frame_rows if n == whole_cohort_rows]
+        self.assertLessEqual(
+            len(whole_cohort_builds),
+            1,
+            f"the whole-cohort frame ({whole_cohort_rows} rows) was built "
+            f"{len(whole_cohort_builds)}x; it must be built at most once (the final "
+            f"eval) and never per checkpoint. Frame sizes seen: {frame_rows}",
+        )
+
+        # And the mechanism that makes that possible: checkpoint plotting is handed
+        # raw_df and slices per-subject frames on demand, rather than a prebuilt
+        # whole-cohort output_df.
+        checkpoint_calls = [
+            kw for kw in seen_kwargs if kw.get("wandb_key_prefix") == "checkpoint"
+        ]
+        self.assertTrue(checkpoint_calls, "expected checkpoint plotting to run")
+        for kwargs in checkpoint_calls:
+            self.assertIsNone(kwargs.get("output_df"))
+            self.assertIsNotNone(kwargs.get("raw_df"))
+            self.assertIsNotNone(kwargs.get("ignore_policy"))
+
+    def test_checkpoint_still_persists_output_df_when_requested(self):
+        """The lazy-frame optimization must not break the persist path: when
+        checkpoint_save_output_df_every_n > 0 the whole-cohort frame is still
+        built and written to disk."""
+        trainer = self._checkpoint_plotting_trainer(checkpoint_save_output_df_every_n=2)
+
+        output = trainer.fit(self._make_multisubject_bundle())
+
+        self.assertTrue(output["checkpoints"])
+        for checkpoint in output["checkpoints"]:
+            self.assertIn("output_df_path", checkpoint)
+            self.assertTrue(Path(checkpoint["output_df_path"]).exists())
 
     def test_resume_from_checkpoint_matches_uninterrupted(self):
         """End-to-end resume: a run interrupted at a checkpoint and relaunched
@@ -657,6 +783,133 @@ class TestDisrnnTrainer(unittest.TestCase):
         self.assertTrue(Path(output["subject_session_context_state_space_path"]).exists())
         before_warmup = output["initial_evaluations"]["before_warmup"]
         self.assertTrue(before_warmup["plot_paths"]["subject_session_context_state_space"])
+
+    def test_embedding_is_projected_to_leading_pcs_at_every_width(self):
+        """Panel count must be C(4,2)=6 per subject at ANY embedding width -- 4, 16 or 64.
+
+        6 panels is exactly what the old raw-dim grid produced at the default embedding size of
+        4, so the figure keeps its familiar shape. It is what keeps the figure readable, keeps
+        runs at different widths comparable, and keeps the images pushed to W&B constant.
+        """
+        rng = np.random.default_rng(0)
+        for n_dims in (4, 16, 64):
+            with self.subTest(subject_embedding_size=n_dims):
+                columns = [f"embedding_{index}" for index in range(n_dims)]
+                plot_df = pd.DataFrame(rng.normal(size=(50, n_dims)), columns=columns)
+
+                _, out_columns, _ = _project_embedding_columns_for_plot(plot_df, columns)
+
+                self.assertEqual(
+                    out_columns,
+                    [f"embedding_pc{index + 1}" for index in range(_EMBEDDING_PLOT_N_PCS)],
+                )
+                self.assertEqual(
+                    len(list(itertools.combinations(out_columns, 2))),
+                    6,
+                    "the panel grid must be C(4,2)=6, not C(dim,2)",
+                )
+
+    def test_embedding_projection_is_faithful(self):
+        """The PCs must actually carry the embedding's variance, not an arbitrary slice."""
+        rng = np.random.default_rng(0)
+        columns = [f"embedding_{index}" for index in range(64)]
+        # Rank-4 data in 64 dims: 4 PCs must recover essentially all of its variance.
+        plot_df = pd.DataFrame(
+            rng.normal(size=(50, 4)) @ rng.normal(size=(4, 64)), columns=columns
+        )
+
+        out_df, out_columns, _ = _project_embedding_columns_for_plot(plot_df, columns)
+
+        raw = plot_df[columns].to_numpy()
+        centered = raw - raw.mean(axis=0)
+        self.assertAlmostEqual(
+            float(np.linalg.norm(out_df[out_columns].to_numpy())),
+            float(np.linalg.norm(centered)),
+            places=6,
+        )
+
+    def test_embedding_projection_degrades_gracefully_below_four_dims(self):
+        """subject_embedding_size=2 cannot give 4 PCs -- fall back, do not crash."""
+        columns = ["embedding_0", "embedding_1"]
+        plot_df = pd.DataFrame(
+            np.random.default_rng(0).normal(size=(20, 2)), columns=columns
+        )
+
+        _, out_columns, _ = _project_embedding_columns_for_plot(plot_df, columns)
+
+        self.assertEqual(len(out_columns), 2)
+        self.assertLessEqual(len(out_columns), _EMBEDDING_PLOT_N_PCS)
+
+    def test_wide_subject_embedding_state_space_plots_are_openable_by_pil(self):
+        """A wide embedding must not produce a figure PIL refuses to open.
+
+        Both state-space plots grid every PAIR of embedding dims, so figure area grows as
+        O(dim^2). Uncapped, subject_embedding_size=64 gave a 554 MP embedding figure and a
+        1.69 GP session-context figure. wandb.Image() opens the PNG with PIL, which raises
+        DecompressionBombError above MAX_IMAGE_PIXELS -- so these cosmetic plots killed real
+        multi-hour training runs. Assert what production actually does: open them.
+        """
+        from PIL import Image as pil_image
+
+        multisubject_bundle = self._make_multisubject_bundle()
+        trainer = DisrnnTrainer(
+            architecture={
+                "multisubject": True,
+                "latent_size": 4,
+                "update_net_n_units_per_layer": 8,
+                "update_net_n_layers": 2,
+                "choice_net_n_units_per_layer": 4,
+                "choice_net_n_layers": 1,
+                "activation": "leaky_relu",
+                "subject_embedding_size": 64,
+                "session_encoding_type": "scalar",
+                "session_integration_type": "direct",
+                "session_delta_n_layers": 2,
+                "session_delta_hidden_size": 11,
+            },
+            penalties={
+                "latent_penalty": 1e-3,
+                "choice_net_latent_penalty": 1e-3,
+                "update_net_obs_penalty": 1e-3,
+                "update_net_latent_penalty": 1e-3,
+                "subject_penalty": 1e-3,
+                "update_net_subject_penalty": 1e-3,
+                "choice_net_subject_penalty": 1e-3,
+            },
+            training={
+                "lr": 1e-3,
+                "n_steps": 0,
+                "n_warmup_steps": 0,
+                "loss": "penalized_categorical",
+                "loss_param": 1.0,
+                "max_grad_norm": 1.0,
+                "checkpoint_every_n_steps": 0,
+                "checkpoint_run_heldout_eval": False,
+                "plot_choice_rule": False,
+                "plot_update_rules": False,
+                "plot_subject_index": 0,
+                "save_output_df": False,
+            },
+            output_dir=str(self.output_dir / "wide_embedding"),
+            seed=42,
+        )
+
+        output = trainer.fit(multisubject_bundle)
+
+        for key in (
+            "subject_embedding_state_space_path",
+            "subject_session_context_state_space_path",
+        ):
+            path = Path(output[key])
+            self.assertTrue(path.exists(), f"{key} was not written")
+            with pil_image.open(path) as image:
+                n_pixels = image.size[0] * image.size[1]
+            self.assertLessEqual(
+                n_pixels,
+                pil_image.MAX_IMAGE_PIXELS,
+                f"{key} is {n_pixels} px, over PIL's {pil_image.MAX_IMAGE_PIXELS} px bomb "
+                "limit -- wandb.Image() would raise DecompressionBombError and kill the run",
+            )
 
     def test_multisubject_session_conditioning_reduces_obs_size(self):
         trainer = DisrnnTrainer(
