@@ -22,6 +22,24 @@ from utils.multisubject import (
     subject_sort_key,
     unique_subject_ids_preserve_order,
 )
+from utils.trial_timing_features import (
+    attach_timing_features,
+    create_disrnn_dataset_float,
+    encode_timing_features,
+    has_continuous_features,
+    resolve_timing_config,
+    shuffle_raw_response_columns,
+    timing_feature_map,
+)
+
+# The disRNN library defaults when ``features`` is None: previous choice + previous
+# reward. When we add timing features we must re-list these explicitly, because a
+# non-empty ``features`` dict fully REPLACES the library default (it does not
+# extend it) — so an omitted base feature would be silently dropped.
+BASE_DISRNN_FEATURES: Mapping[str, str] = {
+    "animal_response": "prev choice",
+    "rewarded": "prev reward",
+}
 
 logger = logging.getLogger(__name__)
 
@@ -504,7 +522,7 @@ def _build_multisubject_bundle(
             }
         )
 
-        dataset = dl.create_disrnn_dataset(
+        dataset = _create_disrnn_dataset(
             subject_df,
             ignore_policy=ignore_policy,
             features=features or None,
@@ -882,6 +900,70 @@ class MiceDatasetLoaderFromFile(DatasetLoader):
         )
 
 
+def _create_disrnn_dataset(df, **kwargs):
+    """Build a disRNN dataset, choosing a float-safe builder when needed.
+
+    The upstream ``dl.create_disrnn_dataset`` allocates the input tensor as int64
+    (``np.full(..., -1)``) and truncates float features. That is harmless for the
+    integer-valued stock features but destroys continuous ones, so any feature set
+    containing a continuous column is routed to the float-safe re-implementation.
+    Integer-only feature sets keep calling upstream, so existing runs remain
+    bit-for-bit reproducible. See utils.trial_timing_features for details.
+    """
+    if has_continuous_features(kwargs.get("features")):
+        return create_disrnn_dataset_float(df, **kwargs)
+    return dl.create_disrnn_dataset(df, **kwargs)
+
+
+def _augment_features_with_timing(
+    df: pd.DataFrame,
+    *,
+    base_features: Mapping[str, str] | None,
+    run_seed: int | None = None,
+    timing_features_cfg: object,
+    snapshot: Optional[str],
+) -> tuple[pd.DataFrame, dict[str, str]]:
+    """Attach timing features to ``df`` and return the widened ``features`` map.
+
+    When timing is disabled (default), returns ``df`` unchanged and a plain dict
+    copy of ``base_features`` (possibly empty, meaning "use library defaults").
+
+    When enabled, this:
+
+    1. derives reaction-time / lick-count columns from the database (scoped to
+       the subjects in ``df``) and merges them on ``(ses_idx, trial)``;
+    2. encodes them (log RT; raw lick counts);
+    3. returns a ``features`` map that EXPLICITLY lists the base disRNN inputs
+       (prev choice + prev reward) plus the requested timing inputs — because a
+       non-empty ``features`` dict replaces, rather than extends, the library
+       default.
+    """
+    timing_cfg = resolve_timing_config(timing_features_cfg, run_seed=run_seed)
+    features = dict(base_features) if base_features else {}
+    if not timing_cfg.enabled:
+        return df, features
+
+    logger.info("Timing features enabled: %s", timing_cfg)
+    df = attach_timing_features(
+        df, snapshot=snapshot, lick_window_s=timing_cfg.lick_window_s
+    )
+    if timing_cfg.shuffle:
+        # CONTROL ARM. Permute within session on the RAW columns, before encoding
+        # and before the previous-trial shift, so the shuffled arm travels the
+        # identical downstream path and differs from the real arm in exactly one
+        # respect: trial alignment.
+        df = shuffle_raw_response_columns(df, seed=timing_cfg.shuffle_seed)
+    df = encode_timing_features(df, standardize=timing_cfg.standardize)
+
+    # A non-empty features dict fully replaces the library default, so re-list the
+    # base inputs explicitly, then add the timing inputs. Preserve any base
+    # features the caller passed (e.g. a custom mapping) instead of the default.
+    widened: dict[str, str] = dict(features) if features else dict(BASE_DISRNN_FEATURES)
+    widened.update(timing_cfg.feature_map())
+    logger.info("disRNN feature set widened to: %s", widened)
+    return df, widened
+
+
 class MiceSnapshotDatasetLoader(DatasetLoader):
     """Load mice behavioral data from the foraging database.
 
@@ -1005,6 +1087,18 @@ class MiceSnapshotDatasetLoader(DatasetLoader):
             snapshot=self.snapshot,
         )
 
+        # Optionally derive + attach reaction-time / lick-count inputs and widen
+        # the disRNN feature set. No-op unless data.timing_features.enabled.
+        df, self.features = _augment_features_with_timing(
+            df,
+            base_features=self.features,
+            timing_features_cfg=self.extras.get("timing_features"),
+            snapshot=self.snapshot,
+            # Ties the shuffled-arm permutation to the run seed, so seed
+            # replicates of that arm see DIFFERENT permutations.
+            run_seed=self.seed,
+        )
+
         if self.multisubject:
             metadata = {
                 "subject_ids": subject_ids,
@@ -1032,7 +1126,7 @@ class MiceSnapshotDatasetLoader(DatasetLoader):
             )
 
         logger.info("Building disRNN datasets …")
-        dataset = dl.create_disrnn_dataset(
+        dataset = _create_disrnn_dataset(
             df,
             ignore_policy=self.ignore_policy,
             features=self.features or None,  # pass None to use library defaults when empty

@@ -122,6 +122,22 @@ data:
   features: null                # null -> library defaults (prev choice, prev reward); or {col: feature} mapping
   # cols_to_retain: null        # optional list[str] of trial columns to keep; null -> module default
 
+  # ── Optional timing inputs: previous-trial reaction time + lick counts ───
+  # When enabled, the loader derives per-trial reaction time and post-go-cue lick
+  # counts from the database and APPENDS them to the disRNN observation vector as
+  # previous-trial inputs, alongside prev-choice + prev-reward. obs_size widens
+  # automatically (no MODEL block change needed). Encoding: log(reaction_time);
+  # raw left/right lick counts. See utils/trial_timing_features.py.
+  # Set enabled: true to activate this model variant.
+  timing_features:
+    enabled: false              # master switch; false -> identical to the base model
+    reaction_time: true         # include prev log reaction time (+1 feature)
+    lick_counts: true           # include prev n_lick_left + n_lick_right (+2 features)
+    lick_window_s: 2.0          # window (s) after go-cue over which licks are counted
+    standardize: true           # center/scale continuous channels by fixed population constants;
+                                # keep true for disRNN (its bottleneck KL is quadratic in input
+                                # magnitude, and per-channel sigma readouts must be comparable)
+
   # ── Batching / splitting ────────────────────────────────────────────────
   eval_every_n: 2               # every Nth session -> eval split (applied per-subject in multisubject mode)
   batch_size: 1024              # random/rolling require an explicit int; null is only valid with batch_mode: single

@@ -2146,16 +2146,37 @@ class DisrnnTrainer(BaseMultisubjectTrainer):
                 if is_multisubject
                 else params
             )
-            update_figs = plotting.plot_update_rules(
-                params_for_update_rules,
-                disrnn_config,
-                subj_ind=plot_subject_index,
-            )
-            for index, fig in enumerate(update_figs):
-                fig.tight_layout()
-                path = self._save_figure(fig, f"update_rule_{index}.png")
-                if wandb_run is not None:
-                    wandb_run.log({f"fig/update_rule_{index}": wandb.Image(str(path))})
+            # ``plotting.plot_update_rules`` is upstream and hardcodes an
+            # assumption of EXACTLY TWO observations (prev choice + prev reward);
+            # with any additional input feature (e.g. data.timing_features) it
+            # raises NotImplementedError. That is a visualization limit, not a
+            # training problem: the model has already trained and been evaluated
+            # by this point, so a plotting failure must not discard the run.
+            # The initialization-time call site is already wrapped this way; this
+            # one was not, which killed otherwise-successful runs at the very end.
+            try:
+                update_figs = plotting.plot_update_rules(
+                    params_for_update_rules,
+                    disrnn_config,
+                    subj_ind=plot_subject_index,
+                )
+                for index, fig in enumerate(update_figs):
+                    fig.tight_layout()
+                    path = self._save_figure(fig, f"update_rule_{index}.png")
+                    if wandb_run is not None:
+                        wandb_run.log(
+                            {f"fig/update_rule_{index}": wandb.Image(str(path))}
+                        )
+            except NotImplementedError as exc:
+                logger.warning(
+                    "Skipping update-rule plots: %s. This is expected when the "
+                    "observation vector has more than the two standard features "
+                    "(e.g. data.timing_features enabled); training and evaluation "
+                    "are unaffected.",
+                    exc,
+                )
+            except Exception as exc:  # noqa: BLE001 - plots must never fail a run
+                logger.warning("Update-rule plotting failed: %s", exc)
 
         # Get model predictions on full dataset, including the training set
         _all = dataset.get_all()

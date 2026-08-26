@@ -68,4 +68,29 @@ eval_every_n: 2
 batch_size: 1024              # random/rolling modes require an explicit int (null is only valid with batch_mode: single)
 batch_mode: random            # single | rolling | random
 
+# ── Optional timing inputs: previous-trial reaction time + lick counts ────
+# When enabled, the loader derives per-trial reaction time and post-go-cue lick
+# counts from the database (see utils/trial_timing_features.py) and appends them
+# to the disRNN observation vector as PREVIOUS-trial inputs, alongside the base
+# prev-choice + prev-reward. obs_size widens automatically; no model config
+# change is needed. Encoding: log(reaction_time); raw left/right lick counts.
+#   enabled       — master switch (default false → identical to the base model).
+#   reaction_time — include prev log reaction time (1 feature).
+#   lick_counts   — include prev n_lick_left + n_lick_right (2 features).
+#   lick_window_s — window after go-cue (s) over which licks are counted.
+timing_features:
+  enabled: false
+  reaction_time: true
+  lick_counts: true
+  lick_window_s: 2.0
+  standardize: true             # center/scale continuous channels by fixed population constants
+  # CONTROL ARM. Permutes the raw response columns WITHIN each session before the
+  # previous-trial shift: per-session marginals, observation width and input scale
+  # are all preserved, only trial alignment is destroyed. The shuffled arm is
+  # therefore parameter- and scale-matched to the real arm, so
+  # real-minus-shuffled isolates trial-aligned INFORMATION from the capacity that
+  # simply widening the input vector confers. Must stay false on any real arm.
+  shuffle: false
+  shuffle_seed: -1             # -1 = derive from the run seed (see resolve_timing_config)
+
 seed: ${seed}
