@@ -123,6 +123,40 @@ def _pad_cohort(
     return choice_arr, reward_arr, valid_mask, session_mask, subject_ids
 
 
+def _pad_context(subjects, choices, rewards, context_indices):
+    """Pad each subject's context sessions into one dense batch with masks.
+
+    Subjects contribute different numbers of context sessions, and the batched adaptation
+    needs a rectangular array. Padded slots are masked out rather than truncated.
+
+    Returns
+    -------
+    tuple of np.ndarray
+        ``(choices, rewards, session_mask, valid_mask)``, the first two shaped
+        ``(n_subjects, max_context, max_trials)``.
+    """
+    n_subjects = len(subjects)
+    max_context = max((len(idx) for idx in context_indices), default=0)
+    max_trials = max(
+        (len(choices[s][i]) for s, idx in zip(subjects, context_indices) for i in idx),
+        default=1,
+    )
+
+    choice_arr = np.zeros((n_subjects, max_context, max_trials), dtype=int)
+    reward_arr = np.zeros((n_subjects, max_context, max_trials), dtype=float)
+    valid = np.zeros((n_subjects, max_context, max_trials), dtype=bool)
+    session_mask = np.zeros((n_subjects, max_context), dtype=bool)
+
+    for row, (subject, idx) in enumerate(zip(subjects, context_indices)):
+        for slot, i in enumerate(idx):
+            c = choices[subject][i]
+            choice_arr[row, slot, : len(c)] = c
+            reward_arr[row, slot, : len(c)] = rewards[subject][i][: len(c)]
+            valid[row, slot, : len(c)] = True
+            session_mask[row, slot] = True
+    return choice_arr, reward_arr, session_mask, valid
+
+
 def _normalized_likelihood(total_log_lik: float, total_trials: int) -> float:
     """Geometric-mean per-trial likelihood, the metric shared with the neural models."""
     if total_trials == 0:
@@ -176,9 +210,9 @@ class HBTrainer(ModelTrainer):
         import jax
 
         from aind_dynamic_foraging_models.hierarchical_bayes.heldout import (
-            fit_adaptation,
+            batched_choice_prob,
+            fit_adaptation_batched,
             pointwise_log_predictive_density,
-            posterior_predictive_choice_prob,
         )
 
         started = time.time()
@@ -245,24 +279,29 @@ class HBTrainer(ModelTrainer):
         )
         scores: Dict[Any, float] = {}
         rng_key = jax.random.PRNGKey(int(self.seed or 0))
+        # One batched adaptation per rung rather than one per subject. Subjects are
+        # independent given the frozen population, and sequential fitting paid the scan
+        # depth once per subject: about four hours per rung over this cohort.
         for k in k_values:
+            eligible = [s for s, sess in heldout_choices.items() if len(sess) > k]
+            if not eligible:
+                scores[k] = 0.0
+                continue
+            key_fit, key_draw, rng_key = jax.random.split(rng_key, 3)
+            context_c, context_r, ctx_session_mask, ctx_valid = _pad_context(
+                eligible, heldout_choices, heldout_rewards, [list(range(k))] * len(eligible)
+            )
+            samples = fit_adaptation_batched(
+                context_c, context_r, population, rng_key=key_fit,
+                session_mask=ctx_session_mask, valid_mask=ctx_valid,
+                num_warmup=num_warmup, num_samples=num_samples, beta_max=beta_max,
+            )
             total_log_lik, total_trials = 0.0, 0
-            for subject, sessions in heldout_choices.items():
-                if len(sessions) <= k:
-                    continue
-                key_fit, key_draw, rng_key = jax.random.split(rng_key, 3)
-                context_c = np.stack(sessions[:k]) if k else np.zeros((0, 1), dtype=int)
-                context_r = (
-                    np.stack(heldout_rewards[subject][:k]) if k
-                    else np.zeros((0, 1), dtype=float)
-                )
-                samples = fit_adaptation(
-                    context_c, context_r, population, rng_key=key_fit,
-                    num_warmup=num_warmup, num_samples=num_samples, beta_max=beta_max,
-                )
+            for position, subject in enumerate(eligible):
+                sessions = heldout_choices[subject]
                 for session_idx in range(k, len(sessions)):
-                    prob = posterior_predictive_choice_prob(
-                        samples, sessions[session_idx],
+                    prob = batched_choice_prob(
+                        samples, position, sessions[session_idx],
                         heldout_rewards[subject][session_idx],
                         rng_key=key_draw, beta_max=beta_max,
                     )
@@ -280,26 +319,33 @@ class HBTrainer(ModelTrainer):
         # comparison. eval_every_n mirrors study 01's data config.
         matched_log_lik, matched_trials = 0.0, 0
         per_subject_matched: Dict[str, Any] = {}
-        for subject, sessions in heldout_choices.items():
-            ids = heldout_session_ids[subject]
+        matched_subjects, context_indices, score_indices = [], [], []
+        for subject, ids in heldout_session_ids.items():
             if len(ids) < 2:
                 continue
             train_ids, eval_ids = compute_train_eval_session_ids(ids, eval_every_n)
             index_of = {sid: i for i, sid in enumerate(ids)}
-            context_idx = [index_of[sid] for sid in train_ids]
-            score_idx = [index_of[sid] for sid in eval_ids]
+            matched_subjects.append(subject)
+            context_indices.append([index_of[sid] for sid in train_ids])
+            score_indices.append([index_of[sid] for sid in eval_ids])
 
-            key_fit, key_draw, rng_key = jax.random.split(rng_key, 3)
-            samples = fit_adaptation(
-                np.stack([sessions[i] for i in context_idx]),
-                np.stack([heldout_rewards[subject][i] for i in context_idx]),
-                population, rng_key=key_fit,
-                num_warmup=num_warmup, num_samples=num_samples, beta_max=beta_max,
-            )
+        key_fit, key_draw, rng_key = jax.random.split(rng_key, 3)
+        context_c, context_r, ctx_session_mask, ctx_valid = _pad_context(
+            matched_subjects, heldout_choices, heldout_rewards, context_indices
+        )
+        matched_samples = fit_adaptation_batched(
+            context_c, context_r, population, rng_key=key_fit,
+            session_mask=ctx_session_mask, valid_mask=ctx_valid,
+            num_warmup=num_warmup, num_samples=num_samples, beta_max=beta_max,
+        )
+
+        for position, subject in enumerate(matched_subjects):
+            sessions = heldout_choices[subject]
+            context_idx, score_idx = context_indices[position], score_indices[position]
             subject_log_lik, subject_trials = 0.0, 0
             for i in score_idx:
-                prob = posterior_predictive_choice_prob(
-                    samples, sessions[i], heldout_rewards[subject][i],
+                prob = batched_choice_prob(
+                    matched_samples, position, sessions[i], heldout_rewards[subject][i],
                     rng_key=key_draw, beta_max=beta_max,
                 )
                 log_lik, n = pointwise_log_predictive_density(prob, sessions[i])
