@@ -48,7 +48,7 @@ class TestExtraction(unittest.TestCase):
 
     def test_groups_by_subject_and_session(self):
         """Every subject gets one array per session."""
-        choices, rewards = _extract_subject_sessions(_make_frame())
+        choices, rewards, _ = _extract_subject_sessions(_make_frame())
         self.assertEqual(sorted(choices.keys()), ["m0", "m1", "m2"])
         self.assertEqual(len(choices["m0"]), 4)
         self.assertEqual(len(choices["m0"][0]), 60)
@@ -56,10 +56,15 @@ class TestExtraction(unittest.TestCase):
 
     def test_drops_ignored_trials(self):
         """Trials with animal_response outside {0,1} are excluded, as baseline_rl does."""
-        choices, _ = _extract_subject_sessions(_make_frame(ignore_every=3))
+        choices, _, _ = _extract_subject_sessions(_make_frame(ignore_every=3))
         session = choices["m0"][0]
         self.assertEqual(len(session), 40)  # 60 trials less every third
         self.assertTrue(np.all((session == 0) | (session == 1)))
+
+    def test_returns_session_ids_in_frame_order(self):
+        """Session ids come back ordered, so a split matches the neural models' own."""
+        _, _, ids = _extract_subject_sessions(_make_frame(n_subjects=2, n_sessions=3))
+        self.assertEqual(ids["m0"], ["m0_s0", "m0_s1", "m0_s2"])
 
     def test_missing_columns_raise(self):
         """A frame without the required columns fails loudly."""
@@ -143,10 +148,34 @@ class TestFit(unittest.TestCase):
             seed=0,
         )
         output = trainer.fit(bundle)
-        self.assertEqual(sorted(output["heldout_likelihood"].keys()), [0, 2])
-        for value in output["heldout_likelihood"].values():
+        scores = output["heldout_likelihood"]
+        self.assertEqual(sorted(k for k in scores if isinstance(k, int)), [0, 2])
+        for value in scores.values():
             self.assertGreater(value, 0.0)
             self.assertLess(value, 1.0)
+
+    def test_matched_conditioning_uses_the_baseline_split(self):
+        """A 'matched' rung is reported alongside the k sweep.
+
+        It conditions on exactly the sessions the per-mouse MLE baseline fits and scores
+        exactly the ones it scores, so the two sit on the same footing rather than being
+        compared across different amounts of conditioning.
+        """
+        bundle = DatasetBundle(
+            raw=_make_frame(n_subjects=3, n_sessions=3, n_trials=50, seed=0),
+            train_set=None, eval_set=None, metadata={},
+            extras={"heldout_raw": _make_frame(n_subjects=2, n_sessions=4,
+                                               n_trials=50, seed=7)},
+        )
+        trainer = HBTrainer(
+            config={"estimator": "one_stage", "num_warmup": 30, "num_samples": 30,
+                    "num_chains": 1, "few_shot_k": (0,), "eval_every_n": 2},
+            seed=0,
+        )
+        scores = trainer.fit(bundle)["heldout_likelihood"]
+        self.assertIn("matched", scores)
+        self.assertGreater(scores["matched"], 0.0)
+        self.assertLess(scores["matched"], 1.0)
 
 
 if __name__ == "__main__":

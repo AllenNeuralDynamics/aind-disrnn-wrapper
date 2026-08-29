@@ -23,6 +23,7 @@ import numpy as np
 import pandas as pd
 
 from base.interfaces import ModelTrainer
+from utils.multisubject import compute_train_eval_session_ids
 from base.types import DatasetBundle
 
 logger = logging.getLogger(__name__)
@@ -51,7 +52,9 @@ def _extract_subject_sessions(
     Returns
     -------
     tuple of dict
-        Choices and rewards, each keyed by subject id, values a list of 1-D arrays.
+        Choices, rewards and session ids, each keyed by subject id. The session ids
+        preserve dataframe order, so a split computed from them matches the one the neural
+        models use.
     """
     required = {"subject_id", "ses_idx", "trial", "animal_response", "earned_reward"}
     missing = sorted(required - set(raw_df.columns))
@@ -65,6 +68,7 @@ def _extract_subject_sessions(
     )
     choices: Dict[Any, List[np.ndarray]] = {}
     rewards: Dict[Any, List[np.ndarray]] = {}
+    session_ids_by_subject: Dict[Any, List[Any]] = {}
 
     for session_id in ordered:
         session_df = raw_df[raw_df["ses_idx"] == session_id].sort_values("trial")
@@ -79,7 +83,8 @@ def _extract_subject_sessions(
         rewards.setdefault(subject, []).append(
             session_df["earned_reward"].to_numpy(dtype=float)[valid]
         )
-    return choices, rewards
+        session_ids_by_subject.setdefault(subject, []).append(session_id)
+    return choices, rewards, session_ids_by_subject
 
 
 def _pad_cohort(
@@ -184,11 +189,12 @@ class HBTrainer(ModelTrainer):
         num_chains = int(self._cfg("num_chains", 4))
         beta_max = float(self._cfg("beta_max", 10.0))
         k_values = tuple(self._cfg("few_shot_k", FEW_SHOT_K))
+        eval_every_n = int(self._cfg("eval_every_n", 2))
 
         if bundle.raw is None or len(bundle.raw) == 0:
             raise ValueError("HBTrainer requires bundle.raw with trial-level rows.")
 
-        choices, rewards = _extract_subject_sessions(bundle.raw)
+        choices, rewards, _ = _extract_subject_sessions(bundle.raw)
         choice_arr, reward_arr, valid_mask, session_mask, subject_ids = _pad_cohort(
             choices, rewards
         )
@@ -234,8 +240,10 @@ class HBTrainer(ModelTrainer):
                 **fit_info,
             }
 
-        heldout_choices, heldout_rewards = _extract_subject_sessions(heldout_df)
-        scores: Dict[int, float] = {}
+        heldout_choices, heldout_rewards, heldout_session_ids = (
+            _extract_subject_sessions(heldout_df)
+        )
+        scores: Dict[Any, float] = {}
         rng_key = jax.random.PRNGKey(int(self.seed or 0))
         for k in k_values:
             total_log_lik, total_trials = 0.0, 0
@@ -265,6 +273,41 @@ class HBTrainer(ModelTrainer):
                     total_trials += n
             scores[k] = _normalized_likelihood(total_log_lik, total_trials)
             logger.info("HBTrainer: k=%d heldout likelihood %.5f", k, scores[k])
+
+        # Matched conditioning: condition on exactly the sessions the per-mouse MLE
+        # baseline fits, and score exactly the ones it scores. Without this the HB is
+        # compared against MLE across different amounts of conditioning, which is not a
+        # comparison. eval_every_n mirrors study 01's data config.
+        matched_log_lik, matched_trials = 0.0, 0
+        for subject, sessions in heldout_choices.items():
+            ids = heldout_session_ids[subject]
+            if len(ids) < 2:
+                continue
+            train_ids, eval_ids = compute_train_eval_session_ids(ids, eval_every_n)
+            index_of = {sid: i for i, sid in enumerate(ids)}
+            context_idx = [index_of[sid] for sid in train_ids]
+            score_idx = [index_of[sid] for sid in eval_ids]
+
+            key_fit, key_draw, rng_key = jax.random.split(rng_key, 3)
+            samples = fit_adaptation(
+                np.stack([sessions[i] for i in context_idx]),
+                np.stack([heldout_rewards[subject][i] for i in context_idx]),
+                population, rng_key=key_fit,
+                num_warmup=num_warmup, num_samples=num_samples, beta_max=beta_max,
+            )
+            for i in score_idx:
+                prob = posterior_predictive_choice_prob(
+                    samples, sessions[i], heldout_rewards[subject][i],
+                    rng_key=key_draw, beta_max=beta_max,
+                )
+                log_lik, n = pointwise_log_predictive_density(prob, sessions[i])
+                matched_log_lik += log_lik
+                matched_trials += n
+        scores["matched"] = _normalized_likelihood(matched_log_lik, matched_trials)
+        logger.info(
+            "HBTrainer: matched-conditioning heldout likelihood %.5f (eval_every_n=%d)",
+            scores["matched"], eval_every_n,
+        )
 
         output = {
             "estimator": estimator,
