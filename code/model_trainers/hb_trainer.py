@@ -279,6 +279,7 @@ class HBTrainer(ModelTrainer):
         # compared against MLE across different amounts of conditioning, which is not a
         # comparison. eval_every_n mirrors study 01's data config.
         matched_log_lik, matched_trials = 0.0, 0
+        per_subject_matched: Dict[str, Any] = {}
         for subject, sessions in heldout_choices.items():
             ids = heldout_session_ids[subject]
             if len(ids) < 2:
@@ -295,14 +296,23 @@ class HBTrainer(ModelTrainer):
                 population, rng_key=key_fit,
                 num_warmup=num_warmup, num_samples=num_samples, beta_max=beta_max,
             )
+            subject_log_lik, subject_trials = 0.0, 0
             for i in score_idx:
                 prob = posterior_predictive_choice_prob(
                     samples, sessions[i], heldout_rewards[subject][i],
                     rng_key=key_draw, beta_max=beta_max,
                 )
                 log_lik, n = pointwise_log_predictive_density(prob, sessions[i])
-                matched_log_lik += log_lik
-                matched_trials += n
+                subject_log_lik += log_lik
+                subject_trials += n
+            per_subject_matched[str(subject)] = {
+                "likelihood": _normalized_likelihood(subject_log_lik, subject_trials),
+                "n_context": len(context_idx),
+                "n_scored": len(score_idx),
+                "n_trials": subject_trials,
+            }
+            matched_log_lik += subject_log_lik
+            matched_trials += subject_trials
         scores["matched"] = _normalized_likelihood(matched_log_lik, matched_trials)
         logger.info(
             "HBTrainer: matched-conditioning heldout likelihood %.5f (eval_every_n=%d)",
@@ -317,15 +327,23 @@ class HBTrainer(ModelTrainer):
                 name: np.asarray(value).tolist() for name, value in population.items()
             },
             "heldout_likelihood": scores,
+            "heldout_per_subject_matched": per_subject_matched,
             **fit_info,
         }
 
         if wandb_run is not None:
             for k, value in scores.items():
                 wandb_run.summary[f"heldout/few_shot_k{k}_likelihood"] = float(value)
-            # Cross-model parity: the neural models publish this key, so the panels overlay.
-            if k_values:
-                wandb_run.summary["heldout_test_likelihood"] = float(scores[max(k_values)])
+            # Cross-model parity. The GRU's scaling y-axis is a held-out fine-tune on each
+            # subject's train sessions scored on its eval sessions, and the per-mouse MLE
+            # baseline uses the same split. Our matched rung is that same protocol, so it is
+            # what belongs under the shared keys; the k sweep is reported separately.
+            if "matched" in scores:
+                wandb_run.summary["heldout/eval_likelihood"] = float(scores["matched"])
+                wandb_run.summary["heldout/test_likelihood"] = float(scores["matched"])
+                wandb_run.summary["heldout_test_likelihood"] = float(scores["matched"])
+            wandb_run.summary["heldout/num_test_trials"] = int(matched_trials)
+            wandb_run.summary["heldout/num_test_subjects"] = int(len(per_subject_matched))
             wandb_run.summary["hb/fit_seconds"] = float(fit_seconds)
             wandb_run.summary["hb/estimator"] = estimator
             if fit_info.get("divergences") is not None:
