@@ -333,7 +333,9 @@ class HBTrainer(ModelTrainer):
 
         if wandb_run is not None:
             for k, value in scores.items():
-                wandb_run.summary[f"heldout/few_shot_k{k}_likelihood"] = float(value)
+                key = ("heldout/matched_likelihood" if k == "matched"
+                       else f"heldout/few_shot_k{k}_likelihood")
+                wandb_run.summary[key] = float(value)
             # Cross-model parity. The GRU's scaling y-axis is a held-out fine-tune on each
             # subject's train sessions scored on its eval sessions, and the per-mouse MLE
             # baseline uses the same split. Our matched rung is that same protocol, so it is
