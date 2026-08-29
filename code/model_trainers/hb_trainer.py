@@ -203,6 +203,14 @@ class HBTrainer(ModelTrainer):
             beta_max=beta_max,
         )
         fit_seconds = time.time() - started
+        logger.info(
+            "HBTrainer: population fitted in %.0fs: %s",
+            fit_seconds, {k: np.round(np.asarray(v), 4).tolist() for k, v in population.items()},
+        )
+        # Optional hook so long runs can checkpoint the population before scoring starts.
+        callback = getattr(self, "on_population_fitted", None)
+        if callable(callback):
+            callback({k: np.asarray(v).tolist() for k, v in population.items()}, dict(fit_info))
 
         # -- Held-out evaluation, one adaptation per (subject, k) --
         # The held-out cohort must be supplied explicitly. Falling back to bundle.raw
