@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 import numpy as np
@@ -157,6 +158,31 @@ def _pad_context(subjects, choices, rewards, context_indices):
     return choice_arr, reward_arr, session_mask, valid
 
 
+def _source_revisions():
+    """Git SHAs of the repositories whose code produced a fit.
+
+    The model lives in aind-dynamic-foraging-models and the orchestration here, so a
+    dispatcher SHA alone pins none of the code that produced a number.
+    """
+    import subprocess
+
+    out = {}
+    for label, module in (("wrapper", None), ("models", "aind_dynamic_foraging_models")):
+        try:
+            if module is None:
+                path = Path(__file__).resolve().parents[2]
+            else:
+                path = Path(__import__(module).__file__).resolve().parents[2]
+            sha = subprocess.run(
+                ["git", "-C", str(path), "rev-parse", "HEAD"],
+                capture_output=True, text=True, timeout=10, check=True,
+            ).stdout.strip()
+            out[f"{label}_git_sha"] = sha
+        except Exception:  # pragma: no cover - absent git or a non-repo install
+            out[f"{label}_git_sha"] = None
+    return out
+
+
 def _flatten_for_scoring(subjects, choices, rewards, score_indices):
     """Flatten the sessions to be scored into one padded batch.
 
@@ -263,6 +289,7 @@ class HBTrainer(ModelTrainer):
         beta_max = float(self._cfg("beta_max", 10.0))
         k_values = tuple(self._cfg("few_shot_k", FEW_SHOT_K))
         eval_every_n = int(self._cfg("eval_every_n", 2))
+        artifact_dir = self._cfg("artifact_dir", None)
 
         if bundle.raw is None or len(bundle.raw) == 0:
             raise ValueError("HBTrainer requires bundle.raw with trial-level rows.")
@@ -276,12 +303,33 @@ class HBTrainer(ModelTrainer):
             len(subject_ids), choice_arr.shape[1], choice_arr.shape[2], estimator,
         )
 
-        population, fit_info = self._fit_population(
+        population, fit_info, mcmc = self._fit_population(
             estimator, choice_arr, reward_arr, valid_mask, session_mask,
             num_warmup=num_warmup, num_samples=num_samples, num_chains=num_chains,
             beta_max=beta_max,
         )
         fit_seconds = time.time() - started
+
+        # Persist the fit before scoring. A cohort fit costs hours and scoring adds more;
+        # keeping only posterior means would force a refit for every later question.
+        if artifact_dir and mcmc is not None:
+            from aind_dynamic_foraging_models.hierarchical_bayes.artifacts import save_fit
+
+            saved = save_fit(
+                mcmc, artifact_dir, name=f"{estimator}_fit",
+                meta={
+                    "estimator": estimator,
+                    "n_subjects": len(subject_ids),
+                    "subject_ids": [str(s) for s in subject_ids],
+                    "num_warmup": num_warmup,
+                    "num_samples": num_samples,
+                    "num_chains": num_chains,
+                    "seed": self.seed,
+                    **_source_revisions(),
+                },
+            )
+            fit_info["artifacts"] = saved
+            logger.info("HBTrainer: wrote fit artifacts to %s", saved["netcdf"])
         logger.info(
             "HBTrainer: population fitted in %.0fs: %s",
             fit_seconds, {k: np.round(np.asarray(v), 4).tolist() for k, v in population.items()},
@@ -438,8 +486,15 @@ class HBTrainer(ModelTrainer):
     def _fit_population(
         self, estimator, choice_arr, reward_arr, valid_mask, session_mask,
         *, num_warmup, num_samples, num_chains, beta_max,
-    ) -> Tuple[Dict[str, np.ndarray], Dict[str, Any]]:
-        """Fit the population level by the requested estimator."""
+    ) -> Tuple[Dict[str, np.ndarray], Dict[str, Any], Any]:
+        """Fit the population level by the requested estimator.
+
+        Returns
+        -------
+        tuple
+            Population point estimates, fit diagnostics, and the sampler itself so the
+            caller can persist its draws.
+        """
         import jax
         from numpyro.infer import MCMC, NUTS
 
@@ -470,7 +525,7 @@ class HBTrainer(ModelTrainer):
                 )
             }
             divergences = int(np.sum(np.asarray(mcmc.get_extra_fields()["diverging"])))
-            return population, {"divergences": divergences}
+            return population, {"divergences": divergences}, mcmc
 
         if estimator != "two_stage":
             raise ValueError(f"Unknown estimator {estimator!r}; expected two_stage/one_stage.")
@@ -496,4 +551,4 @@ class HBTrainer(ModelTrainer):
             "log_sigma_mean": mean[n_params:],
             "log_sigma_spread": scale[n_params:],
         }
-        return population, {"divergences": None}
+        return population, {"divergences": None}, result["population_mcmc"]
