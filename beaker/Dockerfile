@@ -17,6 +17,11 @@
 #
 # jax[cuda12] ships the CUDA runtime as pip wheels, so a slim Python base is
 # enough — Beaker nodes provide the GPU driver.
+#
+# The models package is installed with its [bayes] extra, which adds numpyro, arviz and
+# xarray for the hierarchical Bayesian baseline. jax itself comes from the wrapper's [gpu]
+# extra and is pinned there; numpyro follows whatever that pin resolves to, so a jax bump
+# needs the HB tests re-run rather than assumed compatible.
 
 FROM python:3.12-slim
 
@@ -67,7 +72,7 @@ RUN clone_ref() { \
     clone_ref "$GH_ORG/aind-disrnn-wrapper.git" \
       /workspace/aind-disrnn-wrapper "$WRAPPER_REF" && \
     pip install --no-cache-dir -e "/workspace/aind-disrnn-wrapper[gpu]" && \
-    pip install --no-cache-dir -e /workspace/aind-dynamic-foraging-models
+    pip install --no-cache-dir -e "/workspace/aind-dynamic-foraging-models[bayes]"
 
 WORKDIR /workspace/aind-disrnn-wrapper/code
 ENV PYTHONPATH=/workspace/aind-disrnn-wrapper/code
