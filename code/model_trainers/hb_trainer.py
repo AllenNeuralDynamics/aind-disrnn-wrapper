@@ -157,6 +157,46 @@ def _pad_context(subjects, choices, rewards, context_indices):
     return choice_arr, reward_arr, session_mask, valid
 
 
+def _flatten_for_scoring(subjects, choices, rewards, score_indices):
+    """Flatten the sessions to be scored into one padded batch.
+
+    Scoring every held-out session in a single vmapped pass needs a rectangular array and a
+    map from each row back to the subject whose adapted posterior it should use.
+
+    Returns
+    -------
+    dict
+        ``choices`` and ``rewards`` of shape ``(n_rows, max_trials)``, a ``valid_mask``,
+        ``subject_indices`` giving each row's position in the batched fit, and
+        ``rows_by_subject`` for aggregating results back per subject.
+    """
+    rows, subject_indices, rows_by_subject = [], [], []
+    for position, (subject, idx) in enumerate(zip(subjects, score_indices)):
+        rows_by_subject.append([])
+        for i in idx:
+            rows_by_subject[position].append(len(rows))
+            rows.append((subject, i))
+            subject_indices.append(position)
+
+    max_trials = max((len(choices[s][i]) for s, i in rows), default=1)
+    choice_arr = np.zeros((len(rows), max_trials), dtype=int)
+    reward_arr = np.zeros((len(rows), max_trials), dtype=float)
+    valid = np.zeros((len(rows), max_trials), dtype=bool)
+    for row, (subject, i) in enumerate(rows):
+        c = choices[subject][i]
+        choice_arr[row, : len(c)] = c
+        reward_arr[row, : len(c)] = rewards[subject][i][: len(c)]
+        valid[row, : len(c)] = True
+
+    return {
+        "choices": choice_arr,
+        "rewards": reward_arr,
+        "valid_mask": valid,
+        "subject_indices": np.asarray(subject_indices, dtype=int),
+        "rows_by_subject": [np.asarray(r, dtype=int) for r in rows_by_subject],
+    }
+
+
 def _normalized_likelihood(total_log_lik: float, total_trials: int) -> float:
     """Geometric-mean per-trial likelihood, the metric shared with the neural models."""
     if total_trials == 0:
@@ -210,9 +250,8 @@ class HBTrainer(ModelTrainer):
         import jax
 
         from aind_dynamic_foraging_models.hierarchical_bayes.heldout import (
-            batched_choice_prob,
+            batched_heldout_log_lik,
             fit_adaptation_batched,
-            pointwise_log_predictive_density,
         )
 
         started = time.time()
@@ -296,20 +335,18 @@ class HBTrainer(ModelTrainer):
                 session_mask=ctx_session_mask, valid_mask=ctx_valid,
                 num_warmup=num_warmup, num_samples=num_samples, beta_max=beta_max,
             )
-            total_log_lik, total_trials = 0.0, 0
-            for position, subject in enumerate(eligible):
-                sessions = heldout_choices[subject]
-                for session_idx in range(k, len(sessions)):
-                    prob = batched_choice_prob(
-                        samples, position, sessions[session_idx],
-                        heldout_rewards[subject][session_idx],
-                        rng_key=key_draw, beta_max=beta_max,
-                    )
-                    log_lik, n = pointwise_log_predictive_density(
-                        prob, sessions[session_idx]
-                    )
-                    total_log_lik += log_lik
-                    total_trials += n
+            score_idx = [
+                list(range(k, len(heldout_choices[subject]))) for subject in eligible
+            ]
+            flat = _flatten_for_scoring(
+                eligible, heldout_choices, heldout_rewards, score_idx
+            )
+            session_log_lik, session_trials = batched_heldout_log_lik(
+                samples, flat["subject_indices"], flat["choices"], flat["rewards"],
+                valid_mask=flat["valid_mask"], rng_key=key_draw, beta_max=beta_max,
+            )
+            total_log_lik = float(np.sum(session_log_lik))
+            total_trials = int(np.sum(session_trials))
             scores[k] = _normalized_likelihood(total_log_lik, total_trials)
             logger.info("HBTrainer: k=%d heldout likelihood %.5f", k, scores[k])
 
@@ -339,26 +376,25 @@ class HBTrainer(ModelTrainer):
             num_warmup=num_warmup, num_samples=num_samples, beta_max=beta_max,
         )
 
+        flat = _flatten_for_scoring(
+            matched_subjects, heldout_choices, heldout_rewards, score_indices
+        )
+        session_log_lik, session_trials = batched_heldout_log_lik(
+            matched_samples, flat["subject_indices"], flat["choices"], flat["rewards"],
+            valid_mask=flat["valid_mask"], rng_key=key_draw, beta_max=beta_max,
+        )
         for position, subject in enumerate(matched_subjects):
-            sessions = heldout_choices[subject]
-            context_idx, score_idx = context_indices[position], score_indices[position]
-            subject_log_lik, subject_trials = 0.0, 0
-            for i in score_idx:
-                prob = batched_choice_prob(
-                    matched_samples, position, sessions[i], heldout_rewards[subject][i],
-                    rng_key=key_draw, beta_max=beta_max,
-                )
-                log_lik, n = pointwise_log_predictive_density(prob, sessions[i])
-                subject_log_lik += log_lik
-                subject_trials += n
+            rows = flat["rows_by_subject"][position]
+            subject_log_lik = float(np.sum(session_log_lik[rows]))
+            subject_trials = int(np.sum(session_trials[rows]))
             per_subject_matched[str(subject)] = {
                 "likelihood": _normalized_likelihood(subject_log_lik, subject_trials),
-                "n_context": len(context_idx),
-                "n_scored": len(score_idx),
+                "n_context": len(context_indices[position]),
+                "n_scored": len(score_indices[position]),
                 "n_trials": subject_trials,
             }
-            matched_log_lik += subject_log_lik
-            matched_trials += subject_trials
+        matched_log_lik = float(np.sum(session_log_lik))
+        matched_trials = int(np.sum(session_trials))
         scores["matched"] = _normalized_likelihood(matched_log_lik, matched_trials)
         logger.info(
             "HBTrainer: matched-conditioning heldout likelihood %.5f (eval_every_n=%d)",
