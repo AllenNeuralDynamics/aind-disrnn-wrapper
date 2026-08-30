@@ -158,6 +158,54 @@ def _pad_context(subjects, choices, rewards, context_indices):
     return choice_arr, reward_arr, session_mask, valid
 
 
+def _log_fit_artifact(wandb_run, saved, estimator, n_subjects):
+    """Upload the persisted posterior to W&B so it is retrievable off this filesystem.
+
+    Local netCDF is fine until someone needs the draws from another machine, or after the
+    scratch directory is cleaned. Versioning it against the run also ties the posterior to
+    the exact config that produced it.
+    """
+    if wandb_run is None:
+        return
+    try:
+        import wandb
+
+        artifact = wandb.Artifact(
+            name=f"hb-fit-{estimator}-D{n_subjects}",
+            type="hb_posterior",
+            metadata={"estimator": estimator, "n_subjects": n_subjects,
+                      **saved.get("diagnostics", {})},
+        )
+        for key in ("netcdf", "sample_stats", "json"):
+            path = saved.get(key)
+            if path and Path(path).exists():
+                artifact.add_file(path)
+        wandb_run.log_artifact(artifact)
+        logger.info("HBTrainer: logged posterior artifact %s", artifact.name)
+    except Exception as error:  # pragma: no cover - never fail a fit over telemetry
+        logger.warning("HBTrainer: could not log posterior artifact: %s", error)
+
+
+def _log_per_subject_table(wandb_run, per_subject):
+    """Publish per-subject held-out scores as a W&B table."""
+    if wandb_run is None or not per_subject:
+        return
+    try:
+        import wandb
+
+        columns = ["subject_id", "likelihood", "n_context", "n_scored", "n_trials"]
+        table = wandb.Table(columns=columns)
+        for subject, row in sorted(per_subject.items()):
+            table.add_data(
+                subject, float(row["likelihood"]), int(row["n_context"]),
+                int(row["n_scored"]), int(row["n_trials"]),
+            )
+        wandb_run.log({"heldout/per_subject_matched": table})
+        logger.info("HBTrainer: logged per-subject table (%d rows)", len(per_subject))
+    except Exception as error:  # pragma: no cover - never fail a fit over telemetry
+        logger.warning("HBTrainer: could not log per-subject table: %s", error)
+
+
 def _source_revisions():
     """Git SHAs of the repositories whose code produced a fit.
 
@@ -330,6 +378,7 @@ class HBTrainer(ModelTrainer):
             )
             fit_info["artifacts"] = saved
             logger.info("HBTrainer: wrote fit artifacts to %s", saved["netcdf"])
+            _log_fit_artifact(wandb_run, saved, estimator, len(subject_ids))
         logger.info(
             "HBTrainer: population fitted in %.0fs: %s",
             fit_seconds, {k: np.round(np.asarray(v), 4).tolist() for k, v in population.items()},
@@ -476,6 +525,9 @@ class HBTrainer(ModelTrainer):
                 wandb_run.summary["heldout_test_likelihood"] = float(scores["matched"])
             wandb_run.summary["heldout/num_test_trials"] = int(matched_trials)
             wandb_run.summary["heldout/num_test_subjects"] = int(len(per_subject_matched))
+            # Per-subject scores as a table: the existing GRU-vs-MLE claim is a paired
+            # per-mouse test, which needs the per-subject numbers rather than the aggregate.
+            _log_per_subject_table(wandb_run, per_subject_matched)
             wandb_run.summary["hb/fit_seconds"] = float(fit_seconds)
             wandb_run.summary["hb/estimator"] = estimator
             if fit_info.get("divergences") is not None:
