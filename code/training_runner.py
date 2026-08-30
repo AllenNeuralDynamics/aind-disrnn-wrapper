@@ -40,7 +40,7 @@ def _is_multisubject_personalized_run(hydra_config) -> bool:
     model_type = getattr(hydra_config.model, "type", None)
     architecture_cfg = getattr(hydra_config.model, "architecture", None)
     return bool(
-        model_type in {"disrnn", "gru", "baseline_rl"}
+        model_type in {"disrnn", "gru", "baseline_rl", "hb"}
         and architecture_cfg is not None
         and getattr(architecture_cfg, "multisubject", False)
     )
@@ -306,6 +306,20 @@ def run_training(hydra_config, wandb_run=None, run_output_dir="/results"):
             "only. The end-of-training held-out fine-tune (auto_heldout_finetune) loads "
             "its own held-out set from inputs.yaml and is unaffected.",
             str(model_type).upper(),
+        )
+
+    # The hierarchical Bayesian trainer scores held-out subjects itself, and needs their
+    # trials to come from the same loader as the training split -- otherwise the two are
+    # filtered independently and the comparison against the neural models is void.
+    if model_type == "hb" and heldout_cfg.enabled:
+        heldout_loader = instantiate(
+            hydra_config.data, **_baseline_rl_heldout_loader_kwargs(data_cfg)
+        )
+        hb_heldout_bundle = heldout_loader.load()
+        dataset_bundle.extras["heldout_raw"] = hb_heldout_bundle.raw
+        logger.info(
+            "HB held-out cohort loaded from the same loader: %s",
+            hb_heldout_bundle.metadata,
         )
 
     # --- Train model ---

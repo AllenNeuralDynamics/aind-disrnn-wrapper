@@ -125,9 +125,7 @@ class TestFit(unittest.TestCase):
             train_set=None, eval_set=None, metadata={},
         )
         trainer = HBTrainer(
-            config={"estimator": "two_stage", "num_warmup": 30, "num_samples": 30,
-                    "num_chains": 1},
-            seed=0,
+            estimator="two_stage", num_warmup=30, num_samples=30, num_chains=1, seed=0,
         )
         output = trainer.fit(bundle)
         self.assertTrue(output["heldout_skipped"])
@@ -143,9 +141,8 @@ class TestFit(unittest.TestCase):
                                                n_trials=50, seed=7)},
         )
         trainer = HBTrainer(
-            config={"estimator": "one_stage", "num_warmup": 30, "num_samples": 30,
-                    "num_chains": 1, "few_shot_k": (0, 2)},
-            seed=0,
+            estimator="one_stage", num_warmup=30, num_samples=30, num_chains=1,
+            few_shot_k=(0, 2), seed=0,
         )
         output = trainer.fit(bundle)
         scores = output["heldout_likelihood"]
@@ -168,9 +165,8 @@ class TestFit(unittest.TestCase):
                                                n_trials=50, seed=7)},
         )
         trainer = HBTrainer(
-            config={"estimator": "one_stage", "num_warmup": 30, "num_samples": 30,
-                    "num_chains": 1, "few_shot_k": (0,), "eval_every_n": 2},
-            seed=0,
+            estimator="one_stage", num_warmup=30, num_samples=30, num_chains=1,
+            few_shot_k=(0,), eval_every_n=2, seed=0,
         )
         scores = trainer.fit(bundle)["heldout_likelihood"]
         self.assertIn("matched", scores)

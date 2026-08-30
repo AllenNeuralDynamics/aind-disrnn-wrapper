@@ -281,26 +281,59 @@ def _normalized_likelihood(total_log_lik: float, total_trials: int) -> float:
 class HBTrainer(ModelTrainer):
     """Fit a hierarchical Bayesian cognitive model and score held-out subjects."""
 
-    def __init__(self, config: Any, seed: Optional[int] = None) -> None:
-        """Store configuration and seed.
+    def __init__(
+        self,
+        estimator: str = "one_stage",
+        num_warmup: int = 500,
+        num_samples: int = 500,
+        num_chains: int = 4,
+        beta_max: float = 10.0,
+        few_shot_k: Any = FEW_SHOT_K,
+        eval_every_n: int = 2,
+        artifact_dir: Optional[str] = None,
+        architecture: Mapping[str, Any] | Any = {},
+        output_dir: str = "/results/outputs",
+        seed: Optional[int] = None,
+        **_: Any,
+    ) -> None:
+        """Initialize the HBTrainer.
+
+        Arguments arrive from Hydra's ``instantiate`` on the model config, so each is a
+        named parameter rather than an opaque config object -- the same contract the other
+        trainers use.
 
         Parameters
         ----------
-        config : Any
-            Model config. Recognised keys: ``estimator`` (``"two_stage"`` or
-            ``"one_stage"``), ``num_warmup``, ``num_samples``, ``num_chains``,
-            ``beta_max``, ``few_shot_k``.
+        estimator : str
+            ``"one_stage"`` for the joint three-level fit, or ``"two_stage"`` for empirical
+            Bayes. One-stage is both the reference estimator and, on GPU, the cheaper one.
+        num_warmup, num_samples, num_chains : int
+            NUTS settings.
+        beta_max : float
+            Upper bound of ``softmax_inverse_temperature``.
+        few_shot_k : sequence of int
+            Context-session counts to score, alongside the matched rung.
+        eval_every_n : int
+            Per-subject train/eval session split, matching the neural models'.
+        artifact_dir : str, optional
+            Where to persist posterior draws and diagnostics.
+        architecture : mapping
+            Present for parity with the other trainers; unused.
+        output_dir : str
+            Run output directory.
         seed : int, optional
             Seed for the sampler.
         """
         super().__init__(seed=seed)
-        self.config = config
-
-    def _cfg(self, key: str, default: Any) -> Any:
-        """Read a config value from either a mapping or an attribute-style object."""
-        if isinstance(self.config, Mapping):
-            return self.config.get(key, default)
-        return getattr(self.config, key, default)
+        self.estimator = str(estimator)
+        self.num_warmup = int(num_warmup)
+        self.num_samples = int(num_samples)
+        self.num_chains = int(num_chains)
+        self.beta_max = float(beta_max)
+        self.few_shot_k = tuple(few_shot_k)
+        self.eval_every_n = int(eval_every_n)
+        self.artifact_dir = artifact_dir
+        self.output_dir = output_dir
 
     def fit(
         self,
@@ -330,14 +363,11 @@ class HBTrainer(ModelTrainer):
 
         started = time.time()
         wandb_run = (loggers or {}).get("wandb")
-        estimator = str(self._cfg("estimator", "two_stage"))
-        num_warmup = int(self._cfg("num_warmup", 500))
-        num_samples = int(self._cfg("num_samples", 500))
-        num_chains = int(self._cfg("num_chains", 4))
-        beta_max = float(self._cfg("beta_max", 10.0))
-        k_values = tuple(self._cfg("few_shot_k", FEW_SHOT_K))
-        eval_every_n = int(self._cfg("eval_every_n", 2))
-        artifact_dir = self._cfg("artifact_dir", None)
+        estimator = self.estimator
+        num_warmup, num_samples = self.num_warmup, self.num_samples
+        num_chains, beta_max = self.num_chains, self.beta_max
+        k_values, eval_every_n = self.few_shot_k, self.eval_every_n
+        artifact_dir = self.artifact_dir
 
         if bundle.raw is None or len(bundle.raw) == 0:
             raise ValueError("HBTrainer requires bundle.raw with trial-level rows.")
