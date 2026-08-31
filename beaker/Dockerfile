@@ -18,10 +18,17 @@
 # jax[cuda12] ships the CUDA runtime as pip wheels, so a slim Python base is
 # enough — Beaker nodes provide the GPU driver.
 #
-# The models package is installed with its [bayes] extra, which adds numpyro, arviz and
-# xarray for the hierarchical Bayesian baseline. jax itself comes from the wrapper's [gpu]
-# extra and is pinned there; numpyro follows whatever that pin resolves to, so a jax bump
-# needs the HB tests re-run rather than assumed compatible.
+# The models package is installed with its [bayes] extra, which adds numpyro, arviz,
+# xarray and h5netcdf for the hierarchical Bayesian baseline.
+#
+# FORAGING_MODELS_REF must point at a ref that HAS that extra. pip does not fail on an
+# unknown extra -- it exits 0 and installs without it -- so building against a ref where
+# [bayes] is absent yields an image that looks fine and dies on `import numpyro` at job
+# time. Build only from a ref where the extra exists.
+#
+# jax comes from the wrapper's [gpu] extra and is pinned at 0.6.1 there; the models
+# package caps numpyro below 0.20 to stay compatible, since 0.20+ requires jax >= 0.7.
+# Raising either needs the HB suite re-run, not assumed.
 
 FROM python:3.12-slim
 
