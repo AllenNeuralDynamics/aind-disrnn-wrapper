@@ -13,7 +13,7 @@ from aind_behavior_gym.dynamic_foraging.task import (
 )
 from aind_dynamic_foraging_models import generative_model
 
-import aind_disrnn_utils.data_loader as dl
+import data_loaders.disrnn_dataset as dl
 from disentangled_rnns.library import rnn_utils
 
 from base.interfaces import DatasetLoader

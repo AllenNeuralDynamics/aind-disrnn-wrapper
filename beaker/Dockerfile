@@ -49,7 +49,7 @@ ARG WRAPPER_REF=main
 ARG FORAGING_MODELS_REF=main
 
 # Clone all three repos and install the wrapper + GPU JAX. All repos
-# and the wrapper's git deps (disentangled-rnns, aind-disrnn-utils) are public,
+# and the wrapper's git deps (disentangled-rnns) are public,
 # so no credentials are needed.
 #
 # The baked code is only a STARTING POINT: at job startup beaker/entrypoint.sh

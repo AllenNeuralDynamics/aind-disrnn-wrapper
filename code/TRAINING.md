@@ -40,7 +40,8 @@ config.yaml ──► run_capsule.main()
   fine-tuning).
 
 Everything is **JAX/Haiku** built on the upstream `disentangled_rnns` library and
-the `aind_disrnn_utils` data-loader package.
+the in-repo `data_loaders.disrnn_dataset` builder (vendored from the retired
+`aind_disrnn_utils` package).
 
 ---
 
@@ -363,8 +364,8 @@ failure mode. Standardization is **global, never per-subject**: per-subject
 z-scoring would erase the between-mouse differences in reaction time and licking
 vigor that the subject embedding exists to capture.
 
-> **⚠️ Upstream int64 truncation bug (worked around here).**
-> `aind_disrnn_utils.create_disrnn_dataset` allocates the input tensor as
+> **⚠️ Inherited int64 truncation bug (worked around here).**
+> `data_loaders.disrnn_dataset.create_disrnn_dataset` allocates the input tensor as
 > `np.full((...), -1)` — an **int64** array — so float feature columns are
 > truncated toward zero on assignment; the later `.astype(float)` is too late.
 > This is invisible for the stock integer features (`animal_response`,
@@ -483,7 +484,7 @@ PYTHONPATH=/root/capsule/code python -m unittest \
 Key suites: `test_gru_trainer`, `test_disrnn_trainer`, `test_disrnn_distillation`,
 `test_heldout_finetuning`, `test_multisubject_utils`, `test_run_helpers`, plus the
 post-training-analysis suites. Suites self-skip if `jax`/`haiku`/
-`disentangled_rnns`/`aind_disrnn_utils` aren't importable — confirm those import
+`disentangled_rnns` aren't importable — confirm those import
 before trusting a green result.
 
 **Known environment-dependent failures** (present on a clean checkout, not caused
@@ -526,8 +527,8 @@ environment.
   feature columns and targets stay bit-identical with the switch off, and
   previous-trial features come from the previous *retained* trial (no leakage
   across excluded ignore trials).
-- **Fixed an upstream int64 truncation bug for continuous features.**
-  `aind_disrnn_utils.create_disrnn_dataset` allocates `xs` via
+- **Fixed an inherited int64 truncation bug for continuous features.**
+  `data_loaders.disrnn_dataset.create_disrnn_dataset` allocates `xs` via
   `np.full((...), -1)` (int64), truncating float feature columns before the later
   `.astype(float)`. Harmless for the integer stock features, but it collapsed
   24,149 distinct log-RT values to 7 integers. Present in the pinned SHA *and* the

@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 try:
-    import aind_disrnn_utils.data_loader as dl
+    import data_loaders.disrnn_dataset as dl
     import numpy as np
     import pandas as pd
     from disentangled_rnns.library import rnn_utils

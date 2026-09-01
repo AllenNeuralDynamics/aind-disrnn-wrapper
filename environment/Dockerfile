@@ -19,7 +19,6 @@ RUN pip install -U --no-cache-dir \
     ${JAX_PKG} \
     "git+https://github.com/AllenNeuralDynamics/aind-dynamic-foraging-database.git" \
     "git+https://github.com/AllenNeuralDynamics/aind-disentangled-rnns.git@a9b9978831cb22d37e2a75c15805c621dfe00b1f#egg=disentangled-rnns" \
-    "git+https://github.com/AllenNeuralDynamics/aind_disrnn_utils.git@74de874d93b951d9ef3ae6bff6453e6ae805b649#egg=aind-disrnn-utils" \
     aind-analysis-arch-result-access==0.8.0 \
     aind-dynamic-foraging-basic-analysis==0.3.34 \
     aind-dynamic-foraging-data-utils==0.1.41 \

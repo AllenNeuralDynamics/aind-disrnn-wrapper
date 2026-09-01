@@ -431,11 +431,11 @@ def create_disrnn_dataset_float(
     batch_mode: str = "random",
     features: Optional[Mapping[str, str]] = None,
 ):
-    """Float-safe re-implementation of ``aind_disrnn_utils.create_disrnn_dataset``.
+    """Float-safe variant of :func:`data_loaders.disrnn_dataset.create_disrnn_dataset`.
 
-    WHY THIS EXISTS — upstream integer-truncation bug
-    -------------------------------------------------
-    The upstream builder allocates the input tensor with::
+    WHY THIS EXISTS — integer-truncation bug in the inherited builder
+    ----------------------------------------------------------------
+    The inherited builder allocates the input tensor with::
 
         xs = np.full((n_timesteps, n_sessions, n_features), -1)   # int64!
 
@@ -447,17 +447,22 @@ def create_disrnn_dataset_float(
     feature: in testing, 24,149 distinct log-reaction-time values collapsed to 7
     integers (-6 … 0).
 
-    Verified present in BOTH the SHA pinned by this repo's ``pyproject.toml``
-    (``aind_disrnn_utils@74de874d``, ``src/aind_disrnn_utils/data_loader.py`` L76:
-    ``xs = np.full((max_session_length, num_sessions, num_input_features), -1)``,
-    with the too-late ``xs.astype(float)`` at L99) and in the latest release
-    (aind-disrnn-utils 0.0.16), as of 2026-08. This function is
-    a faithful copy of the upstream semantics with the tensors allocated as float
+    The bug was verified present in the SHA this repo pinned before vendoring
+    (``aind_disrnn_utils@74de874d``, ``src/aind_disrnn_utils/data_loader.py`` L76)
+    and in that package's last release (0.0.16), as of 2026-08. It is still
+    present verbatim in the vendored copy, which was taken faithfully from that
+    pin. This function is that same builder with the tensors allocated as float
     from the start. It is used ONLY when continuous features are requested, so
-    integer-only runs keep calling upstream and stay bit-for-bit reproducible.
+    integer-only runs keep calling the inherited builder and stay bit-for-bit
+    reproducible.
 
-    TODO: upstream this as a one-line dtype fix in aind_disrnn_utils
-    (``np.full(..., -1, dtype=float)``) and drop this shim once the pin moves.
+    TODO: now that the builder lives in this repo, the one-line dtype fix
+    (``np.full(..., -1, dtype=float)``) can be applied directly in
+    ``data_loaders.disrnn_dataset`` and this shim collapsed into it. Deferred
+    deliberately: the two builders should be numerically identical for
+    integer-valued features, but that needs an equivalence test proving it
+    before the routing in :func:`has_continuous_features` is removed, since the
+    result would land on the scientific path.
 
     Semantics preserved exactly
     ---------------------------

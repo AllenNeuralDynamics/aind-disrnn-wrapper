@@ -5,8 +5,8 @@ Two tiers:
     with NO heavy deps (jax / foragers / disrnn) -- runnable anywhere numpy exists.
   * ``test_end_to_end_*``: full generation + merged multisubject dataset +
     ground-truth table + determinism. Requires the wrapper stack (jax,
-    disentangled_rnns, aind_dynamic_foraging_models, aind_behavior_gym,
-    aind_disrnn_utils). Skipped automatically if those imports are unavailable.
+    disentangled_rnns, aind_dynamic_foraging_models, aind_behavior_gym).
+    Skipped automatically if those imports are unavailable.
 """
 
 from __future__ import annotations
@@ -39,7 +39,6 @@ HAS_STACK = all(
         "disentangled_rnns",
         "aind_dynamic_foraging_models",
         "aind_behavior_gym",
-        "aind_disrnn_utils",
     )
 )
 requires_stack = pytest.mark.skipif(not HAS_STACK, reason="wrapper training stack not installed")

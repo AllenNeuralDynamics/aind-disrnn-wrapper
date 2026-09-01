@@ -9,7 +9,7 @@ import pandas as pd
 
 import aind_dynamic_foraging_data_utils.code_ocean_utils as co
 import aind_dynamic_foraging_multisession_analysis.multisession_load as ms_load
-import aind_disrnn_utils.data_loader as dl
+import data_loaders.disrnn_dataset as dl
 from disentangled_rnns.library import rnn_utils
 
 from base.interfaces import DatasetLoader

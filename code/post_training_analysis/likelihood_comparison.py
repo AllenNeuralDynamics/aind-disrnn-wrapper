@@ -871,7 +871,7 @@ def _evaluate_disrnn_dataset(
     metadata: Mapping[str, Any],
 ) -> tuple[Any, int]:
     import numpy as np
-    import aind_disrnn_utils.data_loader as dl
+    import data_loaders.disrnn_dataset as dl
     from disentangled_rnns.library import rnn_utils
 
     # DOCUMENTED training-adjacent coupling (lazy import, never at module load):
