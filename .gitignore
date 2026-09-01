@@ -170,3 +170,5 @@ code/resolved_run.json
 # Local W&B scratch (run logs + downloaded artifact tables); reproducible from W&B.
 wandb/
 artifacts/
+# Stray generative-rollout output; a run artifact, not source
+code/repeat_sessions.json
