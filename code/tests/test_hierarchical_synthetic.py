@@ -1,8 +1,12 @@
 """Tests for the hierarchical synthetic generator.
 
 Two tiers:
-  * ``test_pure_logic_*``: exercise the seed hierarchy, drift, and clamp helpers
-    with NO heavy deps (jax / foragers / disrnn) -- runnable anywhere numpy exists.
+  * ``test_pure_logic_*``: exercise the seed hierarchy, drift, and clamp helpers,
+    which use only numpy. They are nonetheless gated on the full stack today,
+    because reaching them imports ``data_loaders.hierarchical_synthetic``, whose
+    top-level imports pull in the heavy deps. Making this tier genuinely
+    stack-free would mean moving the helpers into a module that imports nothing
+    heavy; until then the gate reflects reality rather than intent.
   * ``test_end_to_end_*``: full generation + merged multisubject dataset +
     ground-truth table + determinism. Requires the wrapper stack (jax,
     disentangled_rnns, aind_dynamic_foraging_models, aind_behavior_gym).

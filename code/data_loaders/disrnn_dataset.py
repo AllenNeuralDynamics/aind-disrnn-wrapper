@@ -40,12 +40,14 @@ def create_disrnn_dataset(
     Creates a disrnn dataset object
 
     args:
-    df_trials, a trial dataframe, created by aind_dynamic_foraging_data_utils
-        must have 'ses_idx' as an column which indicates how to divide
-        trials by session
-    ignore_policy (str), must be "include" or "exclude", and determines
-        how to use trials where the mouse did not response
+    df_trials, a trial dataframe, created by aind_dynamic_foraging_data_utils.
+        Must have a 'ses_idx' column indicating how to divide trials into
+        sessions, and a 'trial' column giving the within-session trial index.
+    ignore_policy (str), must be "include" or "exclude", and determines how to
+        treat trials where the mouse did not respond (animal_response == 2)
     batch_size (int) input argument to disrnn dataset
+    batch_mode (str) input argument to disrnn dataset; "random" requires
+        batch_size to be set
     features (dict), keys must be columns in df_trials to be used as prediction
         features. values are the semantic labels for that feature. If None,
         use previous choice and previous reward
@@ -88,10 +90,20 @@ def create_disrnn_dataset(
                 "input feature '{}' not in df_trials".format(feature)
             )
 
+    # Group by session ONCE and reuse that grouping for both the matrix sizing
+    # and the per-session load below. sort=False preserves first-appearance
+    # order, which is what defines the session column index `dex` and matches
+    # df_trials["ses_idx"].unique().
+    grouped = df_trials.groupby("ses_idx", sort=False)
+
     # Determine size of input matrix
     # Input matrix has size [# trials, # sessions, # features]
-    max_session_length = df_trials.groupby("ses_idx")["trial"].count().max()
+    max_session_length = grouped["trial"].count().max()
 
+    # NOTE: deliberately still counts via .unique() rather than grouped.ngroups.
+    # The two differ only when ses_idx contains NaN (groupby drops it, unique
+    # keeps it), and matching the inherited behaviour exactly keeps this a pure
+    # perf change. See the PR discussion; worth revisiting with a null check.
     num_sessions = len(df_trials["ses_idx"].unique())
     num_input_features = len(feature_cols)
     # Determine size of output matrix
@@ -101,13 +113,12 @@ def create_disrnn_dataset(
     xs = np.full((max_session_length, num_sessions, num_input_features), -1)
     ys = np.full((max_session_length, num_sessions, num_output_features), -1)
 
-    # Load each session into xs/ys. Group once by session (sort=False preserves
-    # the first-appearance order that defines the session column index `dex`,
-    # matching df_trials["ses_idx"].unique()) instead of calling
-    # df.query("ses_idx == @ses_idx") per session. The query path re-parses the
-    # expression string and re-scans the frame on every call, which dominated
-    # dataset construction for cohorts with many sessions.
-    for dex, (_ses_idx, temp) in enumerate(df_trials.groupby("ses_idx", sort=False)):
+    # Load each session into xs/ys from the grouping built above, instead of
+    # calling df.query("ses_idx == @ses_idx") once per session. The query path
+    # re-parses the expression string and re-scans the whole frame on every
+    # call, which dominated dataset construction for cohorts with many
+    # sessions.
+    for dex, (_ses_idx, temp) in enumerate(grouped):
         xs[1 : len(temp), dex, :] = temp[feature_cols].to_numpy()[:-1, :]  # noqa E203
         ys[0 : len(temp), dex, :] = temp[["animal_response"]].to_numpy()  # noqa E203
 
@@ -134,7 +145,7 @@ def add_model_results(
 
     args:
     df_trials (dataframe), the trials dataframe from which the disrnn dataset
-        was created. Must have columns `ses_idx`, `trials`, `animal_response`
+        was created. Must have columns `ses_idx`, `trial`, `animal_response`
     network_states (np array), the latent states of the network with dimensions
         (max_trial, sessions, num latents)
     yhat (np array), the predictions of the network with dimensions
