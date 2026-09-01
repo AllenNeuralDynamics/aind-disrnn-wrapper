@@ -94,26 +94,22 @@ def create_disrnn_dataset(
 
     num_sessions = len(df_trials["ses_idx"].unique())
     num_input_features = len(feature_cols)
-    # Pad trials to be ignored with -1
-    xs = np.full((max_session_length, num_sessions, num_input_features), -1)
-
-    # Load each session into xs
-    for dex, ses_idx in enumerate(df_trials["ses_idx"].unique()):
-        temp = df_trials.query("ses_idx == @ses_idx")
-        this_xs = temp[feature_cols].to_numpy()[:-1, :]
-        xs[1 : len(temp), dex, :] = this_xs  # noqa E203
-
     # Determine size of output matrix
     # Output matrix has size [# trials, # sessions, # features]
     num_output_features = 1
-    # pad trials to be ignored with -1
+    # Pad trials to be ignored with -1
+    xs = np.full((max_session_length, num_sessions, num_input_features), -1)
     ys = np.full((max_session_length, num_sessions, num_output_features), -1)
 
-    # Load each session into ys
-    for dex, ses_idx in enumerate(df_trials["ses_idx"].unique()):
-        temp = df_trials.query("ses_idx == @ses_idx")
-        this_ys = temp[["animal_response"]].to_numpy()
-        ys[0 : len(temp), dex, :] = this_ys  # noqa E203
+    # Load each session into xs/ys. Group once by session (sort=False preserves
+    # the first-appearance order that defines the session column index `dex`,
+    # matching df_trials["ses_idx"].unique()) instead of calling
+    # df.query("ses_idx == @ses_idx") per session. The query path re-parses the
+    # expression string and re-scans the frame on every call, which dominated
+    # dataset construction for cohorts with many sessions.
+    for dex, (_ses_idx, temp) in enumerate(df_trials.groupby("ses_idx", sort=False)):
+        xs[1 : len(temp), dex, :] = temp[feature_cols].to_numpy()[:-1, :]  # noqa E203
+        ys[0 : len(temp), dex, :] = temp[["animal_response"]].to_numpy()  # noqa E203
 
     # Pack into a DatasetRNN object
     dataset = rnn_utils.DatasetRNN(
