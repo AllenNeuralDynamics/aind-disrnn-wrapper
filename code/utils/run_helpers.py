@@ -16,6 +16,8 @@ from omegaconf import DictConfig, OmegaConf
 
 import wandb
 
+from utils.env_config import get_env
+
 logger = logging.getLogger(__name__)
 
 
@@ -302,17 +304,17 @@ def start_wandb_run(
     #  - platform-native cross-ref ids (alongside CO_COMPUTATION_ID): Beaker exp/job +
     #    code SHAs — for jumping to the exact run on each platform.
     #  - `meta`: our portable, human-readable system (study / variant / launch_id /
-    #    label / note / config_hash), set by launch_beaker_resumable.py via DISRNN_META_*
+    #    label / note / config_hash), set by launch_beaker_resumable.py via BFM_META_*
     #    env — consistent across CO / Beaker / AI1 HPC. Merge-safe with any config `meta`.
     #    `note` is a free-text "why this run exists + what we want to learn" so humans and
     #    agents can read intent straight from the run record.
     meta_env = {
-        "study": os.environ.get("DISRNN_META_STUDY"),
-        "variant": os.environ.get("DISRNN_META_VARIANT"),
-        "launch_id": os.environ.get("DISRNN_META_LAUNCH_ID"),
-        "label": os.environ.get("DISRNN_META_LABEL"),
-        "note": os.environ.get("DISRNN_META_NOTE"),
-        "config_hash": os.environ.get("DISRNN_META_CONFIG_HASH"),
+        "study": get_env("BFM_META_STUDY"),
+        "variant": get_env("BFM_META_VARIANT"),
+        "launch_id": get_env("BFM_META_LAUNCH_ID"),
+        "label": get_env("BFM_META_LABEL"),
+        "note": get_env("BFM_META_NOTE"),
+        "config_hash": get_env("BFM_META_CONFIG_HASH"),
     }
     meta = {**(run.config.get("meta") or {}), **{k: v for k, v in meta_env.items() if v}}
     provenance = {
@@ -479,7 +481,7 @@ def maybe_restore_checkpoint_from_wandb(
     ``checkpoint_resume.find_latest_resumable_state``):
 
       1. Read the source run id from ``training.restore_from_run_id`` (or the
-         ``DISRNN_RESTORE_FROM_RUN_ID`` env var — env wins, so a sweep can pass
+         ``BFM_RESTORE_FROM_RUN_ID`` env var — env wins, so a sweep can pass
          a per-cell id without editing config).
       2. Download artifact ``<entity>/<project>/<mtype>-output-<run_id>:latest``
          into ``<run_output_base>/outputs`` so its ``checkpoints/step_<N>/``
@@ -495,7 +497,7 @@ def maybe_restore_checkpoint_from_wandb(
     found/downloaded — a silent restart-from-scratch would waste the whole point.
     A no-op when no ``restore_from_run_id`` is set.
     """
-    run_id = os.environ.get("DISRNN_RESTORE_FROM_RUN_ID")
+    run_id = get_env("BFM_RESTORE_FROM_RUN_ID")
     if not run_id:
         try:
             run_id = hydra_config.model.training.get("restore_from_run_id")

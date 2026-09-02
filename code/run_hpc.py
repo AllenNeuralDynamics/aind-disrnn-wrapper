@@ -16,6 +16,7 @@ from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf
 
 from training_runner import run_training
+from utils.env_config import get_env
 from utils.json_helpers import dictconfig_to_json
 from utils.run_helpers import (
     apply_dynamic_run_name_components,
@@ -65,13 +66,13 @@ def main(hydra_config: DictConfig) -> None:
     # locate it, mirroring the Code Ocean layout. With W&B, use the W&B run dir
     # (copy_run_to_wandb brings inputs.yaml there); otherwise the Hydra run dir.
     #
-    # Resumable mode (Beaker autoResume): when DISRNN_RESUMABLE_OUTPUT_DIR is set,
+    # Resumable mode (Beaker autoResume): when BFM_RESUMABLE_OUTPUT_DIR is set,
     # anchor outputs at that STABLE path instead of the per-run W&B dir, so a
     # preempted+restarted job re-finds its checkpoints/<step_N>/train_state.pkl
     # and the trainer resumes. Each Beaker task owns its own /results dataset, so
     # a fixed path there is unique to this run. W&B continuity across the restart
     # is handled out-of-band via WANDB_RUN_ID + WANDB_RESUME env vars.
-    resumable_output_dir = os.environ.get("DISRNN_RESUMABLE_OUTPUT_DIR")
+    resumable_output_dir = get_env("BFM_RESUMABLE_OUTPUT_DIR")
     run_output_base = run_dir
     if resumable_output_dir:
         run_output_base = Path(resumable_output_dir).resolve()

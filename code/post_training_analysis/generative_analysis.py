@@ -23,6 +23,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping, Sequence
 
+from utils.env_config import get_env
+
 logger = logging.getLogger(__name__)
 
 _TRAIN_SPLIT = "train"
@@ -41,7 +43,7 @@ _DEFAULT_HISTORY_AGGREGATE_MIN_TRIALS = 10
 _DEFAULT_HISTORY_SUBJECT_MIN_TRIALS = 5
 _SUBJECT_LEVEL_MIN_ANIMAL_N = 5
 _DEFAULT_SUBJECT_BOOTSTRAP_RESAMPLES = int(
-    os.environ.get("DISRNN_SUBJECT_BOOTSTRAP_RESAMPLES", "250")
+    get_env("BFM_SUBJECT_BOOTSTRAP_RESAMPLES", "250")
 )  # 250 gives fine subject-level CIs at a fraction of the 1000-resample cost
 _DEFAULT_SUBJECT_BOOTSTRAP_SEED = 0
 _REWARD_CONDITIONS = ("rewarded", "unrewarded")
@@ -674,10 +676,10 @@ def simulate_model_sessions(
     # batch). Each lane keeps its own seeded RNG and curriculum-matched task, so
     # the produced histories match the per-session loop; only the step is
     # batched. Lanes are chunked to bound memory at large D. The chunk size is
-    # overridable via DISRNN_GENERATIVE_ROLLOUT_CHUNK (chunk=1 reproduces the
+    # overridable via BFM_GENERATIVE_ROLLOUT_CHUNK (chunk=1 reproduces the
     # old per-session batch-1 path bit-for-bit; larger trades reproducibility
     # against speed, since batched matmul differs from batch-1 at the last bit).
-    BATCHED_ROLLOUT_CHUNK = int(os.environ.get("DISRNN_GENERATIVE_ROLLOUT_CHUNK", "4096"))
+    BATCHED_ROLLOUT_CHUNK = int(get_env("BFM_GENERATIVE_ROLLOUT_CHUNK", "4096"))
 
     lanes = []
     for session_index, animal_row in enumerate(animal_rows, start=1):
@@ -1631,14 +1633,14 @@ def _compute_and_save_partitioned_post_training_outputs(
     # concurrently — each worker runs the unchanged per-partition pipeline, so
     # outputs are bit-identical to serial; only scheduling is parallel. Use
     # 'spawn' (NOT fork): this runs right after the JAX/GPU rollout and forking a
-    # CUDA-initialised process can hang. DISRNN_GENERATIVE_STATS_WORKERS=1 forces
+    # CUDA-initialised process can hang. BFM_GENERATIVE_STATS_WORKERS=1 forces
     # serial (used by the in-process-mock unit tests); the launcher sets it >1.
     common = dict(
         resolved_run=resolved_run,
         window_size=window_size,
         save_animal_session_history=save_animal_session_history,
     )
-    max_workers = int(os.environ.get("DISRNN_GENERATIVE_STATS_WORKERS", "1"))
+    max_workers = int(get_env("BFM_GENERATIVE_STATS_WORKERS", "1"))
     partition_results: dict[str, Any] = {}
     if max_workers > 1 and len(session_partitions) > 1:
         import concurrent.futures
