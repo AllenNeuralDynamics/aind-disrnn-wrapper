@@ -1384,8 +1384,16 @@ seed: 13
                 [tick.get_text() for tick in bar_fig.axes[0].get_xticklabels()],
                 ["model_b", "model_a"],
             )
-            self.assertEqual(len(bar_fig.axes[0].lines), 1)
-            self.assertAlmostEqual(bar_fig.axes[0].lines[0].get_ydata()[0], 0.80, places=6)
+            # The axes also carry bootstrap error-bar segments (linestyle
+            # "None"), so select the reference line by label rather than by
+            # index.
+            reference_lines = [
+                line
+                for line in bar_fig.axes[0].lines
+                if line.get_label() == "First-model reference"
+            ]
+            self.assertEqual(len(reference_lines), 1)
+            self.assertAlmostEqual(reference_lines[0].get_ydata()[0], 0.80, places=6)
             self.assertEqual(
                 [text.get_text() for text in bar_fig.axes[0].texts],
                 ["0.800", "0.740"],
@@ -1424,7 +1432,16 @@ seed: 13
                 [tick.get_text() for tick in violin_fig.axes[0].get_xticklabels()],
                 ["model_b", "model_a"],
             )
-            self.assertEqual(len(violin_fig.axes[0].lines) >= 2, True)
+            # Violin bodies and quartile whiskers are LineCollections, not
+            # Line2D, so the only Line2D here is the reference line. Assert
+            # that directly instead of counting artists.
+            violin_reference_lines = [
+                line
+                for line in violin_fig.axes[0].lines
+                if line.get_linestyle() == "--"
+                and list(line.get_ydata()) == [0.80, 0.80]
+            ]
+            self.assertEqual(len(violin_reference_lines), 1)
             self.assertEqual(tuple(violin_fig.axes[0].get_ylim()), (0.5, 0.9))
             self.assertTrue(
                 all(label.get_visible() for label in violin_fig.axes[0].get_yticklabels())
@@ -1738,10 +1755,15 @@ seed: 13
             self.assertEqual(scatter_fig.axes[0].get_xlabel(), "model_b")
             self.assertEqual(scatter_fig.axes[0].get_ylabel(), "model_a")
             self.assertTrue(scatter_fig.axes[0].lines)
-            self.assertEqual(
-                list(scatter_fig.axes[0].lines[0].get_xdata()),
-                list(scatter_fig.axes[0].lines[0].get_ydata()),
-            )
+            # Most lines on these axes are bootstrap error bars; the diagonal
+            # is the dashed one whose x and y data are identical.
+            diagonals = [
+                line
+                for line in scatter_fig.axes[0].lines
+                if line.get_linestyle() == "--"
+                and list(line.get_xdata()) == list(line.get_ydata())
+            ]
+            self.assertEqual(len(diagonals), 1)
             self.assertEqual(
                 scatter_fig.axes[0].get_title(),
                 "Train\nmodel_a (1) vs model_b (1)",

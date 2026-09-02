@@ -207,6 +207,7 @@ class TestGruTrainer(unittest.TestCase):
                 "max_grad_norm": 1.0,
             },
             seed=42,
+            output_dir=str(self.output_dir),
         )
         self.assertEqual(trainer.architecture["hidden_size"], 8)
         self.assertEqual(trainer.architecture["num_layers"], 1)

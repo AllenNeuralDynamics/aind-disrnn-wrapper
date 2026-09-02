@@ -1,0 +1,42 @@
+name: Tests
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
+
+jobs:
+  unittest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: pip install -e ".[dev]"
+
+      # The trainer tests do real (tiny) training and XLA compilation dominates
+      # their wall time. code/tests/__init__.py points JAX's persistent cache at
+      # JAX_COMPILATION_CACHE_DIR, so restoring it across runs skips recompiling
+      # graphs seen in a previous run.
+      - name: Restore JAX compilation cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/jax-ci
+          key: jax-cache-${{ runner.os }}-py312-${{ hashFiles('pyproject.toml') }}-${{ github.sha }}
+          restore-keys: |
+            jax-cache-${{ runner.os }}-py312-${{ hashFiles('pyproject.toml') }}-
+            jax-cache-${{ runner.os }}-py312-
+
+      - name: Run test suite
+        working-directory: code
+        env:
+          JAX_COMPILATION_CACHE_DIR: ~/.cache/jax-ci
+        run: python -m unittest discover -s tests -t . -v
