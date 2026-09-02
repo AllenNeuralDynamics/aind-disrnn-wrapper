@@ -23,12 +23,72 @@ from post_training_analysis.generative_analysis import (
 
 
 class TestPostTrainingAnalysis(unittest.TestCase):
-    def setUp(self) -> None:
-        self.example_run_dir = (
-            Path(__file__).resolve().parents[1]
-            / "ex_model_dir-train10_test3-disrnn-260324"
-            / "9"
+    def _write_resolvable_disrnn_run_dir(self, root: Path) -> Path:
+        """Build a single-subject disRNN run dir that exercises checkpoint-policy
+        selection end to end: multiple candidates per policy, with the winner
+        NOT the first or last one listed, so this catches an argmax-by-position
+        regression rather than an argmax-by-value one.
+
+        Replaces a real captured run dir (`ex_model_dir-train10_test3-disrnn-260324`)
+        that was deliberately deleted 2026-05-21 when run-directory handling moved
+        to Hydra runtime output (see AllenNeuralDynamics/aind-disrnn-wrapper#68);
+        the 4 tests depending on it were never updated and errored on every run
+        since. The specific step numbers (24000 / 6000 / 30000) are kept only
+        because the tests that consume them already hard-code those values.
+        """
+        model_dir = root / "disrnn_run"
+        outputs_dir = model_dir / "outputs"
+        checkpoints_dir = outputs_dir / "checkpoints"
+        checkpoints_dir.mkdir(parents=True, exist_ok=True)
+
+        (model_dir / "inputs.yaml").write_text(
+            """
+data:
+  subject_ids:
+  - m1
+  curricula:
+  - Uncoupled Baiting
+  multisubject: false
+  mature_only: true
+  ignore_policy: exclude
+model:
+  type: disrnn
+  architecture:
+    multisubject: false
+seed: 7
+"""
         )
+        (outputs_dir / "disrnn_config.json").write_text(json.dumps({"multisubject": False}))
+        (outputs_dir / "params.json").write_text(json.dumps({"step": 30000}))
+
+        # best_eval: max eval_likelihood must win at step 24000, not the first
+        # (8000) or last (16000) entry.
+        eval_checkpoints = [
+            {"step": 8000, "eval_likelihood": 0.55, "params_path": "outputs/checkpoints/step_8000/params.json"},
+            {"step": 24000, "eval_likelihood": 0.91, "params_path": "outputs/checkpoints/step_24000/params.json"},
+            {"step": 16000, "eval_likelihood": 0.70, "params_path": "outputs/checkpoints/step_16000/params.json"},
+        ]
+        (checkpoints_dir / "index.json").write_text(
+            json.dumps({"n_steps": 30000, "checkpoints": eval_checkpoints})
+        )
+
+        # best_heldout: max heldout_test_likelihood must win at step 6000, not
+        # the first (2000) or last (4000) entry.
+        heldout_checkpoints = [
+            {"step": 2000, "heldout_test_likelihood": 0.40, "params_path": "outputs/checkpoints/step_2000/params.json"},
+            {"step": 6000, "heldout_test_likelihood": 0.88, "params_path": "outputs/checkpoints/step_6000/params.json"},
+            {"step": 4000, "heldout_test_likelihood": 0.65, "params_path": "outputs/checkpoints/step_4000/params.json"},
+        ]
+        (outputs_dir / "output_summary.json").write_text(
+            json.dumps({"heldout_test_checkpoints": heldout_checkpoints})
+        )
+
+        for step in (8000, 24000, 16000, 2000, 6000, 4000):
+            step_dir = checkpoints_dir / f"step_{step}"
+            step_dir.mkdir(parents=True, exist_ok=True)
+            (step_dir / "params.json").write_text(json.dumps({"step": step}))
+
+        return model_dir
 
     def _write_multisubject_run_dir(
         self,
@@ -709,41 +769,47 @@ model:
         self.assertEqual(parsed["model"]["training"]["n_steps"], 30000)
 
     def test_resolve_model_run_best_eval_uses_checkpoint_index(self):
-        resolved = resolve_model_run(
-            self.example_run_dir,
-            split="train",
-            checkpoint_policy="best_eval",
-        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            model_dir = self._write_resolvable_disrnn_run_dir(Path(tmpdir))
+            resolved = resolve_model_run(
+                model_dir,
+                split="train",
+                checkpoint_policy="best_eval",
+            )
 
-        self.assertEqual(resolved.model_type, "disrnn")
-        self.assertEqual(resolved.split, "train")
-        self.assertEqual(resolved.checkpoint_step, 24000)
-        self.assertEqual(resolved.selection["min_sessions"], 10)
-        self.assertEqual(resolved.selection["heldout_every_n"], 5)
-        self.assertTrue(resolved.params_path.endswith("step_24000/params.json"))
-        self.assertIsNone(resolved.fallback_reason)
+            self.assertEqual(resolved.model_type, "disrnn")
+            self.assertEqual(resolved.split, "train")
+            self.assertEqual(resolved.checkpoint_step, 24000)
+            self.assertEqual(resolved.selection["min_sessions"], 10)
+            self.assertEqual(resolved.selection["heldout_every_n"], 5)
+            self.assertTrue(resolved.params_path.endswith("step_24000/params.json"))
+            self.assertIsNone(resolved.fallback_reason)
 
     def test_resolve_model_run_best_heldout_uses_output_summary(self):
-        resolved = resolve_model_run(
-            self.example_run_dir,
-            split="train",
-            checkpoint_policy="best_heldout",
-        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            model_dir = self._write_resolvable_disrnn_run_dir(Path(tmpdir))
+            resolved = resolve_model_run(
+                model_dir,
+                split="train",
+                checkpoint_policy="best_heldout",
+            )
 
-        self.assertEqual(resolved.checkpoint_step, 6000)
-        self.assertTrue(resolved.params_path.endswith("step_6000/params.json"))
-        self.assertIsNone(resolved.fallback_reason)
+            self.assertEqual(resolved.checkpoint_step, 6000)
+            self.assertTrue(resolved.params_path.endswith("step_6000/params.json"))
+            self.assertIsNone(resolved.fallback_reason)
 
     def test_resolve_model_run_final_uses_top_level_params(self):
-        resolved = resolve_model_run(
-            self.example_run_dir,
-            split="train",
-            checkpoint_policy="final",
-        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            model_dir = self._write_resolvable_disrnn_run_dir(Path(tmpdir))
+            resolved = resolve_model_run(
+                model_dir,
+                split="train",
+                checkpoint_policy="final",
+            )
 
-        self.assertEqual(resolved.checkpoint_step, 30000)
-        self.assertTrue(resolved.params_path.endswith("outputs/params.json"))
-        self.assertEqual(resolved.checkpoint_label, "final")
+            self.assertEqual(resolved.checkpoint_step, 30000)
+            self.assertTrue(resolved.params_path.endswith("outputs/params.json"))
+            self.assertEqual(resolved.checkpoint_label, "final")
 
     def test_resolve_model_run_baseline_best_eval_uses_final_fit_artifact(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -897,10 +963,31 @@ model:
                 generative_analysis._load_multisubject_analysis_context(resolved)
 
     def test_load_animal_session_history_uses_snapshot_without_raw_nwb_loading(self):
-        resolved = resolve_model_run(
-            self.example_run_dir,
+        # Constructed directly rather than via resolve_model_run(): everything
+        # downstream (load_mice_from_database, _build_session_history_dataframe,
+        # _align_snapshot_df_with_ignore_policy) is mocked below, so the only
+        # thing this test needs from resolution is a populated ResolvedModelRun
+        # -- same pattern the adjacent
+        # test_load_animal_session_history_multisubject_uses_trained_subject_ids
+        # already uses.
+        resolved = generative_analysis.ResolvedModelRun(
+            model_dir="/tmp/model",
+            inputs_path="/tmp/model/inputs.yaml",
+            outputs_dir="/tmp/model/outputs",
+            model_type="disrnn",
             split="train",
             checkpoint_policy="best_eval",
+            checkpoint_step=24000,
+            checkpoint_label="step_24000",
+            params_path="/tmp/model/outputs/checkpoints/step_24000/params.json",
+            config_path="/tmp/model/outputs/disrnn_config.json",
+            seed=7,
+            multisubject=False,
+            mature_only=True,
+            ignore_policy="exclude",
+            curricula=["Uncoupled Baiting"],
+            features=None,
+            selection={"subject_ids": ["m1"], "min_sessions": 10, "heldout_every_n": 5},
         )
 
         class _FakeFrameSeries:
@@ -913,6 +1000,12 @@ model:
         class _FakeSnapshotFrame:
             def __init__(self, data):
                 self._data = {key: list(values) for key, values in data.items()}
+
+            @property
+            def columns(self):
+                # Needed since generative_analysis._fill_offcurriculum_curriculum_name
+                # started checking "curriculum_name" not in snapshot_df.columns.
+                return list(self._data.keys())
 
             def copy(self):
                 return _FakeSnapshotFrame(self._data)
@@ -1023,6 +1116,12 @@ model:
         class _FakeSnapshotFrame:
             def __init__(self, data):
                 self._data = {key: list(values) for key, values in data.items()}
+
+            @property
+            def columns(self):
+                # Needed since generative_analysis._fill_offcurriculum_curriculum_name
+                # started checking "curriculum_name" not in snapshot_df.columns.
+                return list(self._data.keys())
 
             def copy(self):
                 return _FakeSnapshotFrame(self._data)
@@ -1150,6 +1249,12 @@ model:
         class _FakeSnapshotFrame:
             def __init__(self, data):
                 self._data = {key: list(values) for key, values in data.items()}
+
+            @property
+            def columns(self):
+                # Needed since generative_analysis._fill_offcurriculum_curriculum_name
+                # started checking "curriculum_name" not in snapshot_df.columns.
+                return list(self._data.keys())
 
             def copy(self):
                 return _FakeSnapshotFrame(self._data)
