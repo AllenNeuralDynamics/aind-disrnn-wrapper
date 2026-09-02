@@ -1,68 +1,43 @@
 """Environment-variable resolution for the ``BFM_*`` prefix.
 
-The project renamed from ``disrnn`` to ``behavior-fm`` (ADR-0007 in the
-dispatcher), and the env-var prefix ``DISRNN_*`` renames to ``BFM_*`` with it.
+The project renamed from ``disrnn`` to ``dynamic-foraging-bfm`` (ADR-0007 in the
+dispatcher), and the env-var prefix ``DISRNN_*`` renamed to ``BFM_*`` with it.
 The prefix is a contract that crosses the repo boundary — the dispatcher writes
-these variables, the wrapper reads them — so it migrates expand-contract rather
+these variables, the wrapper reads them — so it migrated expand-contract rather
 than as a synchronised two-repo deploy:
 
-1. **expand** (this module): the wrapper accepts ``BFM_*`` and still honours
-   ``DISRNN_*``;
-2. **migrate**: the dispatcher switches to emitting ``BFM_*``;
-3. **contract**: the wrapper drops the legacy read.
+1. **expand**: the wrapper accepted ``BFM_*`` and still honoured ``DISRNN_*``;
+2. **migrate**: the dispatcher switched to emitting ``BFM_*``;
+3. **contract** (this module's current state): the legacy read is gone.
 
-Until step 3, a job launched from an older dispatcher SHA keeps working: every
-read goes through :func:`get_env`, which prefers ``BFM_*`` and falls back to the
-matching ``DISRNN_*`` with a one-time deprecation warning naming the variable.
+Step 3 landed only after the migration was verified end to end on Beaker — all
+``BFM_META_*`` values reaching W&B through this resolver, with zero deprecation
+warnings — and after confirming no in-flight or resumable job was pinned to a
+pre-migration dispatcher SHA. A job launched from a dispatcher older than that
+migration now silently gets defaults instead of its provenance block and output
+directory, which is why the fallback outlived the migration rather than being
+dropped alongside it.
+
+:func:`get_env` remains the single choke point for reading these variables, so
+the guard test can keep asserting that no scattered ``os.environ`` lookup
+reintroduces the legacy prefix.
 """
 
 from __future__ import annotations
 
 import os
-import warnings
 
 PREFIX = "BFM_"
-LEGACY_PREFIX = "DISRNN_"
-
-# Variables whose legacy name has already been reported, so a read in a loop
-# warns once rather than once per call.
-_warned: set[str] = set()
-
-
-def legacy_name(name: str) -> str:
-    """Return the ``DISRNN_*`` spelling of a ``BFM_*`` variable name."""
-    if not name.startswith(PREFIX):
-        raise ValueError(f"expected a {PREFIX}* variable name, got {name!r}")
-    return LEGACY_PREFIX + name[len(PREFIX) :]
 
 
 def get_env(name: str, default: str | None = None) -> str | None:
-    """Read ``name``, falling back to its legacy ``DISRNN_*`` spelling.
+    """Read a ``BFM_*`` environment variable.
 
-    ``BFM_*`` wins when both are set. Reading the legacy name emits a
-    ``DeprecationWarning`` once per variable per process. An empty string is a
-    set value, not an absent one — callers that treat "" as unset did so before
-    this indirection too.
+    An empty string is a set value, not an absent one — callers that treat ""
+    as unset did so before this indirection too.
     """
+    if not name.startswith(PREFIX):
+        raise ValueError(f"expected a {PREFIX}* variable name, got {name!r}")
+
     value = os.environ.get(name)
-    if value is not None:
-        return value
-
-    legacy = legacy_name(name)
-    value = os.environ.get(legacy)
-    if value is not None:
-        if legacy not in _warned:
-            _warned.add(legacy)
-            warnings.warn(
-                f"{legacy} is deprecated and will be removed; use {name} instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-        return value
-
-    return default
-
-
-def _reset_deprecation_warnings() -> None:
-    """Clear the once-per-variable warning memo. For tests."""
-    _warned.clear()
+    return default if value is None else value

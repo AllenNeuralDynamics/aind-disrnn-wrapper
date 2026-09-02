@@ -304,7 +304,7 @@ Two resume mechanisms exist; they compose:
   `n_steps` to get all cells to an interpretable point fast, then relaunch a
   *continuation* experiment at a larger `n_steps` that **continues each cell
   from the short run's checkpoint** instead of restarting. Set
-  **`model.training.restore_from_run_id`** (or env `DISRNN_RESTORE_FROM_RUN_ID`
+  **`model.training.restore_from_run_id`** (or env `BFM_RESTORE_FROM_RUN_ID`
   — env wins, so a sweep can pass a per-cell id) to the source run's W&B id.
   Before training, `run_hpc.py` downloads that run's `training-output` artifact
   (`<mtype>-output-<run_id>`; `mtype` ∈ {`disrnn`,`gru`}) into this run's
