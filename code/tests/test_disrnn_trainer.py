@@ -968,7 +968,12 @@ class TestDisrnnTrainer(unittest.TestCase):
         )
 
         self.assertEqual(config.obs_size, 2)
-        self.assertEqual(config.x_names, ["prev choice", "prev reward"])
+        # Upstream MultisubjectDisRnnConfig.__post_init__ prepends "Subject ID"
+        # to x_names by design; obs_size counts the behavioural observations
+        # only, so the two legitimately differ in length.
+        self.assertEqual(
+            config.x_names, ["Subject ID", "prev choice", "prev reward"]
+        )
         self.assertEqual(config.session_encoding_type, "fourier")
         self.assertEqual(config.session_integration_type, "pre_mlp")
         self.assertEqual(config.session_fourier_k, 3)
@@ -1088,7 +1093,12 @@ class TestDisrnnTrainer(unittest.TestCase):
         )
 
         self.assertEqual(config.obs_size, 2)
-        self.assertEqual(config.x_names, ["prev choice", "prev reward"])
+        # Upstream MultisubjectDisRnnConfig.__post_init__ prepends "Subject ID"
+        # to x_names by design; obs_size counts the behavioural observations
+        # only, so the two legitimately differ in length.
+        self.assertEqual(
+            config.x_names, ["Subject ID", "prev choice", "prev reward"]
+        )
 
     def test_multisubject_session_conditioning_resolves_default_curriculum_steps(self):
         multisubject_bundle = self._make_multisubject_bundle()
@@ -1418,11 +1428,21 @@ class TestDisrnnTrainer(unittest.TestCase):
             choice_net_subj_penalty=1e-3,
         )
 
+        # MultisubjectDisRnn is an hk.Module, so it can only be constructed
+        # inside an hk.transform; building it bare raises haiku's own error
+        # before our validation runs. Transform it so the ValueError from
+        # make_subject_embedding_initializer is what actually surfaces.
+        import haiku as hk
+        import jax
+
+        def _build():
+            MultisubjectDisRnn(config)
+
         with self.assertRaisesRegex(
             ValueError,
             "Unsupported subject_embedding_init",
         ):
-            MultisubjectDisRnn(config)
+            hk.transform(_build).init(jax.random.PRNGKey(0))
 
     # --- Phase A regression guards (bug fixes) --------------------------------
 

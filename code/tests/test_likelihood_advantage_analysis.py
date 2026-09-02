@@ -361,11 +361,15 @@ class TestLikelihoodAdvantageAnalysis(unittest.TestCase):
 
             def perform_closed_loop_multi_session(self, choice_sessions, reward_sessions):
                 del reward_sessions
+                # 3 trials, not 2: with 2 trials the history is 2x(n_trials+1)
+                # and the action axis is indistinguishable from the trial axis,
+                # so alignment inference is ambiguous. Q history is
+                # 2 x (n_trials + 1) -- a pre-trial column plus one per trial.
                 self.q_value_history = [
                     np.array(
                         [
-                            [1.0, 2.0, 99.0],
-                            [3.0, 4.0, 99.0],
+                            [1.0, 2.0, 3.0, 99.0],
+                            [4.0, 5.0, 6.0, 99.0],
                         ]
                     )
                     for _ in choice_sessions
@@ -373,8 +377,8 @@ class TestLikelihoodAdvantageAnalysis(unittest.TestCase):
                 return [
                     np.array(
                         [
-                            [0.8, 0.25],
-                            [0.2, 0.75],
+                            [0.8, 0.25, 0.6],
+                            [0.2, 0.75, 0.4],
                         ]
                     )
                     for _ in choice_sessions
@@ -388,8 +392,8 @@ class TestLikelihoodAdvantageAnalysis(unittest.TestCase):
                     agent_class_name="FakeBaselineAgent",
                     agent_kwargs={},
                     fitted_params={"alpha": 0.2},
-                    choice_sessions=[np.array([0, 1])],
-                    reward_sessions=[np.array([1.0, 0.0])],
+                    choice_sessions=[np.array([0, 1, 0])],
+                    reward_sessions=[np.array([1.0, 0.0, 1.0])],
                     seed=0,
                     require_q_values=True,
                 )
@@ -399,7 +403,9 @@ class TestLikelihoodAdvantageAnalysis(unittest.TestCase):
         self.assertEqual(len(q_value_sessions), 1)
         self.assertEqual(q_alignment["q_source"], "agent_exposed_history")
         self.assertEqual(q_alignment["alignment"], "prepost_first_n")
-        self.assertTrue(np.allclose(q_value_sessions[0], [[1.0, 2.0], [3.0, 4.0]]))
+        self.assertTrue(
+            np.allclose(q_value_sessions[0], [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+        )
 
     def test_exposed_q_history_wins_over_manual_forager_fallback(self):
         class ForagerQLearning:
@@ -412,12 +418,16 @@ class TestLikelihoodAdvantageAnalysis(unittest.TestCase):
 
             def perform_closed_loop_multi_session(self, choice_sessions, reward_sessions):
                 del reward_sessions
+                # 3 trials, not 2: a 2x2 history makes the action axis
+                # indistinguishable from the trial axis, so orientation
+                # inference is ambiguous. This test is about which recovery
+                # path wins, not about alignment.
                 self.q_value_history = [
-                    np.array([[0.5, 0.6], [0.5, 0.4]])
+                    np.array([[0.5, 0.6, 0.7], [0.5, 0.4, 0.3]])
                     for _ in choice_sessions
                 ]
                 return [
-                    np.array([[0.5, 0.6], [0.5, 0.4]])
+                    np.array([[0.5, 0.6, 0.7], [0.5, 0.4, 0.3]])
                     for _ in choice_sessions
                 ]
 
@@ -436,15 +446,17 @@ class TestLikelihoodAdvantageAnalysis(unittest.TestCase):
                         "choice_kernel": "none",
                     },
                     fitted_params={"learn_rate": 0.1},
-                    choice_sessions=[np.array([0, 1])],
-                    reward_sessions=[np.array([1.0, 0.0])],
+                    choice_sessions=[np.array([0, 1, 0])],
+                    reward_sessions=[np.array([1.0, 0.0, 1.0])],
                     seed=0,
                     require_q_values=True,
                 )
             )
 
         self.assertEqual(q_alignment["q_source"], "agent_exposed_history")
-        self.assertTrue(np.allclose(q_value_sessions[0], [[0.5, 0.6], [0.5, 0.4]]))
+        self.assertTrue(
+            np.allclose(q_value_sessions[0], [[0.5, 0.6, 0.7], [0.5, 0.4, 0.3]])
+        )
 
     def test_manual_forager_q_learning_fallback_produces_policy_time_q_values(self):
         agent_kwargs = {

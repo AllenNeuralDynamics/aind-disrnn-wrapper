@@ -684,12 +684,12 @@ class TestHeldoutSubjectFinetuning(unittest.TestCase):
         self.assertIn("checkpoint/final/train_likelihood", fake_run.summary)
         self.assertFalse(fake_run.finished)
 
-    # --- run_capsule auto-hook gating + config synthesis ---------------------
+    # --- training_runner auto-hook gating + config synthesis -----------------
 
     def test_run_capsule_auto_finetune_gating_and_synthesis(self):
-        # Test C: the run_capsule helpers gate on the config flag and synthesize a
+        # Test C: the training_runner helpers gate on the config flag and synthesize a
         # finetune config pointing at /results with the heldout namespace.
-        import run_capsule
+        import training_runner
 
         def _cfg(enabled):
             return OmegaConf.create(
@@ -709,10 +709,10 @@ class TestHeldoutSubjectFinetuning(unittest.TestCase):
                 }
             )
 
-        self.assertTrue(run_capsule._auto_heldout_finetune_enabled(_cfg(True)))
-        self.assertFalse(run_capsule._auto_heldout_finetune_enabled(_cfg(False)))
+        self.assertTrue(training_runner._auto_heldout_finetune_enabled(_cfg(True)))
+        self.assertFalse(training_runner._auto_heldout_finetune_enabled(_cfg(False)))
         self.assertFalse(
-            run_capsule._auto_heldout_finetune_enabled(
+            training_runner._auto_heldout_finetune_enabled(
                 OmegaConf.create({"model": {"type": "gru", "training": {}}})
             )
         )
@@ -727,9 +727,9 @@ class TestHeldoutSubjectFinetuning(unittest.TestCase):
 
         fake_run = _FakeWandbRun(start_step=200)
         with mock.patch.object(
-            run_capsule, "run_heldout_subject_finetuning_from_config", _fake_finetune
+            training_runner, "run_heldout_subject_finetuning_from_config", _fake_finetune
         ):
-            result = run_capsule._run_auto_heldout_finetune(
+            result = training_runner._run_auto_heldout_finetune(
                 _cfg(True), model_type="gru", wandb_run=fake_run
             )
 

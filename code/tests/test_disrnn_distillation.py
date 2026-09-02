@@ -343,13 +343,18 @@ class TestDisrnnDistillation(unittest.TestCase):
             }
         )
 
+        # build_teacher_ensemble writes distillation_manifest.json into
+        # output_dir and assumes it exists -- in production the trainer's
+        # __init__ has already mkdir'd self.output_dir. Mirror that here.
+        ensemble_dir = self.root_dir / "multisubject_ensemble"
+        ensemble_dir.mkdir(parents=True, exist_ok=True)
         ensemble = build_teacher_ensemble(
             distillation=distillation_config,
             dataset=student_bundle.extras["dataset"],
             dataset_train=student_bundle.train_set,
             dataset_eval=student_bundle.eval_set,
             metadata=student_bundle.metadata,
-            output_dir=self.root_dir / "multisubject_ensemble",
+            output_dir=ensemble_dir,
             expected_output_size=2,
         )
 

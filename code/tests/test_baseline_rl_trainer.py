@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import tempfile
 import types
 import unittest
@@ -29,6 +30,10 @@ class TestBaselineRLTrainer(unittest.TestCase):
 
     def setUp(self):
         """Set up test fixtures."""
+        # BaselineRLTrainer defaults output_dir to the Code Ocean path
+        # /results/outputs and mkdir()s it on construction, which fails off
+        # capsule. Every trainer built here gets a temp dir instead.
+        self.output_dir = Path(tempfile.mkdtemp(prefix="baseline_rl_trainer_test_"))
         self.loader = SyntheticCognitiveAgents(
             task={
                 "type": "random_walk",
@@ -71,6 +76,9 @@ class TestBaselineRLTrainer(unittest.TestCase):
         self.bundle = self.loader.load()
         self.multisubject_bundle = self._make_multisubject_bundle()
         self.single_subject_grouped_bundle = self._make_single_subject_grouped_bundle()
+
+    def tearDown(self):
+        shutil.rmtree(self.output_dir, ignore_errors=True)
 
     def _make_multisubject_bundle(self) -> DatasetBundle:
         raw_df = self.bundle.raw.copy()
@@ -179,6 +187,7 @@ class TestBaselineRLTrainer(unittest.TestCase):
                 "action_selection": "softmax",
             },
             seed=42,
+            output_dir=str(self.output_dir),
         )
         self.assertEqual(trainer.agent_class, "ForagerQLearning")
         self.assertEqual(trainer.agent_kwargs["number_of_learning_rate"], 2)
@@ -383,6 +392,7 @@ class TestBaselineRLTrainer(unittest.TestCase):
                 "action_selection": "softmax",
             },
             seed=42,
+            output_dir=str(self.output_dir),
         )
 
         # Create simple test case
@@ -429,8 +439,8 @@ class TestBaselineRLTrainer(unittest.TestCase):
                         SessionContainer(
                             np.array(
                                 [
-                                    [0.4, 0.5],
-                                    [0.2, 0.3],
+                                    [0.4, 0.5, 0.6],
+                                    [0.2, 0.3, 0.4],
                                 ]
                             )
                         ),
@@ -448,8 +458,8 @@ class TestBaselineRLTrainer(unittest.TestCase):
                 ),
                 np.array(
                     [
-                        [0.55, 0.45],
-                        [0.45, 0.55],
+                        [0.55, 0.45, 0.5],
+                        [0.45, 0.55, 0.5],
                     ]
                 ),
             ],
@@ -459,7 +469,14 @@ class TestBaselineRLTrainer(unittest.TestCase):
         assert histories is not None
         self.assertEqual(len(histories), 2)
         self.assertTrue(np.allclose(histories[0], np.array([[0.1, 0.2, 0.3], [0.0, 0.1, 0.2]])))
-        self.assertTrue(np.allclose(histories[1], np.array([[0.4, 0.5], [0.2, 0.3]])))
+        # 3 trials, not 2: a square (2, 2) session is genuinely ambiguous —
+        # _align_two_action_history resolves ties as (trials, actions) and
+        # transposes, while this fixture supplies (actions, trials). This test
+        # is about the nested-state lookup path, not orientation, so keep the
+        # shape unambiguous.
+        self.assertTrue(
+            np.allclose(histories[1], np.array([[0.4, 0.5, 0.6], [0.2, 0.3, 0.4]]))
+        )
 
     def test_multiple_agent_types(self):
         """Test that trainer works with different agent types."""
@@ -473,6 +490,7 @@ class TestBaselineRLTrainer(unittest.TestCase):
                 "action_selection": "softmax",
             },
             seed=42,
+            output_dir=str(self.output_dir),
         )
         self.assertEqual(trainer_ql.agent_class, "ForagerQLearning")
 
@@ -484,6 +502,7 @@ class TestBaselineRLTrainer(unittest.TestCase):
                 "choice_kernel": "none",
             },
             seed=42,
+            output_dir=str(self.output_dir),
         )
         self.assertEqual(trainer_lc.agent_class, "ForagerLossCounting")
 
@@ -492,6 +511,7 @@ class TestBaselineRLTrainer(unittest.TestCase):
             agent_class="ForagerCompareThreshold",
             agent_kwargs={"choice_kernel": "none"},
             seed=42,
+            output_dir=str(self.output_dir),
         )
         self.assertEqual(trainer_ct.agent_class, "ForagerCompareThreshold")
 
@@ -867,6 +887,7 @@ class TestBaselineRLTrainer(unittest.TestCase):
                 "polish": False,
             },
             seed=42,
+            output_dir=str(self.output_dir),
         )
 
         effective_kwargs = trainer._effective_multisubject_de_kwargs()
@@ -888,6 +909,7 @@ class TestBaselineRLTrainer(unittest.TestCase):
                 "action_selection": "softmax",
             },
             seed=42,
+            output_dir=str(self.output_dir),
         )
 
         subject_metrics_df = pd.DataFrame(
@@ -1191,7 +1213,11 @@ class TestBaselineRLTrainer(unittest.TestCase):
             )
 
             with mock.patch(
-                "utils.baseline_rl_evaluation.load_mice_from_database",
+                # Patch the canonical module, not the utils shim: the shim
+                # copies names once at import via globals().update(), so
+                # rebinding its copy leaves the real global untouched and the
+                # actual database call runs.
+                "evaluation.baseline_rl_evaluation.load_mice_from_database",
                 return_value=(df_test, [123]),
             ), mock.patch.object(
                 generative_model,
@@ -1284,13 +1310,17 @@ class TestBaselineRLTrainer(unittest.TestCase):
             )
 
             with mock.patch(
-                "utils.baseline_rl_evaluation.load_mice_from_database",
+                # Patch the canonical module, not the utils shim: the shim
+                # copies names once at import via globals().update(), so
+                # rebinding its copy leaves the real global untouched and the
+                # actual database call runs.
+                "evaluation.baseline_rl_evaluation.load_mice_from_database",
                 return_value=(df_test, [123, 456]),
             ) as mock_loader, mock.patch.object(
                 generative_model,
                 "ForagerQLearning",
                 FakeAgent,
-            ), self.assertLogs("utils.baseline_rl_evaluation", level="INFO") as cm:
+            ), self.assertLogs("evaluation.baseline_rl_evaluation", level="INFO") as cm:
                 summary = evaluate_baseline_rl_on_heldout_subjects(hydra_config)
 
             self.assertIsNotNone(summary)
