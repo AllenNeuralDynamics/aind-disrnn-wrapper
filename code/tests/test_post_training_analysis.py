@@ -685,6 +685,10 @@ seed: 7
                 def __init__(self, **kwargs):
                     calls.append(("Coupled", kwargs))
 
+            class RandomWalkTask:
+                def __init__(self, **kwargs):
+                    calls.append(("RandomWalk", kwargs))
+
         real_import = generative_analysis.importlib.import_module
         with mock.patch.object(
             generative_analysis.importlib,
@@ -709,10 +713,27 @@ seed: 7
                 )
                 self.assertEqual(calls[-1][0], family, msg=f"{name!r} family")
                 self.assertEqual(calls[-1][1].get("reward_baiting"), baiting, msg=f"{name!r} baiting")
-            # A non-block-task family still raises (don't silently mis-map it).
+
+            # Random Walk is a distinct family (reward probabilities diffuse
+            # rather than switching in blocks -> RandomWalkTask, no
+            # reward_baiting kwarg), substring-matched so version variants
+            # resolve too, same as the Uncoupled/Coupled families above.
+            for name in ("Random Walk", "RandomWalk2p1Curriculum"):
+                calls.clear()
+                generative_analysis._build_curriculum_matched_task(
+                    curriculum_name=name, n_trials=5, seed=1
+                )
+                self.assertEqual(calls[-1][0], "RandomWalk", msg=f"{name!r} family")
+                self.assertNotIn("reward_baiting", calls[-1][1], msg=f"{name!r} kwargs")
+
+            # A genuinely unrecognized family still raises (don't silently
+            # mis-map it). NOTE: this name must not contain "uncoupled",
+            # "coupled", or "randomwalk" as a normalized substring, or it will
+            # be legitimately caught by the matching above -- this is not a
+            # place to test bad regex escaping.
             with self.assertRaises(ValueError):
                 generative_analysis._build_curriculum_matched_task(
-                    curriculum_name="RandomWalkFooCurriculum", n_trials=5, seed=1
+                    curriculum_name="TotallyUnrecognizedCurriculumXYZ", n_trials=5, seed=1
                 )
 
     def test_partition_filter_matches_animal_on_source_namespace(self):
@@ -995,7 +1016,18 @@ model:
                 self._values = list(values)
 
             def map(self, func):
-                return [func(value) for value in self._values]
+                # A numpy array, not a plain list: generative_analysis's real
+                # (pandas-based) callers use Series.map(), whose result supports
+                # .any() -- _fill_offcurriculum_curriculum_name relies on that.
+                # A list would AttributeError there. Confirmed sufficient (not
+                # just necessary) for every test using this fake: their
+                # curriculum_name fixtures are always a real, non-missing value,
+                # so _fill_offcurriculum_curriculum_name's early-return fires
+                # right after this .any() and the deeper pandas-groupby/.where
+                # path below it is never reached by these fakes -- see
+                # AllenNeuralDynamics/aind-disrnn-wrapper#69 for the case where a
+                # future test exercises that path and needs more than this.
+                return np.array([func(value) for value in self._values])
 
         class _FakeSnapshotFrame:
             def __init__(self, data):
@@ -1111,7 +1143,18 @@ model:
                 self._values = list(values)
 
             def map(self, func):
-                return [func(value) for value in self._values]
+                # A numpy array, not a plain list: generative_analysis's real
+                # (pandas-based) callers use Series.map(), whose result supports
+                # .any() -- _fill_offcurriculum_curriculum_name relies on that.
+                # A list would AttributeError there. Confirmed sufficient (not
+                # just necessary) for every test using this fake: their
+                # curriculum_name fixtures are always a real, non-missing value,
+                # so _fill_offcurriculum_curriculum_name's early-return fires
+                # right after this .any() and the deeper pandas-groupby/.where
+                # path below it is never reached by these fakes -- see
+                # AllenNeuralDynamics/aind-disrnn-wrapper#69 for the case where a
+                # future test exercises that path and needs more than this.
+                return np.array([func(value) for value in self._values])
 
         class _FakeSnapshotFrame:
             def __init__(self, data):
@@ -1207,8 +1250,12 @@ model:
                 "animal_response",
                 "earned_reward",
                 "curriculum_name",
+                # "task" is needed to rebuild the pseudo-curriculum for
+                # off-curriculum mice -- see _fill_offcurriculum_curriculum_name.
+                "task",
                 "current_stage_actual",
             ],
+            snapshot=None,
         )
         build_history_mock.assert_called_once()
         self.assertIs(session_history, built_history)
@@ -1244,7 +1291,18 @@ model:
                 self._values = list(values)
 
             def map(self, func):
-                return [func(value) for value in self._values]
+                # A numpy array, not a plain list: generative_analysis's real
+                # (pandas-based) callers use Series.map(), whose result supports
+                # .any() -- _fill_offcurriculum_curriculum_name relies on that.
+                # A list would AttributeError there. Confirmed sufficient (not
+                # just necessary) for every test using this fake: their
+                # curriculum_name fixtures are always a real, non-missing value,
+                # so _fill_offcurriculum_curriculum_name's early-return fires
+                # right after this .any() and the deeper pandas-groupby/.where
+                # path below it is never reached by these fakes -- see
+                # AllenNeuralDynamics/aind-disrnn-wrapper#69 for the case where a
+                # future test exercises that path and needs more than this.
+                return np.array([func(value) for value in self._values])
 
         class _FakeSnapshotFrame:
             def __init__(self, data):
