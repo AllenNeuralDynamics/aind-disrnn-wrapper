@@ -19,15 +19,20 @@ which module is targeted). This is purely a speed optimization with zero
 effect on what any test asserts, so every step is best-effort and non-fatal:
 several test files (post-training-analysis, data-loader unit tests, ...) need
 no JAX training stack at all and must stay importable/runnable whether jax is
-missing, an incompatible version rejects one of these config keys, or the
-cache directory can't be created/written.
+missing, an incompatible version rejects one of these config keys, the cache
+directory can't be created/written, or `import jax` itself raises (a
+jax/jaxlib version mismatch typically surfaces as RuntimeError or OSError at
+import time, not ImportError, so that alone isn't enough to catch it).
 """
 
 import os
 
 try:
     import jax
-except ImportError:
+except Exception:
+    # Anything from a plain missing package to a jax/jaxlib version mismatch
+    # (RuntimeError, OSError, ...) -- none of it should be able to break
+    # importing tests for files that need no JAX stack at all.
     jax = None
 
 if jax is not None:
