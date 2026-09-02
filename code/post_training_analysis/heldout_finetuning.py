@@ -17,7 +17,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-import aind_disrnn_utils.data_loader as dl
+import data_loaders.disrnn_dataset as dl
 import jax
 import matplotlib.pyplot as plt
 import numpy as np

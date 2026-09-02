@@ -39,7 +39,8 @@ saved run dir ──► resolve_model_run(model_dir, split, checkpoint_policy)
   canonical loader that turns a run directory into a `ResolvedModelRun`.
 
 Everything is **JAX/Haiku** on the upstream `disentangled_rnns` library and the
-`aind_disrnn_utils` data-loader package.
+in-repo `data_loaders.disrnn_dataset` builder (vendored from the retired
+`aind_disrnn_utils` package).
 
 ---
 

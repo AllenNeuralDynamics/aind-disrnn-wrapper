@@ -11,7 +11,7 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
-import aind_disrnn_utils.data_loader as dl
+import data_loaders.disrnn_dataset as dl
 from disentangled_rnns.library import disrnn, rnn_utils
 
 from evaluation.plotting import (

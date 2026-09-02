@@ -18,7 +18,7 @@ import wandb
 from matplotlib.lines import Line2D
 from omegaconf import DictConfig, OmegaConf
 
-import aind_disrnn_utils.data_loader as dl
+import data_loaders.disrnn_dataset as dl
 import types
 from disentangled_rnns.library import disrnn, multisubject_disrnn, plotting, rnn_utils
 
