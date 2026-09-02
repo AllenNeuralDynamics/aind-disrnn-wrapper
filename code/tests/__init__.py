@@ -15,24 +15,36 @@ the user's cache dir so it persists across invocations on the same machine.
 
 Runs once, before any test submodule is imported (this __init__.py executes
 first for every `python -m unittest tests.test_X` invocation, regardless of
-which module is targeted). Wrapped in try/except ImportError: several test
-files (post-training-analysis, data-loader unit tests, ...) need no JAX
-training stack at all and must stay importable/runnable without it installed.
+which module is targeted). This is purely a speed optimization with zero
+effect on what any test asserts, so every step is best-effort and non-fatal:
+several test files (post-training-analysis, data-loader unit tests, ...) need
+no JAX training stack at all and must stay importable/runnable whether jax is
+missing, an incompatible version rejects one of these config keys, or the
+cache directory can't be created/written.
 """
 
 import os
 
 try:
     import jax
-
-    _cache_dir = os.environ.get(
-        "JAX_COMPILATION_CACHE_DIR",
-        os.path.expanduser("~/.cache/aind-disrnn-wrapper/jax"),
-    )
-    jax.config.update("jax_compilation_cache_dir", _cache_dir)
-    # Cache every compile, even sub-second ones. All our real compiles are
-    # multi-second, so this mainly guards against a future fast test being
-    # silently excluded by JAX's default minimum-compile-time threshold.
-    jax.config.update("jax_persistent_cache_min_compile_time_secs", 0)
 except ImportError:
-    pass
+    jax = None
+
+if jax is not None:
+    try:
+        _cache_dir = os.environ.get(
+            "JAX_COMPILATION_CACHE_DIR",
+            os.path.expanduser("~/.cache/aind-disrnn-wrapper/jax"),
+        )
+        os.makedirs(_cache_dir, exist_ok=True)
+        jax.config.update("jax_compilation_cache_dir", _cache_dir)
+        # Cache every compile, even sub-second ones. All our real compiles
+        # are multi-second, so this mainly guards against a future fast test
+        # being silently excluded by JAX's default minimum-compile-time
+        # threshold.
+        jax.config.update("jax_persistent_cache_min_compile_time_secs", 0)
+    except Exception:
+        # Config-key or directory failures (older/newer JAX, unwritable
+        # cache dir, ...) must never break importing the tests package --
+        # tests just run without the cache, at the pre-#68 speed.
+        pass
