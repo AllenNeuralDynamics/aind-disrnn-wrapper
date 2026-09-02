@@ -1213,7 +1213,11 @@ class TestBaselineRLTrainer(unittest.TestCase):
             )
 
             with mock.patch(
-                "utils.baseline_rl_evaluation.load_mice_from_database",
+                # Patch the canonical module, not the utils shim: the shim
+                # copies names once at import via globals().update(), so
+                # rebinding its copy leaves the real global untouched and the
+                # actual database call runs.
+                "evaluation.baseline_rl_evaluation.load_mice_from_database",
                 return_value=(df_test, [123]),
             ), mock.patch.object(
                 generative_model,
@@ -1306,13 +1310,17 @@ class TestBaselineRLTrainer(unittest.TestCase):
             )
 
             with mock.patch(
-                "utils.baseline_rl_evaluation.load_mice_from_database",
+                # Patch the canonical module, not the utils shim: the shim
+                # copies names once at import via globals().update(), so
+                # rebinding its copy leaves the real global untouched and the
+                # actual database call runs.
+                "evaluation.baseline_rl_evaluation.load_mice_from_database",
                 return_value=(df_test, [123, 456]),
             ) as mock_loader, mock.patch.object(
                 generative_model,
                 "ForagerQLearning",
                 FakeAgent,
-            ), self.assertLogs("utils.baseline_rl_evaluation", level="INFO") as cm:
+            ), self.assertLogs("evaluation.baseline_rl_evaluation", level="INFO") as cm:
                 summary = evaluate_baseline_rl_on_heldout_subjects(hydra_config)
 
             self.assertIsNotNone(summary)
