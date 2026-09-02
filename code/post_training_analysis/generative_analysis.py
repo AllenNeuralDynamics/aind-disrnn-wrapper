@@ -8446,6 +8446,16 @@ def _first_non_null(series_like: Any) -> Any:
 
 
 def _series_like_to_list(rows: Any, column_name: str) -> list[Any] | None:
+    # `rows` is DataFrame-shaped (rows[column_name] is a column) for most
+    # callers, but _align_multisubject_session_history_to_training_ids always
+    # returns a plain list[dict] of row records regardless of its input type
+    # (see its own `aligned_records: list[dict[str, Any]]`), which rows[...]
+    # can't index. Handle that shape explicitly rather than silently returning
+    # None -- the caller (load_animal_session_history) has no fallback for
+    # resolved_session_ids, so this previously left it unset for every
+    # multisubject run that goes through session-context alignment.
+    if isinstance(rows, list) and all(isinstance(row, Mapping) for row in rows):
+        return [row.get(column_name) for row in rows]
     try:
         column = rows[column_name]
     except (KeyError, TypeError, AttributeError):
