@@ -23,12 +23,72 @@ from post_training_analysis.generative_analysis import (
 
 
 class TestPostTrainingAnalysis(unittest.TestCase):
-    def setUp(self) -> None:
-        self.example_run_dir = (
-            Path(__file__).resolve().parents[1]
-            / "ex_model_dir-train10_test3-disrnn-260324"
-            / "9"
+    def _write_resolvable_disrnn_run_dir(self, root: Path) -> Path:
+        """Build a single-subject disRNN run dir that exercises checkpoint-policy
+        selection end to end: multiple candidates per policy, with the winner
+        NOT the first or last one listed, so this catches an argmax-by-position
+        regression rather than an argmax-by-value one.
+
+        Replaces a real captured run dir (`ex_model_dir-train10_test3-disrnn-260324`)
+        that was deliberately deleted 2026-05-21 when run-directory handling moved
+        to Hydra runtime output (see AllenNeuralDynamics/aind-disrnn-wrapper#68);
+        the 4 tests depending on it were never updated and errored on every run
+        since. The specific step numbers (24000 / 6000 / 30000) are kept only
+        because the tests that consume them already hard-code those values.
+        """
+        model_dir = root / "disrnn_run"
+        outputs_dir = model_dir / "outputs"
+        checkpoints_dir = outputs_dir / "checkpoints"
+        checkpoints_dir.mkdir(parents=True, exist_ok=True)
+
+        (model_dir / "inputs.yaml").write_text(
+            """
+data:
+  subject_ids:
+  - m1
+  curricula:
+  - Uncoupled Baiting
+  multisubject: false
+  mature_only: true
+  ignore_policy: exclude
+model:
+  type: disrnn
+  architecture:
+    multisubject: false
+seed: 7
+"""
         )
+        (outputs_dir / "disrnn_config.json").write_text(json.dumps({"multisubject": False}))
+        (outputs_dir / "params.json").write_text(json.dumps({"step": 30000}))
+
+        # best_eval: max eval_likelihood must win at step 24000, not the first
+        # (8000) or last (16000) entry.
+        eval_checkpoints = [
+            {"step": 8000, "eval_likelihood": 0.55, "params_path": "outputs/checkpoints/step_8000/params.json"},
+            {"step": 24000, "eval_likelihood": 0.91, "params_path": "outputs/checkpoints/step_24000/params.json"},
+            {"step": 16000, "eval_likelihood": 0.70, "params_path": "outputs/checkpoints/step_16000/params.json"},
+        ]
+        (checkpoints_dir / "index.json").write_text(
+            json.dumps({"n_steps": 30000, "checkpoints": eval_checkpoints})
+        )
+
+        # best_heldout: max heldout_test_likelihood must win at step 6000, not
+        # the first (2000) or last (4000) entry.
+        heldout_checkpoints = [
+            {"step": 2000, "heldout_test_likelihood": 0.40, "params_path": "outputs/checkpoints/step_2000/params.json"},
+            {"step": 6000, "heldout_test_likelihood": 0.88, "params_path": "outputs/checkpoints/step_6000/params.json"},
+            {"step": 4000, "heldout_test_likelihood": 0.65, "params_path": "outputs/checkpoints/step_4000/params.json"},
+        ]
+        (outputs_dir / "output_summary.json").write_text(
+            json.dumps({"heldout_test_checkpoints": heldout_checkpoints})
+        )
+
+        for step in (8000, 24000, 16000, 2000, 6000, 4000):
+            step_dir = checkpoints_dir / f"step_{step}"
+            step_dir.mkdir(parents=True, exist_ok=True)
+            (step_dir / "params.json").write_text(json.dumps({"step": step}))
+
+        return model_dir
 
     def _write_multisubject_run_dir(
         self,
@@ -625,6 +685,10 @@ seed: 7
                 def __init__(self, **kwargs):
                     calls.append(("Coupled", kwargs))
 
+            class RandomWalkTask:
+                def __init__(self, **kwargs):
+                    calls.append(("RandomWalk", kwargs))
+
         real_import = generative_analysis.importlib.import_module
         with mock.patch.object(
             generative_analysis.importlib,
@@ -649,10 +713,27 @@ seed: 7
                 )
                 self.assertEqual(calls[-1][0], family, msg=f"{name!r} family")
                 self.assertEqual(calls[-1][1].get("reward_baiting"), baiting, msg=f"{name!r} baiting")
-            # A non-block-task family still raises (don't silently mis-map it).
+
+            # Random Walk is a distinct family (reward probabilities diffuse
+            # rather than switching in blocks -> RandomWalkTask, no
+            # reward_baiting kwarg), substring-matched so version variants
+            # resolve too, same as the Uncoupled/Coupled families above.
+            for name in ("Random Walk", "RandomWalk2p1Curriculum"):
+                calls.clear()
+                generative_analysis._build_curriculum_matched_task(
+                    curriculum_name=name, n_trials=5, seed=1
+                )
+                self.assertEqual(calls[-1][0], "RandomWalk", msg=f"{name!r} family")
+                self.assertNotIn("reward_baiting", calls[-1][1], msg=f"{name!r} kwargs")
+
+            # A genuinely unrecognized family still raises (don't silently
+            # mis-map it). NOTE: this name must not contain "uncoupled",
+            # "coupled", or "randomwalk" as a normalized substring, or it will
+            # be legitimately caught by the matching above -- this is not a
+            # place to test bad regex escaping.
             with self.assertRaises(ValueError):
                 generative_analysis._build_curriculum_matched_task(
-                    curriculum_name="RandomWalkFooCurriculum", n_trials=5, seed=1
+                    curriculum_name="TotallyUnrecognizedCurriculumXYZ", n_trials=5, seed=1
                 )
 
     def test_partition_filter_matches_animal_on_source_namespace(self):
@@ -709,41 +790,47 @@ model:
         self.assertEqual(parsed["model"]["training"]["n_steps"], 30000)
 
     def test_resolve_model_run_best_eval_uses_checkpoint_index(self):
-        resolved = resolve_model_run(
-            self.example_run_dir,
-            split="train",
-            checkpoint_policy="best_eval",
-        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            model_dir = self._write_resolvable_disrnn_run_dir(Path(tmpdir))
+            resolved = resolve_model_run(
+                model_dir,
+                split="train",
+                checkpoint_policy="best_eval",
+            )
 
-        self.assertEqual(resolved.model_type, "disrnn")
-        self.assertEqual(resolved.split, "train")
-        self.assertEqual(resolved.checkpoint_step, 24000)
-        self.assertEqual(resolved.selection["min_sessions"], 10)
-        self.assertEqual(resolved.selection["heldout_every_n"], 5)
-        self.assertTrue(resolved.params_path.endswith("step_24000/params.json"))
-        self.assertIsNone(resolved.fallback_reason)
+            self.assertEqual(resolved.model_type, "disrnn")
+            self.assertEqual(resolved.split, "train")
+            self.assertEqual(resolved.checkpoint_step, 24000)
+            self.assertEqual(resolved.selection["min_sessions"], 10)
+            self.assertEqual(resolved.selection["heldout_every_n"], 5)
+            self.assertTrue(resolved.params_path.endswith("step_24000/params.json"))
+            self.assertIsNone(resolved.fallback_reason)
 
     def test_resolve_model_run_best_heldout_uses_output_summary(self):
-        resolved = resolve_model_run(
-            self.example_run_dir,
-            split="train",
-            checkpoint_policy="best_heldout",
-        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            model_dir = self._write_resolvable_disrnn_run_dir(Path(tmpdir))
+            resolved = resolve_model_run(
+                model_dir,
+                split="train",
+                checkpoint_policy="best_heldout",
+            )
 
-        self.assertEqual(resolved.checkpoint_step, 6000)
-        self.assertTrue(resolved.params_path.endswith("step_6000/params.json"))
-        self.assertIsNone(resolved.fallback_reason)
+            self.assertEqual(resolved.checkpoint_step, 6000)
+            self.assertTrue(resolved.params_path.endswith("step_6000/params.json"))
+            self.assertIsNone(resolved.fallback_reason)
 
     def test_resolve_model_run_final_uses_top_level_params(self):
-        resolved = resolve_model_run(
-            self.example_run_dir,
-            split="train",
-            checkpoint_policy="final",
-        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            model_dir = self._write_resolvable_disrnn_run_dir(Path(tmpdir))
+            resolved = resolve_model_run(
+                model_dir,
+                split="train",
+                checkpoint_policy="final",
+            )
 
-        self.assertEqual(resolved.checkpoint_step, 30000)
-        self.assertTrue(resolved.params_path.endswith("outputs/params.json"))
-        self.assertEqual(resolved.checkpoint_label, "final")
+            self.assertEqual(resolved.checkpoint_step, 30000)
+            self.assertTrue(resolved.params_path.endswith("outputs/params.json"))
+            self.assertEqual(resolved.checkpoint_label, "final")
 
     def test_resolve_model_run_baseline_best_eval_uses_final_fit_artifact(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -897,10 +984,31 @@ model:
                 generative_analysis._load_multisubject_analysis_context(resolved)
 
     def test_load_animal_session_history_uses_snapshot_without_raw_nwb_loading(self):
-        resolved = resolve_model_run(
-            self.example_run_dir,
+        # Constructed directly rather than via resolve_model_run(): everything
+        # downstream (load_mice_from_database, _build_session_history_dataframe,
+        # _align_snapshot_df_with_ignore_policy) is mocked below, so the only
+        # thing this test needs from resolution is a populated ResolvedModelRun
+        # -- same pattern the adjacent
+        # test_load_animal_session_history_multisubject_uses_trained_subject_ids
+        # already uses.
+        resolved = generative_analysis.ResolvedModelRun(
+            model_dir="/tmp/model",
+            inputs_path="/tmp/model/inputs.yaml",
+            outputs_dir="/tmp/model/outputs",
+            model_type="disrnn",
             split="train",
             checkpoint_policy="best_eval",
+            checkpoint_step=24000,
+            checkpoint_label="step_24000",
+            params_path="/tmp/model/outputs/checkpoints/step_24000/params.json",
+            config_path="/tmp/model/outputs/disrnn_config.json",
+            seed=7,
+            multisubject=False,
+            mature_only=True,
+            ignore_policy="exclude",
+            curricula=["Uncoupled Baiting"],
+            features=None,
+            selection={"subject_ids": ["m1"], "min_sessions": 10, "heldout_every_n": 5},
         )
 
         class _FakeFrameSeries:
@@ -908,11 +1016,28 @@ model:
                 self._values = list(values)
 
             def map(self, func):
-                return [func(value) for value in self._values]
+                # A numpy array, not a plain list: generative_analysis's real
+                # (pandas-based) callers use Series.map(), whose result supports
+                # .any() -- _fill_offcurriculum_curriculum_name relies on that.
+                # A list would AttributeError there. Confirmed sufficient (not
+                # just necessary) for every test using this fake: their
+                # curriculum_name fixtures are always a real, non-missing value,
+                # so _fill_offcurriculum_curriculum_name's early-return fires
+                # right after this .any() and the deeper pandas-groupby/.where
+                # path below it is never reached by these fakes -- see
+                # AllenNeuralDynamics/aind-disrnn-wrapper#69 for the case where a
+                # future test exercises that path and needs more than this.
+                return np.array([func(value) for value in self._values])
 
         class _FakeSnapshotFrame:
             def __init__(self, data):
                 self._data = {key: list(values) for key, values in data.items()}
+
+            @property
+            def columns(self):
+                # Needed since generative_analysis._fill_offcurriculum_curriculum_name
+                # started checking "curriculum_name" not in snapshot_df.columns.
+                return list(self._data.keys())
 
             def copy(self):
                 return _FakeSnapshotFrame(self._data)
@@ -1018,11 +1143,28 @@ model:
                 self._values = list(values)
 
             def map(self, func):
-                return [func(value) for value in self._values]
+                # A numpy array, not a plain list: generative_analysis's real
+                # (pandas-based) callers use Series.map(), whose result supports
+                # .any() -- _fill_offcurriculum_curriculum_name relies on that.
+                # A list would AttributeError there. Confirmed sufficient (not
+                # just necessary) for every test using this fake: their
+                # curriculum_name fixtures are always a real, non-missing value,
+                # so _fill_offcurriculum_curriculum_name's early-return fires
+                # right after this .any() and the deeper pandas-groupby/.where
+                # path below it is never reached by these fakes -- see
+                # AllenNeuralDynamics/aind-disrnn-wrapper#69 for the case where a
+                # future test exercises that path and needs more than this.
+                return np.array([func(value) for value in self._values])
 
         class _FakeSnapshotFrame:
             def __init__(self, data):
                 self._data = {key: list(values) for key, values in data.items()}
+
+            @property
+            def columns(self):
+                # Needed since generative_analysis._fill_offcurriculum_curriculum_name
+                # started checking "curriculum_name" not in snapshot_df.columns.
+                return list(self._data.keys())
 
             def copy(self):
                 return _FakeSnapshotFrame(self._data)
@@ -1108,8 +1250,12 @@ model:
                 "animal_response",
                 "earned_reward",
                 "curriculum_name",
+                # "task" is needed to rebuild the pseudo-curriculum for
+                # off-curriculum mice -- see _fill_offcurriculum_curriculum_name.
+                "task",
                 "current_stage_actual",
             ],
+            snapshot=None,
         )
         build_history_mock.assert_called_once()
         self.assertIs(session_history, built_history)
@@ -1145,11 +1291,28 @@ model:
                 self._values = list(values)
 
             def map(self, func):
-                return [func(value) for value in self._values]
+                # A numpy array, not a plain list: generative_analysis's real
+                # (pandas-based) callers use Series.map(), whose result supports
+                # .any() -- _fill_offcurriculum_curriculum_name relies on that.
+                # A list would AttributeError there. Confirmed sufficient (not
+                # just necessary) for every test using this fake: their
+                # curriculum_name fixtures are always a real, non-missing value,
+                # so _fill_offcurriculum_curriculum_name's early-return fires
+                # right after this .any() and the deeper pandas-groupby/.where
+                # path below it is never reached by these fakes -- see
+                # AllenNeuralDynamics/aind-disrnn-wrapper#69 for the case where a
+                # future test exercises that path and needs more than this.
+                return np.array([func(value) for value in self._values])
 
         class _FakeSnapshotFrame:
             def __init__(self, data):
                 self._data = {key: list(values) for key, values in data.items()}
+
+            @property
+            def columns(self):
+                # Needed since generative_analysis._fill_offcurriculum_curriculum_name
+                # started checking "curriculum_name" not in snapshot_df.columns.
+                return list(self._data.keys())
 
             def copy(self):
                 return _FakeSnapshotFrame(self._data)
@@ -1523,17 +1686,40 @@ model:
         self.assertEqual(session_point["session_id"], "m4_s1")
         self.assertEqual(session_point["source_ses_idx"], "m4_s1")
         self.assertEqual(session_point["animal_n"], 6)
-        self.assertEqual(session_point["simulated_effective_n"], 2)
-        self.assertAlmostEqual(session_point["simulated_probability"], 0.75)
-        self.assertAlmostEqual(session_point["delta_probability"], -0.25)
+        # 1, not 2 (2 is the SUBJECT-level value asserted above, for
+        # rewarded_point). This session_point is isolated to source session
+        # m4_s1's own 2 rollouts, averaged by
+        # _average_rollout_metric_counts_by_session -- that averaging is what
+        # this test's name says it exists to check. The subject-level "2" is
+        # a SUM across this subject's two distinct source sessions (m4_s1 and
+        # m4_s2, the latter simulated below but not an animal-observed
+        # session in this test), which is a different, legitimately larger
+        # number; it was never m4_s1's own value. Confirmed this line has
+        # returned 1 unchanged since the commit that introduced it
+        # (380b340, 2026-05-18) -- it was asserting 2 and failing at
+        # introduction, not broken by a later change.
+        self.assertEqual(session_point["simulated_effective_n"], 1)
+        # 0.5, not 0.75 (0.75 is the subject-level value above, also pooling
+        # m4_s2). m4_s1's 2 rollouts individually score 1.0 and 0.0 on this
+        # condition (rollout_0's post-reward transition is a switch;
+        # rollout_1's isn't), and averaging successes and n separately before
+        # dividing -- 0.5/1.0 -- gives 0.5. Was never actually exercised
+        # before this fix: this line runs after simulated_effective_n, which
+        # failed first, so this specific value was untested until now, not
+        # merely wrong-and-passing.
+        self.assertAlmostEqual(session_point["simulated_probability"], 0.5)
+        self.assertAlmostEqual(session_point["delta_probability"], -0.5)
 
         rewarded_session_aggregate = stats["session_aggregate"]["post_switch_by_reward"][
             "rewarded"
         ]
         self.assertEqual(rewarded_session_aggregate["n_sessions"], 1)
         self.assertAlmostEqual(rewarded_session_aggregate["animal_mean"], 1.0)
-        self.assertAlmostEqual(rewarded_session_aggregate["simulated_mean"], 0.75)
-        self.assertAlmostEqual(rewarded_session_aggregate["delta_mean"], -0.25)
+        # The aggregate over 1 matched session (m4_s1) is just that session's
+        # own value -- 0.5, matching session_point above, not the
+        # subject-level 0.75.
+        self.assertAlmostEqual(rewarded_session_aggregate["simulated_mean"], 0.5)
+        self.assertAlmostEqual(rewarded_session_aggregate["delta_mean"], -0.5)
         self.assertEqual(
             stats["quantitative_summary"]["session_mean"]["post_switch_by_reward"][
                 "n_rows"
@@ -1542,13 +1728,22 @@ model:
         )
 
     def test_compute_switch_stats_session_level_matches_source_sessions_only(self):
+        # m1_s1's history is 12 trials, not 6: _select_valid_session_points
+        # (used by the summary, not by the raw "points" list this test also
+        # checks) drops any session below _SUBJECT_LEVEL_MIN_ANIMAL_N=5
+        # observations for the reward condition under test -- a real
+        # min-sample-size gate, not a bug. The alternating [0,1]*6 pattern
+        # gives exactly 5 "previous trial was rewarded" transitions (at
+        # indices 1,3,5,7,9), clearing that gate so the summary assertion
+        # below actually exercises source-session matching instead of
+        # incidentally tripping an unrelated quality filter.
         stats = compute_switch_stats(
             animal_sessions=[
                 self._session(
                     subject_id="m1",
                     ses_idx="m1_s1",
-                    choice_history=[0, 1, 0, 1, 0, 1],
-                    reward_history=[0, 1, 0, 1, 0, 1],
+                    choice_history=[0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1],
+                    reward_history=[0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1],
                 ),
                 self._session(
                     subject_id="m1",
@@ -1562,8 +1757,8 @@ model:
                     subject_id="m1",
                     ses_idx="m1_s1__rollout_0",
                     source_ses_idx="m1_s1",
-                    choice_history=[0, 1, 0, 1, 0, 1],
-                    reward_history=[0, 1, 0, 1, 0, 1],
+                    choice_history=[0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1],
+                    reward_history=[0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1],
                 ),
                 self._session(
                     subject_id="m1",
@@ -1948,7 +2143,21 @@ model:
                     reward_history=[1, 0, 0],
                 ),
             ],
-            subject_min_trials=2,
+            # compute_history_dependent_switch_stats has no separate
+            # session_min_trials parameter -- session_level/session_aggregate
+            # silently reuse this same subject_min_trials value as their own
+            # gate (see the function body: session_min_trials=subject_min_trials).
+            # A session's own total is naturally smaller than its subject's
+            # combined total across sessions, so the threshold that comfortably
+            # passes at subject level (animal_total=2 for m1, summed across 2
+            # sessions of 1 valid trial each) fails per-session (each
+            # individual session's animal_total is only 1). Was 2 -- clears
+            # the subject-level check just as well (2 >= 1), but silently zeroed
+            # out session_aggregate's n_sessions below, which this test also
+            # asserts. Lowered to 1 so this toy fixture's session-level counts
+            # are actually exercised instead of being filtered to nothing by a
+            # threshold this test never meant to test.
+            subject_min_trials=1,
         )
 
         points = {
@@ -2311,9 +2520,21 @@ model:
             error_summary["mean_signed_error_sem"],
             0.04472950774347691,
         )
+        # 0.0012903040754740894, not the old value: independently reproduced
+        # via scipy.stats.wilcoxon(deltas, zero_method="wilcox",
+        # alternative="two-sided", method="auto") -- the exact call
+        # _wilcoxon_signed_rank_against_zero makes -- on this test's own 14
+        # flattened deltas, outside this codebase entirely, and it matches
+        # the code's output exactly (scipy 1.17.1). The previous value did
+        # not match that direct reproduction at all; likely computed against
+        # an older scipy's Wilcoxon exact-p-value algorithm, which has
+        # changed versions historically. Also confirmed via git history: this
+        # assertion has failed identically since the commit that introduced
+        # it (380b340, 2026-05-18), so this is not a regression from a later
+        # change to the wilcoxon call.
         self.assertAlmostEqual(
             error_summary["p_value"],
-            0.0014412255000055883,
+            0.0012903040754740894,
         )
         self.assertAlmostEqual(
             error_summary["mean_absolute_error"],
