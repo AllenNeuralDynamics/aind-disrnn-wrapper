@@ -30,7 +30,7 @@ Performance: subject simulation is embarrassingly parallel (each subject's
 sessions depend only on their own resolved seeds), so it fans out across a
 ``spawn`` multiprocessing pool (``generation_workers``, default auto =
 min(SLURM_CPUS_PER_TASK or cpu_count, num_subjects); env override
-``DISRNN_GEN_WORKERS``; set 1 to force serial). Because every (subject, session)
+``BFM_GEN_WORKERS``; set 1 to force serial). Because every (subject, session)
 draws from its own seed, the merged dataset and ground-truth table are
 byte-identical regardless of worker count. Only the pure-Python/numpy simulation
 runs in workers; the jax dataset assembly + merge stays serial in the parent.
@@ -76,6 +76,7 @@ from disentangled_rnns.library import rnn_utils
 
 from base.interfaces import DatasetLoader
 from base.types import DatasetBundle
+from utils.env_config import get_env
 from utils.multisubject import (
     build_subject_index_maps,
     compute_train_eval_session_ids,
@@ -468,17 +469,15 @@ class HierarchicalCognitiveAgents(DatasetLoader):
         self.batch_mode = batch_mode
         self.subject_seed_stride = int(subject_seed_stride)
         # Parallel subject simulation. None/<=0 => auto (min(cpu_count, num_subjects),
-        # overridable via DISRNN_GEN_WORKERS). 1 => serial (no pool). Simulation is
+        # overridable via BFM_GEN_WORKERS). 1 => serial (no pool). Simulation is
         # embarrassingly parallel across subjects and deterministic per (subject,
         # session) seed, so any worker count yields byte-identical output.
         if generation_workers is None:
-            env_workers = os.environ.get("DISRNN_GEN_WORKERS")
+            env_workers = get_env("BFM_GEN_WORKERS")
             generation_workers = int(env_workers) if env_workers else 0
         self.generation_workers = int(generation_workers)
         # Where to write the ground-truth table; default to the run output dir.
-        self.groundtruth_dir = groundtruth_dir or os.environ.get(
-            "DISRNN_OUTPUT_DIR", "/results"
-        )
+        self.groundtruth_dir = groundtruth_dir or get_env("BFM_OUTPUT_DIR", "/results")
         self.metadata_extras = dict(metadata)
 
     # ------------------------------------------------------------------ #
