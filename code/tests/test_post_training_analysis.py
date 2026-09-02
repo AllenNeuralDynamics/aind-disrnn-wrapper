@@ -1686,17 +1686,40 @@ model:
         self.assertEqual(session_point["session_id"], "m4_s1")
         self.assertEqual(session_point["source_ses_idx"], "m4_s1")
         self.assertEqual(session_point["animal_n"], 6)
-        self.assertEqual(session_point["simulated_effective_n"], 2)
-        self.assertAlmostEqual(session_point["simulated_probability"], 0.75)
-        self.assertAlmostEqual(session_point["delta_probability"], -0.25)
+        # 1, not 2 (2 is the SUBJECT-level value asserted above, for
+        # rewarded_point). This session_point is isolated to source session
+        # m4_s1's own 2 rollouts, averaged by
+        # _average_rollout_metric_counts_by_session -- that averaging is what
+        # this test's name says it exists to check. The subject-level "2" is
+        # a SUM across this subject's two distinct source sessions (m4_s1 and
+        # m4_s2, the latter simulated below but not an animal-observed
+        # session in this test), which is a different, legitimately larger
+        # number; it was never m4_s1's own value. Confirmed this line has
+        # returned 1 unchanged since the commit that introduced it
+        # (380b340, 2026-05-18) -- it was asserting 2 and failing at
+        # introduction, not broken by a later change.
+        self.assertEqual(session_point["simulated_effective_n"], 1)
+        # 0.5, not 0.75 (0.75 is the subject-level value above, also pooling
+        # m4_s2). m4_s1's 2 rollouts individually score 1.0 and 0.0 on this
+        # condition (rollout_0's post-reward transition is a switch;
+        # rollout_1's isn't), and averaging successes and n separately before
+        # dividing -- 0.5/1.0 -- gives 0.5. Was never actually exercised
+        # before this fix: this line runs after simulated_effective_n, which
+        # failed first, so this specific value was untested until now, not
+        # merely wrong-and-passing.
+        self.assertAlmostEqual(session_point["simulated_probability"], 0.5)
+        self.assertAlmostEqual(session_point["delta_probability"], -0.5)
 
         rewarded_session_aggregate = stats["session_aggregate"]["post_switch_by_reward"][
             "rewarded"
         ]
         self.assertEqual(rewarded_session_aggregate["n_sessions"], 1)
         self.assertAlmostEqual(rewarded_session_aggregate["animal_mean"], 1.0)
-        self.assertAlmostEqual(rewarded_session_aggregate["simulated_mean"], 0.75)
-        self.assertAlmostEqual(rewarded_session_aggregate["delta_mean"], -0.25)
+        # The aggregate over 1 matched session (m4_s1) is just that session's
+        # own value -- 0.5, matching session_point above, not the
+        # subject-level 0.75.
+        self.assertAlmostEqual(rewarded_session_aggregate["simulated_mean"], 0.5)
+        self.assertAlmostEqual(rewarded_session_aggregate["delta_mean"], -0.5)
         self.assertEqual(
             stats["quantitative_summary"]["session_mean"]["post_switch_by_reward"][
                 "n_rows"
@@ -1705,13 +1728,22 @@ model:
         )
 
     def test_compute_switch_stats_session_level_matches_source_sessions_only(self):
+        # m1_s1's history is 12 trials, not 6: _select_valid_session_points
+        # (used by the summary, not by the raw "points" list this test also
+        # checks) drops any session below _SUBJECT_LEVEL_MIN_ANIMAL_N=5
+        # observations for the reward condition under test -- a real
+        # min-sample-size gate, not a bug. The alternating [0,1]*6 pattern
+        # gives exactly 5 "previous trial was rewarded" transitions (at
+        # indices 1,3,5,7,9), clearing that gate so the summary assertion
+        # below actually exercises source-session matching instead of
+        # incidentally tripping an unrelated quality filter.
         stats = compute_switch_stats(
             animal_sessions=[
                 self._session(
                     subject_id="m1",
                     ses_idx="m1_s1",
-                    choice_history=[0, 1, 0, 1, 0, 1],
-                    reward_history=[0, 1, 0, 1, 0, 1],
+                    choice_history=[0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1],
+                    reward_history=[0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1],
                 ),
                 self._session(
                     subject_id="m1",
@@ -1725,8 +1757,8 @@ model:
                     subject_id="m1",
                     ses_idx="m1_s1__rollout_0",
                     source_ses_idx="m1_s1",
-                    choice_history=[0, 1, 0, 1, 0, 1],
-                    reward_history=[0, 1, 0, 1, 0, 1],
+                    choice_history=[0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1],
+                    reward_history=[0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1],
                 ),
                 self._session(
                     subject_id="m1",
@@ -2111,7 +2143,21 @@ model:
                     reward_history=[1, 0, 0],
                 ),
             ],
-            subject_min_trials=2,
+            # compute_history_dependent_switch_stats has no separate
+            # session_min_trials parameter -- session_level/session_aggregate
+            # silently reuse this same subject_min_trials value as their own
+            # gate (see the function body: session_min_trials=subject_min_trials).
+            # A session's own total is naturally smaller than its subject's
+            # combined total across sessions, so the threshold that comfortably
+            # passes at subject level (animal_total=2 for m1, summed across 2
+            # sessions of 1 valid trial each) fails per-session (each
+            # individual session's animal_total is only 1). Was 2 -- clears
+            # the subject-level check just as well (2 >= 1), but silently zeroed
+            # out session_aggregate's n_sessions below, which this test also
+            # asserts. Lowered to 1 so this toy fixture's session-level counts
+            # are actually exercised instead of being filtered to nothing by a
+            # threshold this test never meant to test.
+            subject_min_trials=1,
         )
 
         points = {
@@ -2474,9 +2520,21 @@ model:
             error_summary["mean_signed_error_sem"],
             0.04472950774347691,
         )
+        # 0.0012903040754740894, not the old value: independently reproduced
+        # via scipy.stats.wilcoxon(deltas, zero_method="wilcox",
+        # alternative="two-sided", method="auto") -- the exact call
+        # _wilcoxon_signed_rank_against_zero makes -- on this test's own 14
+        # flattened deltas, outside this codebase entirely, and it matches
+        # the code's output exactly (scipy 1.17.1). The previous value did
+        # not match that direct reproduction at all; likely computed against
+        # an older scipy's Wilcoxon exact-p-value algorithm, which has
+        # changed versions historically. Also confirmed via git history: this
+        # assertion has failed identically since the commit that introduced
+        # it (380b340, 2026-05-18), so this is not a regression from a later
+        # change to the wilcoxon call.
         self.assertAlmostEqual(
             error_summary["p_value"],
-            0.0014412255000055883,
+            0.0012903040754740894,
         )
         self.assertAlmostEqual(
             error_summary["mean_absolute_error"],
