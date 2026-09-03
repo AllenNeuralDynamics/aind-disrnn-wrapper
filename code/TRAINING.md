@@ -91,7 +91,7 @@ second still runs and produces `heldout/final/eval_likelihood`. Full detail in Â
   `output_dir/checkpoints/step_*`.
 - **Resumability = WITHIN one experiment (preemption recovery).** A preempted task
   restarts as the *same* task with the *same* `/results` dataset (anchored by
-  `DISRNN_RESUMABLE_OUTPUT_DIR=/results/run`). On start, `find_latest_resumable_state`
+  `BFM_RESUMABLE_OUTPUT_DIR=/results/run`). On start, `find_latest_resumable_state`
   loads the newest checkpoint and the loop continues from `steps_completed`,
   **skipping warmup** (warmup is already folded into the checkpointed params).
   Gated by `auto_resume` (default `true`) + `checkpoint_every_n_steps > 0`; W&B
@@ -101,7 +101,7 @@ second still runs and produces `heldout/final/eval_likelihood`. Full detail in Â
   a *fresh, empty* `/results`, so it does **not** see the old run's checkpoints and
   would restart from scratch â€” **unless** you set
   `model.training.restore_from_run_id=<source W&B run name>` (or env
-  `DISRNN_RESTORE_FROM_RUN_ID`). That downloads the source run's
+  `BFM_RESTORE_FROM_RUN_ID`). That downloads the source run's
   `<mtype>-output-<run_id>:latest` artifact into the new run's `outputs/` so resume
   finds the checkpoint and continues (skipping warmup). Set the new `n_steps`
   **larger** than the source's. Prerequisite: the source run must have **finished**

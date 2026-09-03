@@ -59,7 +59,7 @@ For one-off debug runs only, submit through SLURM and run the module from
 ```bash
 cd /path/to/aind-disrnn-wrapper/code
 export PYTHONPATH=/path/to/aind-disrnn-wrapper/code:${PYTHONPATH:-}
-export DISRNN_OUTPUT_DIR=$HOME/outputs/disrnn
+export BFM_OUTPUT_DIR=$HOME/outputs/disrnn
 python -m run_hpc job_id=42 data=mice model=disrnn
 ```
 

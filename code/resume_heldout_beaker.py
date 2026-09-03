@@ -4,7 +4,7 @@ Backfills held-out metrics (e.g. the 3-way ignore-class precision/recall/F1/
 PR-AUC added after some runs were trained) onto an ALREADY-FINISHED run WITHOUT
 re-training and WITHOUT changing the model — the exact-reproduction path.
 
-Difference vs the `DISRNN_RESTORE_FROM_RUN_ID` restore path (`run_hpc`):
+Difference vs the `BFM_RESTORE_FROM_RUN_ID` restore path (`run_hpc`):
   * restore  -> resumes the TRAINING entrypoint, then runs end-of-train held-out.
     Even with n_steps capped it evaluates a fresh held-out draw off the restored
     checkpoint set, so it does NOT reproduce the original held-out numbers.
