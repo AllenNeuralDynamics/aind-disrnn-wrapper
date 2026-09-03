@@ -25,7 +25,14 @@ dependencies = [
     # extra, which 0.13.0 does not define. pip does not fail on an unknown extra --
     # it exits 0 and installs without it -- so an older pin yields an image that looks
     # fine and dies on `import numpyro` at job time.
-    "aind-dynamic-foraging-models==0.14.0",
+    #
+    # A lower bound rather than ==, so a fix released in a later 0.14.x reaches the image.
+    # An exact pin here also silently lagged: 0.14.1 carries the artifact round-trip fix
+    # (models #64) that HB figure regeneration depends on, and == would have held the
+    # image at 0.14.0 without it. The Dockerfile happens to mask that by editable-installing
+    # the models checkout AFTER resolving these deps, but that is line ordering, not a
+    # guarantee, and it does not hold for anything installing the wrapper on its own.
+    "aind-dynamic-foraging-models>=0.14.0",
     "aind-dynamic-foraging-database==0.2.2",
     # pandas 3 changes the default string dtype (object -> StringDtype), which
     # the analysis code and its tests are not ported to. CI installs whatever is
