@@ -517,6 +517,13 @@ environment.
 > Add a dated entry (newest first) whenever you add or change a feature.
 
 ### 2026-09-03
+- **`beta_max` is recorded in the fit artifact's meta.** Per-session parameters
+  reconstructed offline from `theta_raw` invert `phi(theta[..., 3]) * beta_max`, and
+  `beta_max` is a config key a rung can override away from the published 10.0. Unrecorded,
+  an offline replay would silently rescale `softmax_inverse_temperature`. Paired with
+  keeping `theta_raw` in `save_fit`'s session keep list
+  (`aind-dynamic-foraging-models`), without which the one_stage estimator persisted no
+  session-level parameters at all.
 - **HB fits now persist the session level, by default.** `save_fit`'s
   `include_session_sites` defaults to off and `HBTrainer` never overrode it, so no HB fit
   ever written had a session level — and a site exists only while the sampler does, so
