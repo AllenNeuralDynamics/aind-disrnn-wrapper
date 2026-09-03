@@ -291,6 +291,8 @@ class HBTrainer(ModelTrainer):
         few_shot_k: Any = FEW_SHOT_K,
         eval_every_n: int = 2,
         artifact_dir: Optional[str] = None,
+        target_accept_prob: float = 0.8,
+        max_tree_depth: int = 10,
         save_session_sites: bool = True,
         architecture: Mapping[str, Any] | Any = {},
         output_dir: str = "/results/outputs",
@@ -318,6 +320,21 @@ class HBTrainer(ModelTrainer):
             Per-subject train/eval session split, matching the neural models'.
         artifact_dir : str, optional
             Where to persist posterior draws and diagnostics.
+        target_accept_prob : float
+            **Applies to ``estimator="one_stage"`` only.** The ``two_stage`` route runs
+            through ``fit_two_stage``, whose subject and population kernels are constructed
+            without geometry arguments, so setting this under ``two_stage`` has no effect.
+            NUTS target acceptance probability; NumPyro's default is 0.8 and Stan's
+            ``adapt_delta`` is the same quantity. Raising it to 0.9-0.95 shortens the
+            integrator's steps, the standard remedy for divergences that survive longer
+            warmup, at the cost of a slower fit. Exposed because divergences are curvature
+            the integrator cannot follow, so they are **not** fixed by more draws.
+        max_tree_depth : int
+            **Applies to ``estimator="one_stage"`` only**, for the same reason as
+            ``target_accept_prob``.
+            NUTS maximum trajectory depth (NumPyro default 10). Raise only if the sampler
+            reports saturating it; a saturated tree means the step size is too small for
+            the posterior's scale, which is a different failure from divergence.
         save_session_sites : bool
             Persist the session level too (``save_fit``'s ``include_session_sites``, which
             defaults to off). On the ``one_stage`` route that adds ``session_log_lik``,
@@ -340,6 +357,26 @@ class HBTrainer(ModelTrainer):
         self.few_shot_k = tuple(few_shot_k)
         self.eval_every_n = int(eval_every_n)
         self.artifact_dir = artifact_dir
+        # Validated here because NumPyro does not. Verified against numpyro 0.21.0:
+        # NUTS(target_accept_prob=9.5) constructs AND samples to completion without any
+        # error, so a config typo (9.5 for 0.95) yields a fit whose step-size adaptation
+        # targeted an unreachable acceptance rate, with nothing in the log to say so --
+        # the diagnostics look like a hard posterior. max_tree_depth=0 does fail, but as
+        # `IndexError: index is out of bounds for axis 0 with size 0` from inside the
+        # integrator, hours into a run and with nothing pointing at the config.
+        self.target_accept_prob = float(target_accept_prob)
+        if not 0.0 < self.target_accept_prob < 1.0:
+            raise ValueError(
+                f"target_accept_prob must be in (0, 1); got {self.target_accept_prob}. "
+                "It is a probability, the same quantity as Stan's adapt_delta -- 0.95, "
+                "not 95."
+            )
+        self.max_tree_depth = int(max_tree_depth)
+        if self.max_tree_depth < 1:
+            raise ValueError(
+                f"max_tree_depth must be >= 1; got {self.max_tree_depth}. It is a "
+                "log2 bound on trajectory length (NumPyro's default is 10)."
+            )
         self.save_session_sites = bool(save_session_sites)
         self.output_dir = output_dir
 
@@ -417,6 +454,22 @@ class HBTrainer(ModelTrainer):
                     # override the published 10.0; without it recorded, an offline replay
                     # would silently rescale beta. See dispatcher #115.
                     "beta_max": beta_max,
+                    # Recorded so a rung's convergence can be read against the settings
+                    # that produced it, without going back to the launch config -- but
+                    # only for the estimator they actually reached. two_stage samples via
+                    # fit_two_stage, whose kernels take no geometry arguments, so writing
+                    # these there would state a setting the fit never used: an analyst
+                    # reading target_accept_prob 0.95 off a two_stage artifact would be
+                    # reading a number that never left this file. `estimator` is in the
+                    # same meta, so their absence is self-explaining.
+                    **(
+                        {
+                            "target_accept_prob": self.target_accept_prob,
+                            "max_tree_depth": self.max_tree_depth,
+                        }
+                        if estimator == "one_stage"
+                        else {}
+                    ),
                     "seed": self.seed,
                     **_source_revisions(),
                 },
@@ -624,7 +677,15 @@ class HBTrainer(ModelTrainer):
 
         if estimator == "one_stage":
             mcmc = MCMC(
-                NUTS(hattori2019_three_level),
+                # Integrator geometry is configurable because the two diagnostic
+                # failures have different cures: divergences want longer warmup or a
+                # higher target acceptance, while low ESS on clean geometry is the only
+                # one more draws actually fixes.
+                NUTS(
+                    hattori2019_three_level,
+                    target_accept_prob=self.target_accept_prob,
+                    max_tree_depth=self.max_tree_depth,
+                ),
                 num_warmup=num_warmup, num_samples=num_samples, num_chains=num_chains,
                 chain_method="vectorized", progress_bar=False,
             )
