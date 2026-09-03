@@ -516,6 +516,36 @@ environment.
 
 > Add a dated entry (newest first) whenever you add or change a feature.
 
+### 2026-09-03
+- **HB runs now log figures.** Before this, an HB fit produced numbers and no pictures:
+  `hb_trainer.py` had no plotting code at all, and the three plotting helpers in
+  `aind_dynamic_foraging_models.hierarchical_bayes.plotting` were imported by nothing in
+  either repo. A run that reports a held-out likelihood but no divergence or convergence
+  diagnostic figure
+  cannot be judged — those decide whether its number may be quoted. New
+  `utils/hb_figures.py`, called at the end of `HBTrainer.fit`, logs three:
+  `hb/diagnostics` (population traces, plus rank and energy when the sampler supports
+  them), `hb/population_posterior` (per-parameter densities mapped through `to_bounded`
+  onto the model's own units, since plotting unconstrained coordinates under a bounded
+  parameter's label misstates every value), and `hb/conditioning_curve` (held-out
+  likelihood against context sessions k). Figure failures are caught and logged — a
+  figure is never worth losing a completed multi-hour fit over.
+- **`utils/hb_figures.load_fit` reads either artifact layout.** Fits written before
+  `aind-dynamic-foraging-models` #64 stored each group at the netCDF root, where
+  `az.from_netcdf` returns an *empty* InferenceData without raising; the loader detects
+  the empty result and reads the groups directly, so figures can be regenerated from
+  archived fits. Verified against the D10 fit from Beaker experiment
+  `01M1JWY7VNB9F73BS14679K78Q`.
+- **Not included, deliberately.** `plot_shrinkage` needs an *unpooled* per-subject arm to
+  make its point (its own docstring says so) and the HB run produces none, so a faithful
+  version needs a per-subject MLE pass alongside — omitted rather than shipped degenerate.
+  Per-session latent trajectories need the session-level sites that `save_fit` excludes by
+  default plus a replay of the Q recursion; `hattori2019_choice_prob` discards Q as the
+  scan carry, and the hot likelihood is not reshaped to produce a figure. Both are tracked
+  in wrapper #82. Comparator reference lines are not passed from the trainer: those are
+  study constants and belong to the study's analysis, not to runtime code that would carry
+  them stale.
+
 ### 2026-08-22
 - **New optional inputs: previous-trial reaction time + lick counts**
   (`data.timing_features`, off by default → base model bit-identical). See §6
