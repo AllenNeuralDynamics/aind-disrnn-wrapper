@@ -266,18 +266,21 @@ def log_hb_figures(
         Figure key to written path, for the keys that were produced.
     """
     output_dir = Path(output_dir or ".")
-    output_dir.mkdir(parents=True, exist_ok=True)
     written = {}
 
     # Everything from here is best-effort: this function's contract is that a completed
-    # fit is never lost to a plotting problem, so preparation is guarded too, not only the
-    # individual builds. A missing or truncated artifact, or a caller handing over a path
-    # that does not exist, degrades to "no figures written".
+    # fit is never lost to a plotting problem, so *preparation* is guarded too, not only
+    # the individual builds. Both steps below can fail on inputs the caller controls --
+    # an unwritable or invalid output directory, and a missing or truncated artifact --
+    # and either would otherwise propagate out of a function that promises not to.
     try:
+        output_dir.mkdir(parents=True, exist_ok=True)
         groups = load_fit(fit_paths.get("netcdf"), fit_paths.get("sample_stats"))
     except Exception:
-        logger.exception("Could not load the fit at %r; no figures written.",
-                         fit_paths.get("netcdf"))
+        logger.exception(
+            "Could not prepare figures (output_dir=%r, netcdf=%r); none written.",
+            str(output_dir), fit_paths.get("netcdf"),
+        )
         return written
 
     specs = [
