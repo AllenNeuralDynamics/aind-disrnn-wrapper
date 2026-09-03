@@ -411,6 +411,12 @@ class HBTrainer(ModelTrainer):
                     "num_warmup": num_warmup,
                     "num_samples": num_samples,
                     "num_chains": num_chains,
+                    # Needed to invert the softmax_inverse_temperature transform when
+                    # per-session parameters are reconstructed offline from theta_raw
+                    # (phi(theta[..., 3]) * beta_max). It is a config key, so a rung can
+                    # override the published 10.0; without it recorded, an offline replay
+                    # would silently rescale beta. See dispatcher #115.
+                    "beta_max": beta_max,
                     "seed": self.seed,
                     **_source_revisions(),
                 },
