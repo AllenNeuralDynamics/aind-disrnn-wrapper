@@ -87,6 +87,26 @@ def _is_multisubject_mode(
     return bool(architecture.get("multisubject", False) or metadata.get("multisubject", False))
 
 
+def _resolve_multisubject_subject_count(metadata: Mapping[str, Any]) -> int:
+    num_subjects = metadata.get("num_subjects")
+    if num_subjects is not None:
+        resolved = int(num_subjects)
+        if resolved > 0:
+            return resolved
+
+    subject_ids = metadata.get("subject_ids")
+    if isinstance(subject_ids, list) and subject_ids:
+        return int(len(subject_ids))
+
+    raise ValueError(
+        "Multisubject disRNN was requested, but the loaded dataset did not provide "
+        "a subject dimension (metadata.num_subjects or metadata.subject_ids). "
+        "For data=synthetic model=disrnn, set "
+        "model.architecture.multisubject=false. Otherwise choose a multisubject "
+        "mice or mice_snapshot data config that supplies subject metadata."
+    )
+
+
 def _require_n_action_logits(dataset: Any, yhat: np.ndarray, *, context: str) -> int:
     """Strict action-logit count for disRNN outputs.
 
@@ -327,14 +347,7 @@ class DisrnnTrainer(BaseMultisubjectTrainer):
         is_multisubject = _is_multisubject_mode(self.architecture, metadata)
 
         if is_multisubject:
-            num_subjects = int(
-                metadata.get("num_subjects")
-                or len(metadata.get("subject_ids", []))
-            )
-            if num_subjects <= 0:
-                raise ValueError(
-                    "Multisubject disRNN requires metadata.num_subjects or metadata.subject_ids."
-                )
+            num_subjects = _resolve_multisubject_subject_count(metadata)
             plot_subject_index = int(self.training.get("plot_subject_index", 0))
             if plot_subject_index < 0 or plot_subject_index >= num_subjects:
                 raise ValueError(
@@ -752,10 +765,7 @@ class DisrnnTrainer(BaseMultisubjectTrainer):
         output["multisubject"] = bool(is_multisubject)
         max_n_subjects = None
         if is_multisubject:
-            max_n_subjects = int(
-                metadata.get("num_subjects")
-                or len(metadata.get("subject_ids", []))
-            )
+            max_n_subjects = _resolve_multisubject_subject_count(metadata)
         session_conditioning_cfg = resolve_session_conditioning_from_architecture(
             architecture=self.architecture,
             metadata=metadata,
