@@ -6,7 +6,7 @@
 # code/config edits take effect by just launching a new run — no image rebuild.
 #
 # Invoked from the Beaker spec's `command`, e.g.:
-#   command: [bash, /workspace/aind-disrnn-wrapper/beaker/entrypoint.sh,
+#   command: [bash, /workspace/aind-dynamic-foraging-bfm-wrapper/beaker/entrypoint.sh,
 #             wandb, agent, --count, "1", "<SWEEP_ID>"]
 # Everything after the script path is the real work, exec'd once code is fresh.
 #
@@ -37,15 +37,15 @@ refresh() {  # <repo dir> <ref> <commit env var>
 }
 
 echo "[entrypoint] refreshing source from GitHub before the run..."
-refresh /workspace/aind-disrnn-dispatcher          "$DISPATCHER_REF"       DISPATCHER_COMMIT
+refresh /workspace/aind-dynamic-foraging-bfm-dispatcher          "$DISPATCHER_REF"       DISPATCHER_COMMIT
 refresh /workspace/aind-dynamic-foraging-models    "$FORAGING_MODELS_REF"  FORAGING_MODELS_COMMIT
-refresh /workspace/aind-disrnn-wrapper             "$WRAPPER_REF"          WRAPPER_COMMIT
+refresh /workspace/aind-dynamic-foraging-bfm-wrapper             "$WRAPPER_REF"          WRAPPER_COMMIT
 
 if [ "$#" -eq 0 ]; then
     echo "[entrypoint] no command given; nothing to run." >&2
     exit 1
 fi
 
-cd /workspace/aind-disrnn-wrapper/code
+cd /workspace/aind-dynamic-foraging-bfm-wrapper/code
 echo "[entrypoint] launching: $*"
 exec "$@"

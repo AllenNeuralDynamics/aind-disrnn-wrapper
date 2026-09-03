@@ -20,7 +20,7 @@ The initial vendoring commit is a faithful copy: function bodies are
 byte-identical to the pinned upstream, so the move is auditable by diff. Changes
 since then are ordinary commits in this repo's history.
 
-See: AllenNeuralDynamics/aind-disrnn-dispatcher#74 (identity rename), which this
+See: AllenNeuralDynamics/aind-dynamic-foraging-bfm-dispatcher#74 (identity rename), which this
 unblocks by removing the third repo from its scope.
 """
 

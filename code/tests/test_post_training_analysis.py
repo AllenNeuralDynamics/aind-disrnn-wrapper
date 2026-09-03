@@ -31,7 +31,7 @@ class TestPostTrainingAnalysis(unittest.TestCase):
 
         Replaces a real captured run dir (`ex_model_dir-train10_test3-disrnn-260324`)
         that was deliberately deleted 2026-05-21 when run-directory handling moved
-        to Hydra runtime output (see AllenNeuralDynamics/aind-disrnn-wrapper#68);
+        to Hydra runtime output (see AllenNeuralDynamics/aind-dynamic-foraging-bfm-wrapper#68);
         the 4 tests depending on it were never updated and errored on every run
         since. The specific step numbers (24000 / 6000 / 30000) are kept only
         because the tests that consume them already hard-code those values.
@@ -1025,7 +1025,7 @@ model:
                 # so _fill_offcurriculum_curriculum_name's early-return fires
                 # right after this .any() and the deeper pandas-groupby/.where
                 # path below it is never reached by these fakes -- see
-                # AllenNeuralDynamics/aind-disrnn-wrapper#69 for the case where a
+                # AllenNeuralDynamics/aind-dynamic-foraging-bfm-wrapper#69 for the case where a
                 # future test exercises that path and needs more than this.
                 return np.array([func(value) for value in self._values])
 
@@ -1152,7 +1152,7 @@ model:
                 # so _fill_offcurriculum_curriculum_name's early-return fires
                 # right after this .any() and the deeper pandas-groupby/.where
                 # path below it is never reached by these fakes -- see
-                # AllenNeuralDynamics/aind-disrnn-wrapper#69 for the case where a
+                # AllenNeuralDynamics/aind-dynamic-foraging-bfm-wrapper#69 for the case where a
                 # future test exercises that path and needs more than this.
                 return np.array([func(value) for value in self._values])
 
@@ -1300,7 +1300,7 @@ model:
                 # so _fill_offcurriculum_curriculum_name's early-return fires
                 # right after this .any() and the deeper pandas-groupby/.where
                 # path below it is never reached by these fakes -- see
-                # AllenNeuralDynamics/aind-disrnn-wrapper#69 for the case where a
+                # AllenNeuralDynamics/aind-dynamic-foraging-bfm-wrapper#69 for the case where a
                 # future test exercises that path and needs more than this.
                 return np.array([func(value) for value in self._values])
 

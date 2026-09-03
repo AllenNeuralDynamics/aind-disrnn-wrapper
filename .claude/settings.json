@@ -3,7 +3,7 @@
     "aind-behavior-foundation-model": {
       "source": {
         "source": "github",
-        "repo": "AllenNeuralDynamics/aind-disrnn-dispatcher"
+        "repo": "AllenNeuralDynamics/aind-dynamic-foraging-bfm-dispatcher"
       }
     }
   },

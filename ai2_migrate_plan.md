@@ -247,7 +247,7 @@ should still be resumable so an interrupted agent picks up cleanly.
 ## ⚠️ Gotcha: sibling-repo config dependency
 
 `code/run_hpc.py` hard-codes
-`config_path="../../aind-disrnn-dispatcher/code/config"` and reads the
+`config_path="../../aind-dynamic-foraging-bfm-dispatcher/code/config"` and reads the
 dispatcher's Hydra configs as a filesystem sibling. In a Docker image we control
 the layout, so make the configs available in the image. Options, best first:
 

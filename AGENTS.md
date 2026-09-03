@@ -104,7 +104,7 @@ Rules:
 ## 7. Project Skills & Living Docs
 
 - The **Agent Skills pack** for this two-repo project lives in the dispatcher:
-  `aind-disrnn-dispatcher/aind-behavior-foundation-model-skills/`. It is the
+  `aind-dynamic-foraging-bfm-dispatcher/aind-behavior-foundation-model-skills/`. It is the
   canonical home for cross-cutting operational knowledge — Beaker/HPC launching,
   study conventions, post-hoc reporting, and this repo's runtime distilled in the
   `wrapper-runtime` skill. It is auto-enabled here via the checked-in
