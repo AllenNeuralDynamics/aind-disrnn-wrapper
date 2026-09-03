@@ -3,7 +3,7 @@ requires = ["setuptools>=45", "setuptools_scm[toml]>=6.2"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "aind-disrnn-wrapper"
+name = "aind-dynamic-foraging-bfm-wrapper"
 version = "0.1.0"
 description = "Wrapper for training disentangled RNNs on AIND behavioral data"
 readme = "README.md"
@@ -21,8 +21,12 @@ dependencies = [
     "aind-dynamic-foraging-data-utils==0.1.41",
     "aind-dynamic-foraging-multisession-analysis==0.0.18",
     "aind-behavior-gym==0.4.5",
-    "aind-dynamic-foraging-models==0.13.0",
-    "aind-dynamic-foraging-database @ git+https://github.com/AllenNeuralDynamics/aind-dynamic-foraging-database.git",
+    # Must stay >= 0.14.0: the Beaker image installs this package with its [bayes]
+    # extra, which 0.13.0 does not define. pip does not fail on an unknown extra --
+    # it exits 0 and installs without it -- so an older pin yields an image that looks
+    # fine and dies on `import numpyro` at job time.
+    "aind-dynamic-foraging-models==0.14.0",
+    "aind-dynamic-foraging-database==0.2.2",
     # pandas 3 changes the default string dtype (object -> StringDtype), which
     # the analysis code and its tests are not ported to. CI installs whatever is
     # unpinned, so without this the suite tests a stack nobody actually runs.
