@@ -225,5 +225,53 @@ class TestSessionSitePersistence(unittest.TestCase):
         )
 
 
+class TestSamplerGeometry(unittest.TestCase):
+    """``target_accept_prob`` and ``max_tree_depth`` reach ``NUTS``, not merely the config.
+
+    Same silent-failure mode as the session-sites knob: ``HBTrainer.__init__`` absorbs
+    unknown keyword arguments, so a misnamed or unthreaded key is accepted without a
+    warning and the rung samples on NumPyro's defaults while its config claims otherwise.
+    That is the more expensive half here -- the settings exist to cure the D30 gate
+    failures, and a rung that silently ignores them looks like the remedy did not work.
+    """
+
+    def _recorded_nuts_kwargs(self, **trainer_kwargs):
+        """Run a tiny fit with ``NUTS`` stubbed; return the kwargs it was called with."""
+        import numpyro.infer
+
+        recorded = {}
+        real_nuts = numpyro.infer.NUTS
+
+        def fake_nuts(model, **kwargs):
+            recorded.update(kwargs)
+            return real_nuts(model, **kwargs)
+
+        bundle = DatasetBundle(
+            raw=_make_frame(n_subjects=2, n_sessions=2, n_trials=40),
+            train_set=None, eval_set=None, metadata={},
+        )
+        trainer = HBTrainer(
+            estimator="one_stage", num_warmup=10, num_samples=10, num_chains=1,
+            seed=0, **trainer_kwargs,
+        )
+        with mock.patch("numpyro.infer.NUTS", fake_nuts):
+            trainer.fit(bundle)
+        return recorded
+
+    def test_defaults_match_numpyro(self):
+        """Defaults leave sampling unchanged, so existing rungs stay comparable."""
+        recorded = self._recorded_nuts_kwargs()
+        self.assertEqual(recorded.get("target_accept_prob"), 0.8)
+        self.assertEqual(recorded.get("max_tree_depth"), 10)
+
+    def test_values_reach_nuts(self):
+        """The configured values are what NUTS receives, not the signature defaults."""
+        recorded = self._recorded_nuts_kwargs(
+            target_accept_prob=0.95, max_tree_depth=12
+        )
+        self.assertEqual(recorded.get("target_accept_prob"), 0.95)
+        self.assertEqual(recorded.get("max_tree_depth"), 12)
+
+
 if __name__ == "__main__":
     unittest.main()
