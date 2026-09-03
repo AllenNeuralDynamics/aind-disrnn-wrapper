@@ -225,6 +225,7 @@ class TestSessionSitePersistence(unittest.TestCase):
         )
 
 
+@unittest.skipUnless(HAS_BAYES, "requires the 'bayes' extra (jax, numpyro)")
 class TestSamplerGeometry(unittest.TestCase):
     """``target_accept_prob`` and ``max_tree_depth`` reach ``NUTS``, not merely the config.
 
