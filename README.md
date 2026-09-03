@@ -103,8 +103,8 @@ python -m run_hpc job_id=42 data=mice model=disrnn
 Never run training on the HPC login node — always `srun`/`sbatch`/`salloc` onto a compute
 node. Add `--cfg job` to print the composed config and exit without training.
 
-All runtime environment variables use the `BFM_` prefix and go through
-`code/utils/env_config.py`, which rejects anything else: `BFM_OUTPUT_DIR`,
+The `BFM_*` runtime variables go through `code/utils/env_config.py`, which rejects other
+prefixes: `BFM_OUTPUT_DIR`,
 `BFM_RESUMABLE_OUTPUT_DIR`, `BFM_RESTORE_FROM_RUN_ID`, and the `BFM_META_*` provenance set.
 
 ## Post-training analysis
@@ -130,7 +130,8 @@ with no model load. Full contract in
 
 Every run traces back to the code and command that launched it:
 
-- **Local artifacts.** Each run copies `config/` and writes `inputs.yaml` / `inputs.json`
+- **Local artifacts.** Each `run_hpc.py` run copies the dispatcher's `code/config/` tree into
+  `inputs/` and writes `inputs.yaml` / `inputs.json`
   into both the run output directory and the W&B run folder — the effective config after
   defaults, includes and overrides.
 - **W&B config.** `wandb.init(config=...)` records the `data`, `model` and `meta` blocks, so
