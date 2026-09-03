@@ -3,7 +3,7 @@ requires = ["setuptools>=45", "setuptools_scm[toml]>=6.2"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "aind-disrnn-wrapper"
+name = "aind-dynamic-foraging-bfm-wrapper"
 version = "0.1.0"
 description = "Wrapper for training disentangled RNNs on AIND behavioral data"
 readme = "README.md"
