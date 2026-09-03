@@ -517,6 +517,30 @@ environment.
 > Add a dated entry (newest first) whenever you add or change a feature.
 
 ### 2026-09-03
+- **HB fits now persist the session level, by default.** `save_fit`'s
+  `include_session_sites` defaults to off and `HBTrainer` never overrode it, so no HB fit
+  ever written had a session level — and a site exists only while the sampler does, so
+  those fits can be recovered only by re-fitting, at hours each. New `HBTrainer`
+  argument `save_session_sites` (default **True**), threaded to
+  `save_fit(include_session_sites=...)` and set explicitly in the dispatcher's
+  `code/config/model/hb_hattori.yaml`. `HBTrainer.__init__` absorbs unknown keyword
+  arguments, so a misnamed config key would have been accepted in silence; the guard is
+  `tests/test_hb_trainer.py::TestSessionSitePersistence`, which stubs `save_fit` and
+  asserts the value the callee actually received (both True by default and False when
+  turned off) rather than that the key parses.
+- **What that does *not* yet buy: per-session latent trajectories.** Verified against a
+  sampler run, not the site names: `hattori2019_three_level` — the `one_stage` estimator,
+  i.e. every production rung — registers exactly one session-level site,
+  `session_log_lik`. The five per-session parameters that `artifacts.SESSION_SITES` names
+  (`learn_rate_rew`, `learn_rate_unrew`, `forget_rate_unchosen`,
+  `softmax_inverse_temperature`, `bias_l`) are sites only in the *two-level* model, and
+  `theta_raw` — shape draws x subjects x sessions x 5, the offsets those parameters are
+  computed from together with the kept `mu_p` and `log_sigma` — is in no keep list. So
+  turning this knob on makes a fit re-scorable and WAIC/PSIS-LOO-able, but an offline
+  decision-variable replay additionally needs `save_fit`'s keep list widened in
+  `aind-dynamic-foraging-models`. Tracked on dispatcher #115; the 2026-09-03 note below
+  that says trajectories need "the session-level sites that `save_fit` excludes by
+  default" understates it by that one array.
 - **HB runs now log figures.** Before this, an HB fit produced numbers and no pictures:
   `hb_trainer.py` had no plotting code at all, and the three plotting helpers in
   `aind_dynamic_foraging_models.hierarchical_bayes.plotting` were imported by nothing in

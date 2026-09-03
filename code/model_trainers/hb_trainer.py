@@ -291,6 +291,7 @@ class HBTrainer(ModelTrainer):
         few_shot_k: Any = FEW_SHOT_K,
         eval_every_n: int = 2,
         artifact_dir: Optional[str] = None,
+        save_session_sites: bool = True,
         architecture: Mapping[str, Any] | Any = {},
         output_dir: str = "/results/outputs",
         seed: Optional[int] = None,
@@ -317,6 +318,12 @@ class HBTrainer(ModelTrainer):
             Per-subject train/eval session split, matching the neural models'.
         artifact_dir : str, optional
             Where to persist posterior draws and diagnostics.
+        save_session_sites : bool
+            Persist the session level too (``save_fit``'s ``include_session_sites``, which
+            defaults to off). On the ``one_stage`` route that adds ``session_log_lik``,
+            which is the bulk of the artifact -- but a site exists only while the sampler
+            does, so a fit that ships without it can be recovered only by re-fitting, at
+            hours per fit. Defaults on for that reason; turn it off for a throwaway fit.
         architecture : mapping
             Present for parity with the other trainers; unused.
         output_dir : str
@@ -333,6 +340,7 @@ class HBTrainer(ModelTrainer):
         self.few_shot_k = tuple(few_shot_k)
         self.eval_every_n = int(eval_every_n)
         self.artifact_dir = artifact_dir
+        self.save_session_sites = bool(save_session_sites)
         self.output_dir = output_dir
 
     def fit(
@@ -395,6 +403,7 @@ class HBTrainer(ModelTrainer):
 
             saved = save_fit(
                 mcmc, artifact_dir, name=f"{estimator}_fit",
+                include_session_sites=self.save_session_sites,
                 meta={
                     "estimator": estimator,
                     "n_subjects": len(subject_ids),

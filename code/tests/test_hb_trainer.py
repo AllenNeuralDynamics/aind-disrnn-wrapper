@@ -1,6 +1,9 @@
 """HBTrainer data marshalling and end-to-end fit."""
 
+import tempfile
 import unittest
+from pathlib import Path
+from unittest import mock
 
 import numpy as np
 import pandas as pd
@@ -172,6 +175,54 @@ class TestFit(unittest.TestCase):
         self.assertIn("matched", scores)
         self.assertGreater(scores["matched"], 0.0)
         self.assertLess(scores["matched"], 1.0)
+
+
+@unittest.skipUnless(HAS_BAYES, "requires the 'bayes' extra (jax, numpyro)")
+class TestSessionSitePersistence(unittest.TestCase):
+    """The session-sites knob reaches ``save_fit``, not merely the config.
+
+    Checking that the key parses would prove nothing: ``HBTrainer.__init__`` absorbs
+    unknown keyword arguments, so a misnamed or unthreaded config key is accepted in
+    silence and the fit is written without the session-level sites -- unrecoverable
+    without a refit. These tests assert the value the callee actually received.
+    """
+
+    def _recorded_kwargs(self, **trainer_kwargs):
+        """Run a tiny fit with ``save_fit`` stubbed; return the kwargs it was called with."""
+        recorded = {}
+
+        def fake_save_fit(mcmc, output_dir, **kwargs):
+            recorded.update(kwargs)
+            return {"netcdf": str(Path(output_dir) / "fit.nc"), "json": None,
+                    "sample_stats": None, "diagnostics": {}}
+
+        bundle = DatasetBundle(
+            raw=_make_frame(n_subjects=2, n_sessions=2, n_trials=40),
+            train_set=None, eval_set=None, metadata={},
+        )
+        with tempfile.TemporaryDirectory() as artifact_dir:
+            trainer = HBTrainer(
+                estimator="one_stage", num_warmup=10, num_samples=10, num_chains=1,
+                artifact_dir=artifact_dir, seed=0, **trainer_kwargs,
+            )
+            with mock.patch(
+                "aind_dynamic_foraging_models.hierarchical_bayes.artifacts.save_fit",
+                fake_save_fit,
+            ):
+                trainer.fit(bundle)
+        self.assertIn("include_session_sites", recorded)
+        return recorded
+
+    def test_default_persists_session_sites(self):
+        """A production rung saves them without asking: the default is on."""
+        self.assertIs(self._recorded_kwargs()["include_session_sites"], True)
+
+    def test_knob_can_be_turned_off(self):
+        """The config value is what is passed through, not a hardcoded True."""
+        self.assertIs(
+            self._recorded_kwargs(save_session_sites=False)["include_session_sites"],
+            False,
+        )
 
 
 if __name__ == "__main__":
