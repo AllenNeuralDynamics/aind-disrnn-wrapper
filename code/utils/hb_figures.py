@@ -62,20 +62,31 @@ def load_fit(netcdf_path, sample_stats_path=None):
     """
     import xarray as xr
 
+    def _read(path, group=None):
+        """Open, materialise, and close -- so no file handle outlives this call.
+
+        `open_dataset` returns a lazily-backed Dataset holding the netCDF file open. The
+        plotting code materialises every array it touches immediately, so there is nothing
+        to gain from laziness and a descriptor to lose: a long-lived process regenerating
+        figures would accumulate open handles until it hit its limit.
+        """
+        with xr.open_dataset(str(path), group=group) as ds:
+            return ds.load()
+
     netcdf_path = str(netcdf_path)
     groups = {}
     try:
-        groups["posterior"] = xr.open_dataset(netcdf_path, group="posterior")
+        groups["posterior"] = _read(netcdf_path, group="posterior")
         try:
-            groups["sample_stats"] = xr.open_dataset(netcdf_path, group="sample_stats")
+            groups["sample_stats"] = _read(netcdf_path, group="sample_stats")
         except (OSError, KeyError):
             pass
     except (OSError, KeyError):
         logger.info("Fit at %s is in the pre-grouped layout; reading the root.", netcdf_path)
-        groups["posterior"] = xr.open_dataset(netcdf_path)
+        groups["posterior"] = _read(netcdf_path)
 
     if "sample_stats" not in groups and sample_stats_path and Path(sample_stats_path).exists():
-        groups["sample_stats"] = xr.open_dataset(str(sample_stats_path))
+        groups["sample_stats"] = _read(sample_stats_path)
     return groups
 
 
@@ -137,8 +148,16 @@ def plot_sampler_diagnostics(groups, path=None):
             # Pool every draw of a parameter, rank them, and histogram each chain's ranks.
             # Well-mixed chains each cover the pooled range uniformly; a chain stuck in its
             # own region shows up as a skewed block.
+            #
+            # The ranked parameter and the title come from the same index, so the panel
+            # cannot end up labelled with a parameter it did not rank if PARAM_NAMES is
+            # reordered or the site's width changes.
             flat = draws.reshape(n_chains * n_draws, n_params)
-            order = np.argsort(np.argsort(flat[:, 0]))          # ranks of param 0
+            ranked = 0
+            ranked_name = (
+                PARAM_NAMES[ranked] if ranked < len(PARAM_NAMES) else f"param {ranked}"
+            )
+            order = np.argsort(np.argsort(flat[:, ranked]))
             ranks = order.reshape(n_chains, n_draws)
             bins = np.linspace(0, n_chains * n_draws, min(20, n_draws) + 1)
             for chain in range(n_chains):
@@ -146,17 +165,26 @@ def plot_sampler_diagnostics(groups, path=None):
                         label=f"chain {chain}")
             ax.axhline(n_draws / (len(bins) - 1), color="0.4", ls="--", lw=0.9,
                        label="uniform")
-            ax.set_title("Rank uniformity across chains · learn_rate_rew", loc="left",
+            ax.set_title(f"Rank uniformity across chains · {ranked_name}", loc="left",
                          fontsize=9)
             ax.set_xlabel("pooled rank")
             ax.legend(fontsize=6, frameon=False, ncol=min(n_chains + 1, 5))
         else:
-            energy = np.asarray(stats["energy"]).ravel()
+            # Transitions are differences between CONSECUTIVE draws within a chain.
+            # Diffing the chain-concatenated vector would manufacture one spurious
+            # transition per chain boundary -- the gap between chain c's last draw and
+            # chain c+1's first, which are independent -- and those land in the tail,
+            # making the sampler look worse than it is on the panel that exists to judge it.
+            energy2d = np.asarray(stats["energy"])
+            if energy2d.ndim == 1:
+                energy2d = energy2d[None, :]
+            energy = energy2d.ravel()
             ax.hist(energy, bins=30, histtype="stepfilled", alpha=0.55,
                     label="energy")
-            if energy.size > 1:
-                ax.hist(np.diff(energy), bins=30, histtype="step", lw=1.2,
-                        label="energy transitions")
+            if energy2d.shape[-1] > 1:
+                transitions = np.diff(energy2d, axis=-1).ravel()
+                ax.hist(transitions, bins=30, histtype="step", lw=1.2,
+                        label="energy transitions (within chain)")
             ax.set_title("Energy distribution vs transitions", loc="left", fontsize=9)
             ax.set_xlabel("energy")
             ax.legend(fontsize=6, frameon=False)
@@ -241,7 +269,16 @@ def log_hb_figures(
     output_dir.mkdir(parents=True, exist_ok=True)
     written = {}
 
-    groups = load_fit(fit_paths.get("netcdf"), fit_paths.get("sample_stats"))
+    # Everything from here is best-effort: this function's contract is that a completed
+    # fit is never lost to a plotting problem, so preparation is guarded too, not only the
+    # individual builds. A missing or truncated artifact, or a caller handing over a path
+    # that does not exist, degrades to "no figures written".
+    try:
+        groups = load_fit(fit_paths.get("netcdf"), fit_paths.get("sample_stats"))
+    except Exception:
+        logger.exception("Could not load the fit at %r; no figures written.",
+                         fit_paths.get("netcdf"))
+        return written
 
     specs = [
         ("hb/diagnostics", "hb_diagnostics.png",
@@ -250,16 +287,25 @@ def log_hb_figures(
          lambda p: plot_population_posteriors(groups, beta_max=beta_max, path=p)),
     ]
     if scores:
-        from aind_dynamic_foraging_models.hierarchical_bayes.plotting import (
-            plot_conditioning_curve,
-        )
-        specs.append((
-            "hb/conditioning_curve", "hb_conditioning_curve.png",
-            lambda p: plot_conditioning_curve(
-                scores, references=references, path=p,
-                title="Held-out likelihood vs context sessions",
-            ),
-        ))
+        # Imported here rather than at module scope, and guarded: this pulls in
+        # `hierarchical_bayes.__init__`, which imports `likelihood` and therefore jax. On
+        # the Beaker image jax is present, but an offline regeneration environment with
+        # only arviz/xarray installed would raise ImportError -- and losing the other two
+        # figures to the conditioning curve's dependency would be the wrong trade.
+        try:
+            from aind_dynamic_foraging_models.hierarchical_bayes.plotting import (
+                plot_conditioning_curve,
+            )
+
+            specs.append((
+                "hb/conditioning_curve", "hb_conditioning_curve.png",
+                lambda p: plot_conditioning_curve(
+                    scores, references=references, path=p,
+                    title="Held-out likelihood vs context sessions",
+                ),
+            ))
+        except Exception:
+            logger.exception("Could not prepare hb/conditioning_curve; skipping it.")
 
     for key, filename, build in specs:
         path = output_dir / filename
