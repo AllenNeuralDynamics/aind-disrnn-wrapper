@@ -563,6 +563,21 @@ class HBTrainer(ModelTrainer):
             if fit_info.get("divergences") is not None:
                 wandb_run.summary["hb/divergences"] = int(fit_info["divergences"])
 
+        # Figures for the fit that just cost hours, built before this process exits. A run
+        # that reports a likelihood and no diagnostics cannot be judged: divergences and
+        # ESS decide whether its number may be quoted at all. Regenerating them later means
+        # reloading the artifact somewhere the bayes extra is installed, so the cheap moment
+        # is now, while the fit is already in hand. Comparator lines are deliberately not
+        # passed -- those are study constants and belong to the study's analysis, not to
+        # runtime code that would carry them stale.
+        if fit_info.get("artifacts"):
+            from utils.hb_figures import log_hb_figures
+
+            log_hb_figures(
+                fit_info["artifacts"], scores=scores, wandb_run=wandb_run,
+                output_dir=artifact_dir, beta_max=beta_max,
+            )
+
         return output
 
     def _fit_population(
