@@ -7,7 +7,7 @@ training, and XLA JIT compilation dominates their wall time regardless of
 step count: measured at ~50-58s per test, almost entirely compile, not the
 training steps themselves. This is the highest-leverage, zero-coverage-impact
 suite-speed change available -- it changes nothing about what is asserted.
-See AllenNeuralDynamics/aind-disrnn-wrapper#68.
+See AllenNeuralDynamics/aind-dynamic-foraging-bfm-wrapper#68.
 
 Respects JAX_COMPILATION_CACHE_DIR if the environment already sets one (e.g.
 CI pointing it somewhere ephemeral); otherwise defaults to a directory under
@@ -39,7 +39,7 @@ if jax is not None:
     try:
         _cache_dir = os.environ.get(
             "JAX_COMPILATION_CACHE_DIR",
-            os.path.expanduser("~/.cache/aind-disrnn-wrapper/jax"),
+            os.path.expanduser("~/.cache/aind-dynamic-foraging-bfm-wrapper/jax"),
         )
         os.makedirs(_cache_dir, exist_ok=True)
         jax.config.update("jax_compilation_cache_dir", _cache_dir)

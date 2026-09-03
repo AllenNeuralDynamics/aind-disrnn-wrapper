@@ -19,11 +19,13 @@ from training_runner import run_training
 from utils.env_config import get_env
 from utils.json_helpers import dictconfig_to_json
 from utils.run_helpers import (
+    DISPATCHER_DIR_NAMES,
     apply_dynamic_run_name_components,
     apply_model_penalty_multipliers,
     configure_sys_logger,
     copy_inputs_for_run,
     copy_run_to_wandb,
+    dispatcher_repo_dir,
     save_resolved_config,
     start_wandb_run,
 )
@@ -31,9 +33,24 @@ from utils.run_helpers import (
 logger = logging.getLogger(__name__)
 
 
+def _dispatcher_config_path() -> str:
+    """Hydra config_path for the sibling dispatcher, as a relative string.
+
+    Hydra resolves config_path relative to this file's directory, so it has to
+    stay relative -- but the sibling's directory name differs by environment
+    (renamed inside the Beaker image, unchanged in existing HPC/Mac checkouts),
+    so pick whichever is actually present. See utils.run_helpers.
+    """
+    here = Path(__file__).resolve().parent
+    for name in DISPATCHER_DIR_NAMES:
+        if (here.parent.parent / name / "code" / "config").is_dir():
+            return f"../../{name}/code/config"
+    return f"../../{DISPATCHER_DIR_NAMES[0]}/code/config"
+
+
 @hydra.main(
     version_base=None,
-    config_path="../../aind-disrnn-dispatcher/code/config",
+    config_path=_dispatcher_config_path(),
     config_name="config",
 )
 def main(hydra_config: DictConfig) -> None:
@@ -49,7 +66,7 @@ def main(hydra_config: DictConfig) -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
 
     # Backup inputs for reproducibility
-    config_root = Path(__file__).parent.parent.parent / "aind-disrnn-dispatcher" / "code" / "config"
+    config_root = dispatcher_repo_dir(Path(__file__).resolve().parents[2]) / "code" / "config"
     copy_inputs_for_run(config_root, run_dir / "inputs")
     save_resolved_config(hydra_config, run_dir / "inputs.yaml")
     json_destination = run_dir / "inputs.json"

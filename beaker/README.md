@@ -6,7 +6,7 @@ Run the disRNN training stack on the Allen **AI Hub / Beaker** GPU platform.
 > image, the runtime code-pull, and the GPU benchmark results. The **control plane**
 > — defining W&B sweeps, experiment specs, clusters, and submitting jobs — lives in
 > the dispatcher:
-> [`aind-disrnn-dispatcher/code/beaker/README.md`](https://github.com/AllenNeuralDynamics/aind-disrnn-dispatcher/blob/main/code/beaker/README.md).
+> [`aind-dynamic-foraging-bfm-dispatcher/code/beaker/README.md`](https://github.com/AllenNeuralDynamics/aind-dynamic-foraging-bfm-dispatcher/blob/main/code/beaker/README.md).
 
 **Architecture (two planes):**
 - **Build plane — a Mac (or any box with Docker).** Builds the GPU image and
@@ -184,7 +184,7 @@ eval-throttling (item 10) were both tested and gave nothing. For *scale*, use
 
 > The sweep definition and the production Beaker job spec live in the **dispatcher**
 > (control plane), not here —
-> [`aind-disrnn-dispatcher/code/beaker/`](https://github.com/AllenNeuralDynamics/aind-disrnn-dispatcher/blob/main/code/beaker/README.md)
+> [`aind-dynamic-foraging-bfm-dispatcher/code/beaker/`](https://github.com/AllenNeuralDynamics/aind-dynamic-foraging-bfm-dispatcher/blob/main/code/beaker/README.md)
 > (`sweep_mvp.yaml`, `experiment_mvp.yaml`). This repo only builds the image and
 > ships `smoke.yaml` to test it.
 
@@ -212,8 +212,8 @@ curl -fsSL https://beaker.org/install | sh
 beaker account login              # browser login with AI1 creds
 beaker account whoami             # expect: han-hou
 
-git clone https://github.com/AllenNeuralDynamics/aind-disrnn-wrapper.git
-cd aind-disrnn-wrapper && git checkout main
+git clone https://github.com/AllenNeuralDynamics/aind-dynamic-foraging-bfm-wrapper.git
+cd aind-dynamic-foraging-bfm-wrapper && git checkout main
 bash beaker/build_and_push.sh
 beaker image get disrnn-wrapper   # note the ref: han-hou/disrnn-wrapper
 ```
@@ -257,7 +257,7 @@ beaker experiment create -w "$WS" beaker/smoke.yaml
 
 **To actually run training** (the W&B-sweep MVP), use the **dispatcher** control
 plane — `wandb sweep` → submit `experiment_mvp.yaml` — documented in
-[`aind-disrnn-dispatcher/code/beaker/README.md`](https://github.com/AllenNeuralDynamics/aind-disrnn-dispatcher/blob/main/code/beaker/README.md).
+[`aind-dynamic-foraging-bfm-dispatcher/code/beaker/README.md`](https://github.com/AllenNeuralDynamics/aind-dynamic-foraging-bfm-dispatcher/blob/main/code/beaker/README.md).
 
 ## 3. Controlling the code version
 
@@ -267,7 +267,7 @@ At container startup `entrypoint.sh` `git fetch`es the wrapper, dispatcher, and
 provenance, then `exec`s the job. The Beaker spec invokes it as:
 
 ```yaml
-command: [bash, /workspace/aind-disrnn-wrapper/beaker/entrypoint.sh, wandb, agent, ...]
+command: [bash, /workspace/aind-dynamic-foraging-bfm-wrapper/beaker/entrypoint.sh, wandb, agent, ...]
 ```
 
 Consequences:
@@ -322,8 +322,8 @@ Two resume mechanisms exist; they compose:
 | Want to change… | Edit | Rebuild image? |
 |---|---|---|
 | **Dependencies / base environment** | `Dockerfile` (then `pyproject.toml` for the actual deps) | **Yes** — `--force-rebuild --force-override-beaker` |
-| **The command, cluster, GPU count, replicas, secret, refs** | the spec YAML — `smoke.yaml` (here) or `experiment_mvp.yaml` ([dispatcher](https://github.com/AllenNeuralDynamics/aind-disrnn-dispatcher/blob/main/code/beaker/README.md)) | No |
-| **The hyperparameter grid / `run_hpc` overrides** | `sweep_mvp.yaml` in the [dispatcher](https://github.com/AllenNeuralDynamics/aind-disrnn-dispatcher/blob/main/code/beaker/README.md) (read by `wandb sweep` at submit) | No |
+| **The command, cluster, GPU count, replicas, secret, refs** | the spec YAML — `smoke.yaml` (here) or `experiment_mvp.yaml` ([dispatcher](https://github.com/AllenNeuralDynamics/aind-dynamic-foraging-bfm-dispatcher/blob/main/code/beaker/README.md)) | No |
+| **The hyperparameter grid / `run_hpc` overrides** | `sweep_mvp.yaml` in the [dispatcher](https://github.com/AllenNeuralDynamics/aind-dynamic-foraging-bfm-dispatcher/blob/main/code/beaker/README.md) (read by `wandb sweep` at submit) | No |
 | **The startup/bootstrap logic** (how code is pulled) | `entrypoint.sh` | **Yes** (it's baked and runs before the pull) |
 | **Application code / Hydra configs** | the wrapper / dispatcher repos directly | No — push to the ref the job uses |
 

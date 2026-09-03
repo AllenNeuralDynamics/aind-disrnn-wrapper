@@ -1,4 +1,4 @@
-# aind-disrnn-wrapper
+# aind-dynamic-foraging-bfm-wrapper
 
 The wrapper capsule in the AIND-disRNN MLOps stack:
 
@@ -18,22 +18,22 @@ This repo supplies the disRNN runtime entry point, primarily
 so the CO, Beaker, and HPC paths are managed in parallel:
 
 ```text
-aind-disrnn-dispatcher/code/launch_hpc.py
-aind-disrnn-dispatcher/code/hpc/
+aind-dynamic-foraging-bfm-dispatcher/code/launch_hpc.py
+aind-dynamic-foraging-bfm-dispatcher/code/hpc/
 ```
 
 Expected local layout:
 
 ```bash
 /path/to/parent/
-  aind-disrnn-dispatcher/
-  aind-disrnn-wrapper/
+  aind-dynamic-foraging-bfm-dispatcher/
+  aind-dynamic-foraging-bfm-wrapper/
 ```
 
 Create the runtime environments from this wrapper repo:
 
 ```bash
-cd /path/to/parent/aind-disrnn-wrapper
+cd /path/to/parent/aind-dynamic-foraging-bfm-wrapper
 
 conda create -n disrnn-cpu python=3.12 -y
 conda activate disrnn-cpu
@@ -47,7 +47,7 @@ pip install -e ".[gpu]"
 Launch W&B sweeps and SLURM jobs from the dispatcher repo. See:
 
 ```text
-/path/to/parent/aind-disrnn-dispatcher/code/hpc/README.md
+/path/to/parent/aind-dynamic-foraging-bfm-dispatcher/code/hpc/README.md
 ```
 
 The launcher is invoked from `disrnn-cpu`; the SLURM script activates
@@ -57,8 +57,8 @@ For one-off debug runs only, submit through SLURM and run the module from
 `code/` with this repo on `PYTHONPATH`:
 
 ```bash
-cd /path/to/aind-disrnn-wrapper/code
-export PYTHONPATH=/path/to/aind-disrnn-wrapper/code:${PYTHONPATH:-}
+cd /path/to/aind-dynamic-foraging-bfm-wrapper/code
+export PYTHONPATH=/path/to/aind-dynamic-foraging-bfm-wrapper/code:${PYTHONPATH:-}
 export BFM_OUTPUT_DIR=$HOME/outputs/disrnn
 python -m run_hpc job_id=42 data=mice model=disrnn
 ```
@@ -83,7 +83,7 @@ that launched it. This is achieved with three complementary mechanisms:
      `foraging_models_commit` after refreshing all three repositories.
 
 3. Dispatcher lineage injection for HPC sweeps.
-   - At sweep creation time, `aind-disrnn-dispatcher/code/launch_hpc.py`
+   - At sweep creation time, `aind-dynamic-foraging-bfm-dispatcher/code/launch_hpc.py`
      captures dispatcher git state, wrapper git state, and launch context, then
      appends them as Hydra `+meta.*` overrides to the sweep `command` list.
    - Each run in the sweep records fields such as

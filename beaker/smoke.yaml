@@ -21,7 +21,7 @@ tasks:
       beaker: han-hou/disrnn-wrapper-main-20260712
     command:
       - bash
-      - /workspace/aind-disrnn-wrapper/beaker/entrypoint.sh
+      - /workspace/aind-dynamic-foraging-bfm-wrapper/beaker/entrypoint.sh
       - bash
       - -lc
       - |

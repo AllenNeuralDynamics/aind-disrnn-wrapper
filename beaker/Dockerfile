@@ -2,8 +2,8 @@
 #
 # Clones the dispatcher, wrapper, and dynamic-foraging-models repos from GitHub.
 # The dispatcher and wrapper use the sibling layout that run_hpc.py expects:
-#   /workspace/aind-disrnn-wrapper/code/run_hpc.py reads its Hydra configs from
-#   ../../aind-disrnn-dispatcher/code/config  ->  /workspace/aind-disrnn-dispatcher/...
+#   /workspace/aind-dynamic-foraging-bfm-wrapper/code/run_hpc.py reads its Hydra configs from
+#   ../../aind-dynamic-foraging-bfm-dispatcher/code/config  ->  /workspace/aind-dynamic-foraging-bfm-dispatcher/...
 # so W&B sweep agents (which invoke `python -m run_hpc <overrides>`) can
 # re-compose the config on Beaker with no code change.
 #
@@ -72,14 +72,14 @@ RUN clone_ref() { \
       git -C "$dir" checkout -f --detach FETCH_HEAD; \
     }; \
     echo "cachebust=$CACHEBUST" && \
-    clone_ref "$GH_ORG/aind-disrnn-dispatcher.git" \
-      /workspace/aind-disrnn-dispatcher "$DISPATCHER_REF" && \
+    clone_ref "$GH_ORG/aind-dynamic-foraging-bfm-dispatcher.git" \
+      /workspace/aind-dynamic-foraging-bfm-dispatcher "$DISPATCHER_REF" && \
     clone_ref "$GH_ORG/aind-dynamic-foraging-models.git" \
       /workspace/aind-dynamic-foraging-models "$FORAGING_MODELS_REF" && \
-    clone_ref "$GH_ORG/aind-disrnn-wrapper.git" \
-      /workspace/aind-disrnn-wrapper "$WRAPPER_REF" && \
-    pip install --no-cache-dir -e "/workspace/aind-disrnn-wrapper[gpu]" && \
+    clone_ref "$GH_ORG/aind-dynamic-foraging-bfm-wrapper.git" \
+      /workspace/aind-dynamic-foraging-bfm-wrapper "$WRAPPER_REF" && \
+    pip install --no-cache-dir -e "/workspace/aind-dynamic-foraging-bfm-wrapper[gpu]" && \
     pip install --no-cache-dir -e "/workspace/aind-dynamic-foraging-models[bayes]"
 
-WORKDIR /workspace/aind-disrnn-wrapper/code
-ENV PYTHONPATH=/workspace/aind-disrnn-wrapper/code
+WORKDIR /workspace/aind-dynamic-foraging-bfm-wrapper/code
+ENV PYTHONPATH=/workspace/aind-dynamic-foraging-bfm-wrapper/code

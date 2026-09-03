@@ -20,6 +20,30 @@ from utils.env_config import get_env
 
 logger = logging.getLogger(__name__)
 
+# The dispatcher is consumed as a sibling checkout, and its directory name
+# depends on where we are running. ADR-0007 renamed the repo, which renames the
+# clone target inside the Beaker image, but it does NOT rename anyone's existing
+# checkout -- the HPC runtime and Mac clones are still `aind-disrnn-dispatcher`.
+# Both names therefore have to resolve, and the new one wins when both exist.
+DISPATCHER_DIR_NAMES = (
+    "aind-dynamic-foraging-bfm-dispatcher",
+    "aind-disrnn-dispatcher",
+)
+
+
+def dispatcher_repo_dir(parent: Path | None = None) -> Path:
+    """Locate the sibling dispatcher checkout, tolerating either repo name.
+
+    Falls back to the post-rename name when neither directory exists, so error
+    messages name the directory the caller ought to create.
+    """
+    base = parent if parent is not None else Path(__file__).resolve().parents[2].parent
+    for name in DISPATCHER_DIR_NAMES:
+        candidate = base / name
+        if candidate.is_dir():
+            return candidate
+    return base / DISPATCHER_DIR_NAMES[0]
+
 
 def resolve_disrnn_penalties(penalties_cfg: Any) -> dict[str, Any]:
     """Resolve optional per-penalty multiplier fields for disRNN configs.
@@ -228,8 +252,8 @@ def _code_versions() -> dict[str, Optional[str]]:
             pass
         return None
 
-    wrapper_dir = Path(__file__).resolve().parents[2]  # .../aind-disrnn-wrapper
-    dispatcher_dir = wrapper_dir.parent / "aind-disrnn-dispatcher"
+    wrapper_dir = Path(__file__).resolve().parents[2]  # the wrapper checkout
+    dispatcher_dir = dispatcher_repo_dir(wrapper_dir.parent)
     foraging_models_dir = wrapper_dir.parent / "aind-dynamic-foraging-models"
     return {
         "wrapper_commit": sha(wrapper_dir, "WRAPPER_COMMIT"),
