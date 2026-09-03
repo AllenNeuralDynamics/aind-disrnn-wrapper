@@ -520,7 +520,8 @@ environment.
 - **HB runs now log figures.** Before this, an HB fit produced numbers and no pictures:
   `hb_trainer.py` had no plotting code at all, and the three plotting helpers in
   `aind_dynamic_foraging_models.hierarchical_bayes.plotting` were imported by nothing in
-  either repo. A run that reports a held-out likelihood but no divergence or ESS figure
+  either repo. A run that reports a held-out likelihood but no divergence or convergence
+  diagnostic figure
   cannot be judged — those decide whether its number may be quoted. New
   `utils/hb_figures.py`, called at the end of `HBTrainer.fit`, logs three:
   `hb/diagnostics` (population traces, plus rank and energy when the sampler supports

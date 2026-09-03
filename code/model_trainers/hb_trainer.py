@@ -571,12 +571,15 @@ class HBTrainer(ModelTrainer):
         # passed -- those are study constants and belong to the study's analysis, not to
         # runtime code that would carry them stale.
         if fit_info.get("artifacts"):
-            from utils.hb_figures import log_hb_figures
+            try:
+                from utils.hb_figures import log_hb_figures
 
-            log_hb_figures(
-                fit_info["artifacts"], scores=scores, wandb_run=wandb_run,
-                output_dir=artifact_dir, beta_max=beta_max,
-            )
+                log_hb_figures(
+                    fit_info["artifacts"], scores=scores, wandb_run=wandb_run,
+                    output_dir=artifact_dir, beta_max=beta_max,
+                )
+            except Exception:
+                logger.exception("Could not generate HB figures; continuing.")
 
         return output
 

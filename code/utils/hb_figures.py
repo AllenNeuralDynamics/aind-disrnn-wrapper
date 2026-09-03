@@ -182,29 +182,33 @@ def log_hb_figures(
     dict
         Figure key to written path, for the keys that were produced.
     """
-    output_dir = Path(output_dir or ".")
-    output_dir.mkdir(parents=True, exist_ok=True)
     written = {}
 
-    idata = load_fit(fit_paths.get("netcdf"), fit_paths.get("sample_stats"))
+    try:
+        output_dir = Path(output_dir or ".")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        idata = load_fit(fit_paths.get("netcdf"), fit_paths.get("sample_stats"))
 
-    specs = [
-        ("hb/diagnostics", "hb_diagnostics.png",
-         lambda p: plot_sampler_diagnostics(idata, path=p)),
-        ("hb/population_posterior", "hb_population_posterior.png",
-         lambda p: plot_population_posteriors(idata, beta_max=beta_max, path=p)),
-    ]
-    if scores:
-        from aind_dynamic_foraging_models.hierarchical_bayes.plotting import (
-            plot_conditioning_curve,
-        )
-        specs.append((
-            "hb/conditioning_curve", "hb_conditioning_curve.png",
-            lambda p: plot_conditioning_curve(
-                scores, references=references, path=p,
-                title="Held-out likelihood vs context sessions",
-            ),
-        ))
+        specs = [
+            ("hb/diagnostics", "hb_diagnostics.png",
+             lambda p: plot_sampler_diagnostics(idata, path=p)),
+            ("hb/population_posterior", "hb_population_posterior.png",
+             lambda p: plot_population_posteriors(idata, beta_max=beta_max, path=p)),
+        ]
+        if scores:
+            from aind_dynamic_foraging_models.hierarchical_bayes.plotting import (
+                plot_conditioning_curve,
+            )
+            specs.append((
+                "hb/conditioning_curve", "hb_conditioning_curve.png",
+                lambda p: plot_conditioning_curve(
+                    scores, references=references, path=p,
+                    title="Held-out likelihood vs context sessions",
+                ),
+            ))
+    except Exception:
+        logger.exception("Could not prepare HB figures; continuing.")
+        return written
 
     for key, filename, build in specs:
         path = output_dir / filename
