@@ -265,6 +265,49 @@ class TestSamplerGeometry(unittest.TestCase):
         self.assertEqual(recorded.get("target_accept_prob"), 0.8)
         self.assertEqual(recorded.get("max_tree_depth"), 10)
 
+    def _recorded_meta(self, estimator):
+        """Run a tiny fit with ``save_fit`` stubbed; return the ``meta`` it received."""
+        recorded = {}
+
+        def fake_save_fit(mcmc, output_dir, **kwargs):
+            recorded.update(kwargs)
+            return {"netcdf": str(Path(output_dir) / "fit.nc"), "json": None,
+                    "sample_stats": None, "diagnostics": {}}
+
+        bundle = DatasetBundle(
+            raw=_make_frame(n_subjects=2, n_sessions=2, n_trials=40),
+            train_set=None, eval_set=None, metadata={},
+        )
+        with tempfile.TemporaryDirectory() as artifact_dir:
+            trainer = HBTrainer(
+                estimator=estimator, num_warmup=8, num_samples=8, num_chains=1,
+                artifact_dir=artifact_dir, seed=0,
+                target_accept_prob=0.95, max_tree_depth=11,
+            )
+            with mock.patch(
+                "aind_dynamic_foraging_models.hierarchical_bayes.artifacts.save_fit",
+                fake_save_fit,
+            ):
+                trainer.fit(bundle)
+        return recorded["meta"]
+
+    def test_meta_records_geometry_only_where_it_applied(self):
+        """The artifact must not claim a setting the sampler never used.
+
+        ``two_stage`` samples through ``fit_two_stage``, whose subject and population
+        kernels take no geometry arguments, so recording 0.95 on such a run would give an
+        analyst a number that never reached a sampler. ``estimator`` is in the same meta,
+        so the absence is self-explaining rather than ambiguous.
+        """
+        one = self._recorded_meta("one_stage")
+        self.assertEqual(one["target_accept_prob"], 0.95)
+        self.assertEqual(one["max_tree_depth"], 11)
+
+        two = self._recorded_meta("two_stage")
+        self.assertEqual(two["estimator"], "two_stage")
+        self.assertNotIn("target_accept_prob", two)
+        self.assertNotIn("max_tree_depth", two)
+
     def test_out_of_range_values_are_rejected(self):
         """A config typo fails at construction, not silently or hours in.
 
