@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the disRNN wrapper GPU image and push it to Beaker's registry.
+# Build the dynamic-foraging-bfm wrapper GPU image and push it to Beaker's registry.
 #
 # The Dockerfile git-clones all three repos itself (all public, no token needed), so
 # there is no build context to stage and you can run this from anywhere.
@@ -8,7 +8,10 @@
 #   bash beaker/build_and_push.sh [options]
 #
 # Options:
-#   --name NAME             Beaker image name (default: disrnn-wrapper)
+#   --name NAME             Beaker image name (default: dynamic-foraging-bfm-wrapper)
+#   --description TEXT      Notes recorded on the Beaker image itself (what changed and
+#                           why). Read back with `beaker image get`; keep it in sync with
+#                           the BUILD_LOG.md entry, which is the fuller record.
 #   --workspace WS          Beaker workspace (default: ai1/aind-dynamic-foraging-foundation-model)
 #   --ref REF               Branch/tag/SHA to bake into all repos (default: main)
 #   --wrapper-ref REF       Override the wrapper repo ref only
@@ -27,7 +30,8 @@
 set -euo pipefail
 
 # Defaults (override via the flags above — not env vars).
-IMAGE_NAME="disrnn-wrapper"
+IMAGE_NAME="dynamic-foraging-bfm-wrapper"
+DESCRIPTION=""
 WORKSPACE="ai1/aind-dynamic-foraging-foundation-model"
 WRAPPER_REF="main"
 DISPATCHER_REF="main"
@@ -35,11 +39,12 @@ FORAGING_MODELS_REF="main"
 FORCE_REBUILD=0
 FORCE_OVERRIDE_BEAKER=0
 
-usage() { sed -n '7,24p' "$0"; }
+usage() { sed -n '7,27p' "$0"; }
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --name)                  IMAGE_NAME="$2"; shift 2 ;;
+        --description)           DESCRIPTION="$2"; shift 2 ;;
         --workspace)             WORKSPACE="$2"; shift 2 ;;
         --ref)                   WRAPPER_REF="$2"; DISPATCHER_REF="$2"; FORAGING_MODELS_REF="$2"; shift 2 ;;
         --wrapper-ref)           WRAPPER_REF="$2"; shift 2 ;;
@@ -106,7 +111,13 @@ if [ "$REPLACE_EXISTING" -eq 1 ]; then
 fi
 
 # Push to Beaker's own registry.
-beaker image create --name "$IMAGE_NAME" -w "$WORKSPACE" "$IMAGE_NAME"
+# --description is passed only when non-empty: an omitted flag leaves the field unset,
+# whereas an explicit empty string is rejected.
+desc_arg=()
+if [ -n "$DESCRIPTION" ]; then
+    desc_arg=(--description "$DESCRIPTION")
+fi
+beaker image create --name "$IMAGE_NAME" -w "$WORKSPACE" "${desc_arg[@]}" "$IMAGE_NAME"
 
 echo
 echo "Done. Read the image ref to paste into experiment_mvp.yaml:"
