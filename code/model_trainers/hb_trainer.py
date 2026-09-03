@@ -291,6 +291,8 @@ class HBTrainer(ModelTrainer):
         few_shot_k: Any = FEW_SHOT_K,
         eval_every_n: int = 2,
         artifact_dir: Optional[str] = None,
+        target_accept_prob: float = 0.8,
+        max_tree_depth: int = 10,
         save_session_sites: bool = True,
         architecture: Mapping[str, Any] | Any = {},
         output_dir: str = "/results/outputs",
@@ -318,6 +320,16 @@ class HBTrainer(ModelTrainer):
             Per-subject train/eval session split, matching the neural models'.
         artifact_dir : str, optional
             Where to persist posterior draws and diagnostics.
+        target_accept_prob : float
+            NUTS target acceptance probability; NumPyro's default is 0.8 and Stan's
+            ``adapt_delta`` is the same quantity. Raising it to 0.9-0.95 shortens the
+            integrator's steps, the standard remedy for divergences that survive longer
+            warmup, at the cost of a slower fit. Exposed because divergences are curvature
+            the integrator cannot follow, so they are **not** fixed by more draws.
+        max_tree_depth : int
+            NUTS maximum trajectory depth (NumPyro default 10). Raise only if the sampler
+            reports saturating it; a saturated tree means the step size is too small for
+            the posterior's scale, which is a different failure from divergence.
         save_session_sites : bool
             Persist the session level too (``save_fit``'s ``include_session_sites``, which
             defaults to off). On the ``one_stage`` route that adds ``session_log_lik``,
@@ -340,6 +352,8 @@ class HBTrainer(ModelTrainer):
         self.few_shot_k = tuple(few_shot_k)
         self.eval_every_n = int(eval_every_n)
         self.artifact_dir = artifact_dir
+        self.target_accept_prob = float(target_accept_prob)
+        self.max_tree_depth = int(max_tree_depth)
         self.save_session_sites = bool(save_session_sites)
         self.output_dir = output_dir
 
@@ -417,6 +431,10 @@ class HBTrainer(ModelTrainer):
                     # override the published 10.0; without it recorded, an offline replay
                     # would silently rescale beta. See dispatcher #115.
                     "beta_max": beta_max,
+                    # Recorded so a rung's convergence can be read against the settings
+                    # that produced it, without going back to the launch config.
+                    "target_accept_prob": self.target_accept_prob,
+                    "max_tree_depth": self.max_tree_depth,
                     "seed": self.seed,
                     **_source_revisions(),
                 },
@@ -624,7 +642,15 @@ class HBTrainer(ModelTrainer):
 
         if estimator == "one_stage":
             mcmc = MCMC(
-                NUTS(hattori2019_three_level),
+                # Integrator geometry is configurable because the two diagnostic
+                # failures have different cures: divergences want longer warmup or a
+                # higher target acceptance, while low ESS on clean geometry is the only
+                # one more draws actually fixes.
+                NUTS(
+                    hattori2019_three_level,
+                    target_accept_prob=self.target_accept_prob,
+                    max_tree_depth=self.max_tree_depth,
+                ),
                 num_warmup=num_warmup, num_samples=num_samples, num_chains=num_chains,
                 chain_method="vectorized", progress_bar=False,
             )
