@@ -455,9 +455,21 @@ class HBTrainer(ModelTrainer):
                     # would silently rescale beta. See dispatcher #115.
                     "beta_max": beta_max,
                     # Recorded so a rung's convergence can be read against the settings
-                    # that produced it, without going back to the launch config.
-                    "target_accept_prob": self.target_accept_prob,
-                    "max_tree_depth": self.max_tree_depth,
+                    # that produced it, without going back to the launch config -- but
+                    # only for the estimator they actually reached. two_stage samples via
+                    # fit_two_stage, whose kernels take no geometry arguments, so writing
+                    # these there would state a setting the fit never used: an analyst
+                    # reading target_accept_prob 0.95 off a two_stage artifact would be
+                    # reading a number that never left this file. `estimator` is in the
+                    # same meta, so their absence is self-explaining.
+                    **(
+                        {
+                            "target_accept_prob": self.target_accept_prob,
+                            "max_tree_depth": self.max_tree_depth,
+                        }
+                        if estimator == "one_stage"
+                        else {}
+                    ),
                     "seed": self.seed,
                     **_source_revisions(),
                 },
