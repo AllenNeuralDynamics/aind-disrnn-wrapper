@@ -321,12 +321,17 @@ class HBTrainer(ModelTrainer):
         artifact_dir : str, optional
             Where to persist posterior draws and diagnostics.
         target_accept_prob : float
+            **Applies to ``estimator="one_stage"`` only.** The ``two_stage`` route runs
+            through ``fit_two_stage``, whose subject and population kernels are constructed
+            without geometry arguments, so setting this under ``two_stage`` has no effect.
             NUTS target acceptance probability; NumPyro's default is 0.8 and Stan's
             ``adapt_delta`` is the same quantity. Raising it to 0.9-0.95 shortens the
             integrator's steps, the standard remedy for divergences that survive longer
             warmup, at the cost of a slower fit. Exposed because divergences are curvature
             the integrator cannot follow, so they are **not** fixed by more draws.
         max_tree_depth : int
+            **Applies to ``estimator="one_stage"`` only**, for the same reason as
+            ``target_accept_prob``.
             NUTS maximum trajectory depth (NumPyro default 10). Raise only if the sampler
             reports saturating it; a saturated tree means the step size is too small for
             the posterior's scale, which is a different failure from divergence.
@@ -352,8 +357,26 @@ class HBTrainer(ModelTrainer):
         self.few_shot_k = tuple(few_shot_k)
         self.eval_every_n = int(eval_every_n)
         self.artifact_dir = artifact_dir
+        # Validated here because NumPyro does not. Verified against numpyro 0.21.0:
+        # NUTS(target_accept_prob=9.5) constructs AND samples to completion without any
+        # error, so a config typo (9.5 for 0.95) yields a fit whose step-size adaptation
+        # targeted an unreachable acceptance rate, with nothing in the log to say so --
+        # the diagnostics look like a hard posterior. max_tree_depth=0 does fail, but as
+        # `IndexError: index is out of bounds for axis 0 with size 0` from inside the
+        # integrator, hours into a run and with nothing pointing at the config.
         self.target_accept_prob = float(target_accept_prob)
+        if not 0.0 < self.target_accept_prob < 1.0:
+            raise ValueError(
+                f"target_accept_prob must be in (0, 1); got {self.target_accept_prob}. "
+                "It is a probability, the same quantity as Stan's adapt_delta -- 0.95, "
+                "not 95."
+            )
         self.max_tree_depth = int(max_tree_depth)
+        if self.max_tree_depth < 1:
+            raise ValueError(
+                f"max_tree_depth must be >= 1; got {self.max_tree_depth}. It is a "
+                "log2 bound on trajectory length (NumPyro's default is 10)."
+            )
         self.save_session_sites = bool(save_session_sites)
         self.output_dir = output_dir
 
