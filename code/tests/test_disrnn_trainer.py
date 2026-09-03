@@ -227,6 +227,44 @@ class TestDisrnnTrainer(unittest.TestCase):
         self.assertEqual(trainer.penalties["update_net_latent_penalty"], 1e-2)
         self.assertNotIn("update_net_latent_penalty_multiplier", trainer.penalties)
 
+    def test_multisubject_synthetic_bundle_fails_with_actionable_message(self):
+        trainer = DisrnnTrainer(
+            architecture={
+                "multisubject": True,
+                "latent_size": 4,
+                "update_net_n_units_per_layer": 8,
+                "update_net_n_layers": 2,
+                "choice_net_n_units_per_layer": 4,
+                "choice_net_n_layers": 1,
+                "activation": "leaky_relu",
+                "subject_embedding_size": 3,
+            },
+            penalties={
+                "latent_penalty": 1e-3,
+                "choice_net_latent_penalty": 1e-3,
+                "update_net_obs_penalty": 1e-3,
+                "update_net_latent_penalty": 1e-3,
+            },
+            training={
+                "lr": 1e-3,
+                "n_steps": 0,
+                "n_warmup_steps": 0,
+                "loss": "penalized_categorical",
+                "loss_param": 1.0,
+                "max_grad_norm": 1.0,
+            },
+            output_dir=str(self.output_dir),
+            seed=42,
+        )
+
+        with self.assertRaises(ValueError) as captured:
+            trainer.fit(self.bundle)
+
+        message = str(captured.exception)
+        self.assertIn("data=synthetic model=disrnn", message)
+        self.assertIn("model.architecture.multisubject=false", message)
+        self.assertIn("mice", message)
+
     def test_checkpoint_training(self):
         trainer = DisrnnTrainer(
             architecture={
