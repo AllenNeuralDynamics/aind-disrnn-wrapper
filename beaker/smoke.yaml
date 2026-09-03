@@ -1,12 +1,20 @@
-## Beaker smoke test for the disRNN image — proves the image works on a node
-## WITHOUT W&B, a sweep, or any real training.
+## Beaker smoke test for the dynamic-foraging-bfm image — proves the image works on a
+## node WITHOUT W&B, a sweep, or a real study.
 ##
 ## It checks, in one short job:
-##   1. image pulls + beaker/entrypoint.sh refreshes all runtime repos
+##   1. image pulls + beaker/entrypoint.sh refreshes all three runtime repos into the
+##      /workspace/aind-dynamic-foraging-bfm-* paths (ADR-0007)
 ##   2. JAX sees the GPU (jax.devices())
-##   3. Hydra composes the config across BOTH repos (the sibling-layout
-##      dependency) via `run_hpc --cfg job`, which prints the resolved config
-##      and exits — no training, no W&B.
+##   3. the models [bayes] extra is installed and importable (numpyro / arviz /
+##      hierarchical_bayes) — the reason this image exists alongside the older ones
+##   4. Hydra composes the config across BOTH repos (the sibling-layout dependency)
+##      via `run_hpc --cfg job`, which prints the resolved config and exits
+##   5. training actually starts and takes steps, on a deliberately tiny synthetic
+##      problem, with W&B offline so no API key or network is needed
+##
+## Keep the image ref and the /workspace paths in the command CONSISTENT: the paths
+## are baked into the image, so an old image with new paths (or the reverse) dies at
+## container startup with no logs. See AGENTS.md §10.
 ##
 ## Submit:
 ##   beaker experiment create \
@@ -14,11 +22,11 @@
 ## Watch it:  https://beaker.org/ex/<experiment-id>   (look for "SMOKE OK")
 
 version: v2
-description: disRNN image smoke test (GPU + imports + Hydra config, no W&B)
+description: dynamic-foraging-bfm image smoke (GPU + bayes imports + Hydra + first training steps, no W&B)
 tasks:
   - name: smoke
     image:
-      beaker: han-hou/disrnn-wrapper-main-20260712
+      beaker: han-hou/dynamic-foraging-bfm-wrapper-main-20260902
     command:
       - bash
       - /workspace/aind-dynamic-foraging-bfm-wrapper/beaker/entrypoint.sh
@@ -27,8 +35,33 @@ tasks:
       - |
         set -e
         python -c "import jax; print('JAX devices:', jax.devices())"
-        python -c "import aind_dynamic_foraging_models; print('foraging models import: OK')"
+        python -c "import aind_dynamic_foraging_models as m; print('foraging models:', m.__version__)"
+        python -c "import numpyro, arviz; print('bayes extra: numpyro', numpyro.__version__, 'arviz', arviz.__version__)"
+        python -c "from aind_dynamic_foraging_models import hierarchical_bayes; print('hierarchical_bayes import: OK')"
         python -m run_hpc --cfg job data=synthetic model=disrnn
+        # A real (tiny) training run: proves the trainer reaches and takes steps, not
+        # just that the config composes. Everything here is shrunk for wall time --
+        # the point is that training starts, not that it converges.
+        #
+        # data=synthetic_hierarchical, NOT data=synthetic: the disrnn model group sets
+        # architecture.multisubject=true, and the trainer derives max_n_subjects from the
+        # dataset's `num_subjects` metadata. Plain `synthetic` is single-agent and emits
+        # no such key, so max_n_subjects resolves to 0 and every subject id is rejected
+        # as out of range. The pairing cannot train at all -- it only ever looked fine
+        # under `--cfg job`, which never builds the data.
+        python -m run_hpc data=synthetic_hierarchical model=disrnn \
+          data.num_subjects=4 \
+          data.num_sessions_per_subject=4 \
+          data.num_trials=50 \
+          data.batch_size=4 \
+          model.training.n_steps=2 \
+          model.training.n_warmup_steps=1 \
+          model.training.checkpoint_every_n_steps=1 \
+          model.training.checkpoint_run_heldout_eval=false \
+          model.training.plot_choice_rule=false \
+          model.training.plot_update_rules=false \
+          model.training.plot_session_context_state_space=false \
+          model.training.auto_heldout_finetune.enabled=false
         echo "SMOKE OK"
     context:
       priority: low
@@ -45,5 +78,11 @@ tasks:
         value: main
       - name: FORAGING_MODELS_REF
         value: main
+      - name: BFM_OUTPUT_DIR
+        value: /results
+      # Offline keeps the smoke self-contained: it writes a local run directory and
+      # never contacts W&B, so this needs no API key and cannot fail on their API.
+      - name: WANDB_MODE
+        value: offline
     result:
       path: /results
