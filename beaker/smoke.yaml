@@ -42,9 +42,18 @@ tasks:
         # A real (tiny) training run: proves the trainer reaches and takes steps, not
         # just that the config composes. Everything here is shrunk for wall time --
         # the point is that training starts, not that it converges.
-        python -m run_hpc data=synthetic model=disrnn \
-          data.num_sessions=4 \
+        #
+        # data=synthetic_hierarchical, NOT data=synthetic: the disrnn model group sets
+        # architecture.multisubject=true, and the trainer derives max_n_subjects from the
+        # dataset's `num_subjects` metadata. Plain `synthetic` is single-agent and emits
+        # no such key, so max_n_subjects resolves to 0 and every subject id is rejected
+        # as out of range. The pairing cannot train at all -- it only ever looked fine
+        # under `--cfg job`, which never builds the data.
+        python -m run_hpc data=synthetic_hierarchical model=disrnn \
+          data.num_subjects=4 \
+          data.num_sessions_per_subject=4 \
           data.num_trials=50 \
+          data.batch_size=4 \
           model.training.n_steps=2 \
           model.training.n_warmup_steps=1 \
           model.training.checkpoint_every_n_steps=1 \
