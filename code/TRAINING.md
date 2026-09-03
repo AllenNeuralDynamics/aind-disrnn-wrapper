@@ -530,6 +530,17 @@ environment.
   parameter's label misstates every value), and `hb/conditioning_curve` (held-out
   likelihood against context sessions k). Figure failures are caught and logged — a
   figure is never worth losing a completed multi-hour fit over.
+- **`utils/hb_figures.py` uses no arviz API, deliberately.** The first version of this
+  module called `az.from_netcdf`, `az.InferenceData(**groups)`, `idata.groups()`,
+  `az.plot_rank` and `az.plot_energy`. Every one of those is wrong on one of arviz's two
+  major lines: `InferenceData` is a class on 0.x and an alias for `xarray.DataTree` on 1.x,
+  and `.groups` is a method returning bare names on 0.x but a property returning node paths
+  on 1.x. The Beaker image resolves 1.3.0, so the module would have failed there — and its
+  sibling call in `save_fit` did exactly that, crashing every HB run
+  (`aind-dynamic-foraging-models` #64/#68). The module now reads plain
+  `xarray.Dataset` objects and draws traces, between-chain rank uniformity and the energy
+  distribution directly with matplotlib, so there is no arviz version to be wrong about.
+  arviz itself is now pinned to `>=1.0,<2` in the models `[bayes]` extra.
 - **`utils/hb_figures.load_fit` reads either artifact layout.** Fits written before
   `aind-dynamic-foraging-models` #64 stored each group at the netCDF root, where
   `az.from_netcdf` returns an *empty* InferenceData without raising; the loader detects

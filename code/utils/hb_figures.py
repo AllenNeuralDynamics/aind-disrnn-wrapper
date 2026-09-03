@@ -4,6 +4,15 @@ Split by audience, because the two differ. The diagnostic set decides whether th
 may be quoted at all; the reading set is what goes in a talk. Both are logged from inside
 the run, so a fit that cost hours never has to be repeated to see it.
 
+**No arviz API is used here, deliberately.** `arviz` is an unbounded dependency of the
+models `[bayes]` extra, and its 0.x and 1.x lines disagree on the basics: `InferenceData`
+is a class on 0.x and an alias for `xarray.DataTree` on 1.x, `.groups` is a method
+returning bare names on 0.x and a property returning node paths on 1.x. Figure code that
+touches those breaks on whichever line the image did not happen to resolve -- which is
+exactly how `save_fit` came to crash every HB run (models #64/#68). Everything below reads
+plain `xarray.Dataset` objects and draws with matplotlib, so there is no arviz version to
+be wrong about.
+
 What is deliberately NOT here, and why:
 
 ``plot_shrinkage``
@@ -37,25 +46,37 @@ PARAM_NAMES = (
 
 
 def load_fit(netcdf_path, sample_stats_path=None):
-    """Read a saved fit back as an InferenceData, whichever layout it was written in.
+    """Read a saved fit back as ``{group_name: xarray.Dataset}``.
 
-    Fits written before the round-trip fix put each group at the netCDF root, where
-    ``az.from_netcdf`` returns an EMPTY InferenceData without raising. Handle both so
-    figures can be regenerated from any archived fit.
+    Handles both on-disk layouts, since fits written before models #64 stored each group at
+    the netCDF root rather than in a named group:
+
+    * grouped (current) -- ``/posterior`` and ``/sample_stats``
+    * flat (legacy) -- posterior variables at the root, diagnostics in a sidecar file
+
+    Returns
+    -------
+    dict of str to xarray.Dataset
+        Always contains ``"posterior"``; contains ``"sample_stats"`` when diagnostics were
+        found. Never an arviz object -- see the module docstring.
     """
-    import arviz as az
     import xarray as xr
 
-    idata = az.from_netcdf(str(netcdf_path))
-    if list(idata.groups()):
-        return idata
+    netcdf_path = str(netcdf_path)
+    groups = {}
+    try:
+        groups["posterior"] = xr.open_dataset(netcdf_path, group="posterior")
+        try:
+            groups["sample_stats"] = xr.open_dataset(netcdf_path, group="sample_stats")
+        except (OSError, KeyError):
+            pass
+    except (OSError, KeyError):
+        logger.info("Fit at %s is in the pre-grouped layout; reading the root.", netcdf_path)
+        groups["posterior"] = xr.open_dataset(netcdf_path)
 
-    logger.info("Fit at %s is in the pre-grouped layout; reading groups directly.",
-                netcdf_path)
-    groups = {"posterior": xr.open_dataset(str(netcdf_path))}
-    if sample_stats_path and Path(sample_stats_path).exists():
+    if "sample_stats" not in groups and sample_stats_path and Path(sample_stats_path).exists():
         groups["sample_stats"] = xr.open_dataset(str(sample_stats_path))
-    return az.InferenceData(**groups)
+    return groups
 
 
 def to_bounded(unconstrained, param_index, beta_max=10.0):
@@ -70,59 +91,93 @@ def to_bounded(unconstrained, param_index, beta_max=10.0):
     return norm.cdf(values)         # the three rates, on [0, 1]
 
 
-def plot_sampler_diagnostics(idata, path=None):
-    """Trace, rank and energy for the population parameters.
+def _draws(posterior, site="population_mean"):
+    """(chain, draw, param) array for one site, with the chain axis kept."""
+    values = np.asarray(posterior[site])
+    if values.ndim == 2:            # (draw, param) -- a single unlabelled chain
+        values = values[None, ...]
+    return values
 
-    These are the figures a fit is judged on before its numbers are used: a trace that has
-    not mixed, ranks that are not uniform across chains, or an energy pathology all mean the
-    posterior is not the posterior.
+
+def plot_sampler_diagnostics(groups, path=None):
+    """Traces, between-chain rank uniformity, and the energy distribution.
+
+    These decide whether a fit's numbers may be used: a trace that has not mixed, ranks
+    that are not uniform across chains, or a narrow energy distribution against wide
+    transitions all mean the posterior being reported is not the posterior.
+
+    Drawn from the raw arrays rather than through ``az.plot_rank`` / ``az.plot_energy``,
+    for the version-independence reason in the module docstring.
     """
     import matplotlib
     matplotlib.use("Agg")
-    import arviz as az
     import matplotlib.pyplot as plt
 
-    n_chains = int(idata.posterior.sizes.get("chain", 1))
-    has_energy = (
-        "sample_stats" in idata.groups() and "energy" in idata.sample_stats
-    )
-    # Rank plots compare chains against each other, so they say nothing at one chain.
-    panels = ["trace"] + (["rank"] if n_chains > 1 else []) + (["energy"] if has_energy else [])
+    posterior = groups["posterior"]
+    stats = groups.get("sample_stats")
+    draws = _draws(posterior)
+    n_chains, n_draws, n_params = draws.shape
+    has_energy = stats is not None and "energy" in stats
 
-    fig, axes = plt.subplots(
-        len(panels), 1, figsize=(7.2, 2.6 * len(panels)), squeeze=False
-    )
-    axes = axes[:, 0]
-    for ax, kind in zip(axes, panels):
+    panels = ["trace"] + (["rank"] if n_chains > 1 else []) + (["energy"] if has_energy else [])
+    fig, axes = plt.subplots(len(panels), 1, figsize=(7.2, 2.6 * len(panels)), squeeze=False)
+
+    for ax, kind in zip(axes[:, 0], panels):
         if kind == "trace":
-            draws = np.asarray(idata.posterior["population_mean"])
-            for chain in range(draws.shape[0]):
-                for p in range(draws.shape[-1]):
+            for chain in range(n_chains):
+                for p in range(n_params):
                     ax.plot(draws[chain, :, p], lw=0.7, alpha=0.8)
             ax.set_title(
-                f"population_mean traces ({n_chains} chain{'s' if n_chains > 1 else ''})",
+                f"population_mean traces · {n_chains} chain{'s' if n_chains > 1 else ''}"
+                f" × {n_draws} draws",
                 loc="left", fontsize=9,
             )
             ax.set_xlabel("draw")
         elif kind == "rank":
-            az.plot_rank(idata, var_names=["population_mean"], ax=ax)
+            # Pool every draw of a parameter, rank them, and histogram each chain's ranks.
+            # Well-mixed chains each cover the pooled range uniformly; a chain stuck in its
+            # own region shows up as a skewed block.
+            flat = draws.reshape(n_chains * n_draws, n_params)
+            order = np.argsort(np.argsort(flat[:, 0]))          # ranks of param 0
+            ranks = order.reshape(n_chains, n_draws)
+            bins = np.linspace(0, n_chains * n_draws, min(20, n_draws) + 1)
+            for chain in range(n_chains):
+                ax.hist(ranks[chain], bins=bins, histtype="step", lw=1.2,
+                        label=f"chain {chain}")
+            ax.axhline(n_draws / (len(bins) - 1), color="0.4", ls="--", lw=0.9,
+                       label="uniform")
+            ax.set_title("Rank uniformity across chains · learn_rate_rew", loc="left",
+                         fontsize=9)
+            ax.set_xlabel("pooled rank")
+            ax.legend(fontsize=6, frameon=False, ncol=min(n_chains + 1, 5))
         else:
-            az.plot_energy(idata, ax=ax)
+            energy = np.asarray(stats["energy"]).ravel()
+            ax.hist(energy, bins=30, histtype="stepfilled", alpha=0.55,
+                    label="energy")
+            if energy.size > 1:
+                ax.hist(np.diff(energy), bins=30, histtype="step", lw=1.2,
+                        label="energy transitions")
+            ax.set_title("Energy distribution vs transitions", loc="left", fontsize=9)
+            ax.set_xlabel("energy")
+            ax.legend(fontsize=6, frameon=False)
 
+    notes = []
     if n_chains == 1:
-        fig.text(
-            0.01, 0.005,
-            "One chain: r-hat is undefined and rank plots are uninformative. "
-            "Not a converged fit.",
-            fontsize=7, style="italic",
-        )
+        notes.append("One chain: r-hat is undefined and rank uniformity is uninformative.")
+    if stats is not None and "diverging" in stats:
+        n_div = int(np.asarray(stats["diverging"]).sum())
+        total = n_chains * n_draws
+        notes.append(f"{n_div}/{total} divergent transitions.")
+    if notes:
+        fig.text(0.01, 0.004, "  ".join(notes), fontsize=7, style="italic")
+
     fig.tight_layout()
     if path:
         fig.savefig(str(path), dpi=170, bbox_inches="tight")
     return fig
 
 
-def plot_population_posteriors(idata, beta_max=10.0, path=None):
+def plot_population_posteriors(groups, beta_max=10.0, path=None):
     """Population posterior per parameter, on the parameter's own scale.
 
     Drawn post-transform because plotting unconstrained coordinates under a bounded
@@ -133,7 +188,7 @@ def plot_population_posteriors(idata, beta_max=10.0, path=None):
     import matplotlib.pyplot as plt
     from scipy.stats import gaussian_kde
 
-    draws = np.asarray(idata.posterior["population_mean"]).reshape(-1, len(PARAM_NAMES))
+    draws = _draws(groups["posterior"]).reshape(-1, len(PARAM_NAMES))
     fig, axes = plt.subplots(
         len(PARAM_NAMES), 1, figsize=(4.6, 1.15 * len(PARAM_NAMES)), squeeze=False
     )
@@ -182,33 +237,29 @@ def log_hb_figures(
     dict
         Figure key to written path, for the keys that were produced.
     """
+    output_dir = Path(output_dir or ".")
+    output_dir.mkdir(parents=True, exist_ok=True)
     written = {}
 
-    try:
-        output_dir = Path(output_dir or ".")
-        output_dir.mkdir(parents=True, exist_ok=True)
-        idata = load_fit(fit_paths.get("netcdf"), fit_paths.get("sample_stats"))
+    groups = load_fit(fit_paths.get("netcdf"), fit_paths.get("sample_stats"))
 
-        specs = [
-            ("hb/diagnostics", "hb_diagnostics.png",
-             lambda p: plot_sampler_diagnostics(idata, path=p)),
-            ("hb/population_posterior", "hb_population_posterior.png",
-             lambda p: plot_population_posteriors(idata, beta_max=beta_max, path=p)),
-        ]
-        if scores:
-            from aind_dynamic_foraging_models.hierarchical_bayes.plotting import (
-                plot_conditioning_curve,
-            )
-            specs.append((
-                "hb/conditioning_curve", "hb_conditioning_curve.png",
-                lambda p: plot_conditioning_curve(
-                    scores, references=references, path=p,
-                    title="Held-out likelihood vs context sessions",
-                ),
-            ))
-    except Exception:
-        logger.exception("Could not prepare HB figures; continuing.")
-        return written
+    specs = [
+        ("hb/diagnostics", "hb_diagnostics.png",
+         lambda p: plot_sampler_diagnostics(groups, path=p)),
+        ("hb/population_posterior", "hb_population_posterior.png",
+         lambda p: plot_population_posteriors(groups, beta_max=beta_max, path=p)),
+    ]
+    if scores:
+        from aind_dynamic_foraging_models.hierarchical_bayes.plotting import (
+            plot_conditioning_curve,
+        )
+        specs.append((
+            "hb/conditioning_curve", "hb_conditioning_curve.png",
+            lambda p: plot_conditioning_curve(
+                scores, references=references, path=p,
+                title="Held-out likelihood vs context sessions",
+            ),
+        ))
 
     for key, filename, build in specs:
         path = output_dir / filename
