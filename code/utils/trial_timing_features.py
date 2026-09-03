@@ -125,9 +125,12 @@ def compute_timing_features(
     database ``session_id`` (surfaced as ``ses_idx`` by the trial loader).
 
     The read is scoped to just ``subject_ids`` (their partition files), so it is
-    fast even though it touches both the trial and event tables. Only mature
-    sessions in the three standard curricula contribute — matching the trainer's
-    selection — but this frame is merged by key, so any extra rows are harmless.
+    fast even though it touches both the trial and event tables. It includes
+    every session present for those subjects, with no stage or curriculum
+    filtering: restricting the output to a particular set of sessions is the
+    caller's responsibility, done by merging this frame onto an already-selected
+    trial dataframe by ``(ses_idx, trial)`` (see ``attach_timing_features``),
+    which naturally drops any rows the caller did not ask for.
     """
     import aind_dynamic_foraging_database as db  # noqa: PLC0415
 
