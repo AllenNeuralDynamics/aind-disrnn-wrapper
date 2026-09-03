@@ -265,6 +265,25 @@ class TestSamplerGeometry(unittest.TestCase):
         self.assertEqual(recorded.get("target_accept_prob"), 0.8)
         self.assertEqual(recorded.get("max_tree_depth"), 10)
 
+    def test_out_of_range_values_are_rejected(self):
+        """A config typo fails at construction, not silently or hours in.
+
+        NumPyro validates neither: verified against numpyro 0.21.0,
+        ``NUTS(target_accept_prob=9.5)`` constructs *and samples to completion* without
+        error, so 9.5-for-0.95 would produce a fit whose adaptation targeted an
+        unreachable acceptance rate with nothing in the log to say so.
+        ``max_tree_depth=0`` fails only inside the integrator, as an ``IndexError``.
+        Neither needs a sampler run to catch, so neither should cost one.
+        """
+        for bad in (9.5, 0.0, 1.0, -0.1):
+            with self.assertRaises(ValueError) as ctx:
+                HBTrainer(seed=0, target_accept_prob=bad)
+            self.assertIn("target_accept_prob", str(ctx.exception))
+        for bad in (0, -3):
+            with self.assertRaises(ValueError) as ctx:
+                HBTrainer(seed=0, max_tree_depth=bad)
+            self.assertIn("max_tree_depth", str(ctx.exception))
+
     def test_values_reach_nuts(self):
         """The configured values are what NUTS receives, not the signature defaults."""
         recorded = self._recorded_nuts_kwargs(
