@@ -273,7 +273,9 @@ The raw table is annotated with `external_split_partition=adapt|test`, and the
 bundle metadata records that partition column so downstream evaluation aligns
 the adaptation rows to `train_set`, runs the full sequence for `eval_set`, and
 scores only the test suffix. This avoids inventing pseudo-sessions or resetting
-hidden state. Start from
+hidden state. Baseline-RL evaluation follows the same contract: fitted
+parameters stay fixed while the full sequence updates the agent's Q-state,
+and likelihood metrics include only suffix choices. Start from
 `configs/data/external_bandit.yaml`; `subject_ids` may select a manifest
 subset, while `null` requires exact agreement between table and manifest
 subjects.

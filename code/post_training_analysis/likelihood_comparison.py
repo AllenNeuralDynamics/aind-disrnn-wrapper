@@ -582,15 +582,11 @@ def _evaluate_resolved_run_splits(
                 score_partition=split_payload.get("score_partition"),
             )
         else:
-            if split_payload.get("score_partition") is not None:
-                raise NotImplementedError(
-                    "Within-session prefix/suffix baseline scoring requires the "
-                    "state-preserving adaptation path tracked in wrapper issue #92."
-                )
             split_results[split_name] = _evaluate_baseline_training_split(
                 run,
                 split_name=split_name,
                 raw_df=split_payload["raw_df"],
+                score_partition=split_payload.get("score_partition"),
             )
 
     if not include_heldout:
@@ -1191,6 +1187,7 @@ def _evaluate_baseline_training_split(
     *,
     split_name: str,
     raw_df: Any,
+    score_partition: tuple[str, str] | None = None,
 ) -> dict[str, Any]:
     baseline_output = _load_baseline_output_for_run(run)
     if _baseline_output_is_multisubject_per_subject(baseline_output):
@@ -1199,6 +1196,7 @@ def _evaluate_baseline_training_split(
             split_name=split_name,
             raw_df=raw_df,
             baseline_output=baseline_output,
+            score_partition=score_partition,
         )
     else:
         session_metrics_df = _evaluate_baseline_global_sessions(
@@ -1206,6 +1204,7 @@ def _evaluate_baseline_training_split(
             split_name=split_name,
             raw_df=raw_df,
             baseline_output=baseline_output,
+            score_partition=score_partition,
         )
 
     subject_metrics_df = _aggregate_subject_metrics(
@@ -1275,6 +1274,7 @@ def _evaluate_baseline_global_sessions(
     split_name: str,
     raw_df: Any,
     baseline_output: Mapping[str, Any],
+    score_partition: tuple[str, str] | None = None,
 ) -> Any:
     fitted_params = baseline_output.get("fitted_params")
     if not isinstance(fitted_params, Mapping) or not fitted_params:
@@ -1295,6 +1295,7 @@ def _evaluate_baseline_global_sessions(
         reward_sessions=reward_sessions,
         seed=run.seed,
     )
+    score_masks = _extract_session_score_masks(raw_df, score_partition)
     subject_curriculum_map = _build_subject_curriculum_map(raw_df, metadata={})
     return _baseline_session_metrics_from_probabilities(
         run,
@@ -1303,6 +1304,7 @@ def _evaluate_baseline_global_sessions(
         session_subject_ids=session_subject_ids,
         choice_sessions=choice_sessions,
         choice_prob_sessions=choice_prob_sessions,
+        score_masks=score_masks,
         subject_curriculum_map=subject_curriculum_map,
     )
 
@@ -1313,6 +1315,7 @@ def _evaluate_baseline_multisubject_sessions(
     split_name: str,
     raw_df: Any,
     baseline_output: Mapping[str, Any],
+    score_partition: tuple[str, str] | None = None,
 ) -> Any:
     import pandas as pd
 
@@ -1353,6 +1356,7 @@ def _evaluate_baseline_multisubject_sessions(
             reward_sessions=reward_sessions,
             seed=run.seed,
         )
+        score_masks = _extract_session_score_masks(subject_df, score_partition)
         session_df_chunks.append(
             _baseline_session_metrics_from_probabilities(
                 run,
@@ -1361,6 +1365,7 @@ def _evaluate_baseline_multisubject_sessions(
                 session_subject_ids=session_subject_ids,
                 choice_sessions=choice_sessions,
                 choice_prob_sessions=choice_prob_sessions,
+                score_masks=score_masks,
                 subject_curriculum_map=subject_curriculum_map,
             )
         )
@@ -1377,17 +1382,24 @@ def _baseline_session_metrics_from_probabilities(
     choice_sessions: Sequence[Any],
     choice_prob_sessions: Sequence[Any],
     subject_curriculum_map: Mapping[Any, str],
+    score_masks: Sequence[Any] | None = None,
 ) -> Any:
     rows: list[dict[str, Any]] = []
-    for session_id, subject_id, choices, choice_prob in zip(
+    if score_masks is None:
+        score_masks = [None] * len(choice_sessions)
+    if len(score_masks) != len(choice_sessions):
+        raise ValueError("score_masks must align one-to-one with choice sessions.")
+    for session_id, subject_id, choices, choice_prob, score_mask in zip(
         session_ids,
         session_subject_ids,
         choice_sessions,
         choice_prob_sessions,
+        score_masks,
     ):
         total_log_likelihood, total_trials = _session_log_likelihood_from_choice_prob(
             choices,
             choice_prob,
+            score_mask=score_mask,
         )
         if total_trials <= 0:
             continue
@@ -2837,6 +2849,44 @@ def _extract_sessions_from_df(df: Any) -> tuple[list[Any], list[Any], list[Any],
     return choice_sessions, reward_sessions, session_ids, session_subject_ids
 
 
+def _extract_session_score_masks(
+    df: Any,
+    score_partition: tuple[str, str] | None,
+) -> list[Any] | None:
+    """Build per-session score masks aligned to valid binary-choice trials."""
+    if score_partition is None:
+        return None
+
+    import pandas as pd
+
+    normalized_df = _normalize_raw_dataframe(pd.DataFrame(df).copy())
+    partition_column, partition_value = score_partition
+    if partition_column not in normalized_df.columns:
+        raise ValueError(
+            f"Baseline raw data is missing trial partition column {partition_column!r}."
+        )
+
+    score_masks: list[Any] = []
+    ordered_session_ids = list(dict.fromkeys(normalized_df["ses_idx"].tolist()))
+    for session_id in ordered_session_ids:
+        session_df = normalized_df[normalized_df["ses_idx"] == session_id].sort_values("trial")
+        choice_arr = session_df["animal_response"].to_numpy(dtype=int)
+        valid_choice = (choice_arr == 0) | (choice_arr == 1)
+        if not valid_choice.any():
+            continue
+        score_masks.append(
+            (
+                session_df[partition_column].astype(str).to_numpy()[valid_choice]
+                == str(partition_value)
+            )
+        )
+    if not score_masks or not any(bool(mask.any()) for mask in score_masks):
+        raise ValueError(
+            f"No valid baseline trials remain for partition {partition_value!r}."
+        )
+    return score_masks
+
+
 def _build_subject_curriculum_map(
     raw_df: Any,
     *,
@@ -3000,6 +3050,8 @@ def _sort_metrics_dataframe(
 def _session_log_likelihood_from_choice_prob(
     choices: Any,
     choice_prob: Any,
+    *,
+    score_mask: Any | None = None,
 ) -> tuple[float, int]:
     import numpy as np
 
@@ -3025,6 +3077,13 @@ def _session_log_likelihood_from_choice_prob(
 
     choices_array = choices_array[:n_trials]
     valid_choice = (choices_array == 0) | (choices_array == 1)
+    if score_mask is not None:
+        score_mask_array = np.asarray(score_mask, dtype=bool)
+        if len(score_mask_array) != len(choices_array):
+            raise ValueError(
+                "score_mask length must match the aligned baseline choice sequence."
+            )
+        valid_choice &= score_mask_array
     if not np.any(valid_choice):
         return 0.0, 0
 

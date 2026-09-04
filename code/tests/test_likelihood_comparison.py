@@ -129,6 +129,48 @@ class TestTrainingSplitPayloads(unittest.TestCase):
         self.assertEqual(session_metrics.call_args.kwargs["output_df"].shape[0], 3)
         self.assertEqual(session_metrics.call_args.kwargs["raw_df"].shape[0], 3)
 
+    def test_baseline_eval_warms_up_on_prefix_and_scores_suffix(self):
+        run = types.SimpleNamespace(
+            model_index=0,
+            model_label="baseline",
+            model_dir="/tmp/baseline",
+            model_type="baseline_rl",
+            multisubject=False,
+            seed=7,
+            run_config={},
+        )
+        raw_df = pd.DataFrame(
+            {
+                "ses_idx": ["human-a__main"] * 2,
+                "trial": [0, 1],
+                "subject_id": ["human-a"] * 2,
+                "curriculum_name": ["external"] * 2,
+                "animal_response": [0, 1],
+                "earned_reward": [1.0, 0.0],
+                "external_split_partition": ["adapt", "test"],
+            }
+        )
+        baseline_output = {
+            "agent_class": "DummyAgent",
+            "agent_kwargs": {},
+            "fitted_params": {"biasL": 0.1},
+        }
+        with mock.patch(
+            "post_training_analysis.likelihood_comparison._perform_baseline_agent_rollout",
+            return_value=[[[0.01, 0.1], [0.99, 0.9]]],
+        ) as mocked_rollout:
+            session_metrics_df = _evaluate_baseline_global_sessions(
+                run,
+                split_name="eval",
+                raw_df=raw_df,
+                baseline_output=baseline_output,
+                score_partition=("external_split_partition", "test"),
+            )
+
+        self.assertEqual(mocked_rollout.call_args.kwargs["choice_sessions"][0].tolist(), [0, 1])
+        self.assertEqual(session_metrics_df["total_trials"].tolist(), [1])
+        self.assertAlmostEqual(float(session_metrics_df["likelihood"].iloc[0]), 0.9)
+
 
 @unittest.skipIf(
     pd is None or np is None or add_gru_model_results is None,
