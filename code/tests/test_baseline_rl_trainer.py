@@ -1640,7 +1640,10 @@ class TestBaselineRLTrainer(unittest.TestCase):
             "trial_partition_column": "external_split_partition",
             "test_trial_partition": "test",
         }
-        trainer = BaselineRLTrainer(output_dir=str(self.output_dir))
+        trainer = BaselineRLTrainer(
+            agent_class="ForagerQLearning",
+            output_dir=str(self.output_dir),
+        )
         record = trainer._build_multisubject_subject_records(
             raw_df=raw_df,
             metadata=metadata,
@@ -1684,7 +1687,10 @@ class TestBaselineRLTrainer(unittest.TestCase):
             "split_strategy": "within_session_prefix_suffix",
             "trial_partition_column": "external_split_partition",
         }
-        trainer = BaselineRLTrainer(output_dir=str(self.output_dir))
+        trainer = BaselineRLTrainer(
+            agent_class="ForagerQLearning",
+            output_dir=str(self.output_dir),
+        )
         with self.assertRaisesRegex(ValueError, "K=0 is a GRU zero-shot"):
             trainer._build_multisubject_subject_records(
                 raw_df=raw_df,

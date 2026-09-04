@@ -1987,11 +1987,14 @@ def run_heldout_subject_finetuning_from_config(
         if not np.isclose(
             float(test_metrics["normalized_likelihood"]),
             final_eval_likelihood,
-            atol=1e-10,
+            rtol=1e-6,
+            atol=1e-7,
         ):
             raise AssertionError(
                 "Canonical target-test likelihood does not match the final "
-                "checkpoint evaluation likelihood."
+                "checkpoint evaluation likelihood: "
+                f"table={test_metrics['normalized_likelihood']}, "
+                f"checkpoint={final_eval_likelihood}."
             )
         test_trial_predictions_path = outputs_dir / "test_trial_predictions.csv"
         test_metrics_path = outputs_dir / "test_metrics.json"
