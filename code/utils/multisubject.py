@@ -242,6 +242,7 @@ def merge_datasets_with_subject_index(
         y_names=base_y_names,
         batch_size=batch_size,
         batch_mode=merged_batch_mode,
+        rng=getattr(first_dataset, "rng", None),
     )
 
 

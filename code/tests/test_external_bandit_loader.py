@@ -48,7 +48,7 @@ def _optional_dependency_stubs():
                 self.y_names = list(y_names)
                 self.batch_size = batch_size
                 self.batch_mode = batch_mode
-                self.rng = rng
+                self.rng = rng if rng is not None else object()
 
             def get_all(self):
                 return {"xs": self._xs, "ys": self._ys}
@@ -188,6 +188,34 @@ class TestExternalSplitManifest(unittest.TestCase):
 
 
 class TestExternalBanditDatasetLoader(unittest.TestCase):
+    def test_rejects_subject_ids_that_collide_after_normalization(self):
+        table = _canonical_trials()
+        table.loc[table["subject_id"] == "rat-a", "subject_id"] = 1
+        table.loc[table["subject_id"] == "rat-b", "subject_id"] = "1"
+        manifest = _manifest()
+        manifest["subjects"] = [
+            {
+                "subject_id": 1,
+                "adapt_session_ids": ["s1", "s3"],
+                "test_session_ids": ["s2", "s4"],
+            }
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            table_path = temp_path / "trials.pkl"
+            manifest_path = temp_path / "split.json"
+            table.to_pickle(table_path)
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            loader = ExternalBanditDatasetLoader(
+                file_path=table_path,
+                split_manifest_path=manifest_path,
+                batch_size=None,
+                batch_mode="single",
+            )
+            with _optional_dependency_stubs():
+                with self.assertRaisesRegex(ValueError, "collide after string"):
+                    loader.load()
+
     def test_manifest_order_controls_subject_indices(self):
         manifest = _manifest()
         manifest["subjects"] = list(reversed(manifest["subjects"]))
@@ -326,6 +354,7 @@ class TestExternalBanditDatasetLoader(unittest.TestCase):
         )
         self.assertEqual(bundle.metadata["adapt_trial_partition"], "adapt")
         self.assertEqual(bundle.metadata["test_trial_partition"], "test")
+        self.assertIs(bundle.train_set.rng, bundle.eval_set.rng)
 
 
 if __name__ == "__main__":

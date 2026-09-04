@@ -216,12 +216,18 @@ class ExternalBanditDatasetLoader(DatasetLoader):
         split_by_subject = dict(manifest["split_by_subject"])
         schema_version = int(manifest["schema_version"])
 
-        available_subject_keys = {
-            str(_normalize_identifier(value)) for value in df["subject_id"].unique().tolist()
-        }
+        raw_subject_ids = df["subject_id"].unique().tolist()
+        normalized_subject_keys = [
+            str(_normalize_identifier(value)) for value in raw_subject_ids
+        ]
+        if len(set(normalized_subject_keys)) != len(normalized_subject_keys):
+            raise ValueError(
+                "Distinct table subject_id values collide after string normalization."
+            )
+        available_subject_keys = set(normalized_subject_keys)
         subject_id_by_key = {
             str(_normalize_identifier(value)): _normalize_identifier(value)
-            for value in df["subject_id"].unique().tolist()
+            for value in raw_subject_ids
         }
         manifest_subject_key_order = list(split_by_subject)
         manifest_subject_keys = set(manifest_subject_key_order)

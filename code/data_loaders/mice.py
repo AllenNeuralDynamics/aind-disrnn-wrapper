@@ -652,6 +652,7 @@ def _build_multisubject_bundle(
                     y_names=dataset.y_names,
                     batch_size=dataset.batch_size,
                     batch_mode=dataset.batch_mode,
+                    rng=dataset.rng,
                 )
 
             dataset_train = _select_sessions(item["train_session_ids"])
@@ -672,6 +673,7 @@ def _build_multisubject_bundle(
                 y_names=dataset.y_names,
                 batch_size=dataset.batch_size,
                 batch_mode=dataset.batch_mode,
+                rng=dataset.rng,
             )
             eval_ys = ys.copy()
             eval_ys[:adapt_prefix_trials, :, :] = -1
@@ -684,6 +686,7 @@ def _build_multisubject_bundle(
                 y_names=dataset.y_names,
                 batch_size=dataset.batch_size,
                 batch_mode=dataset.batch_mode,
+                rng=dataset.rng,
             )
         logger.info(
             "Built per-subject dataset for subject_id=%s (subject_index=%d): "
