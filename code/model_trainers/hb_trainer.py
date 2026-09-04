@@ -697,12 +697,20 @@ class HBTrainer(ModelTrainer):
                 #
                 # These four separate the two failure modes that look identical in r_hat
                 # and ESS alone:
-                #   num_steps   -- trajectory length. NUTS has NO tree_depth field; the
-                #                  docstring's derivation is log2(num_steps) + 1, and
-                #                  saturation at max_tree_depth means num_steps pinned near
-                #                  2**max_tree_depth - 1. Truncated trajectories mix slowly
-                #                  with ZERO divergences, and the fix is max_tree_depth --
+                #   num_steps   -- trajectory length. These are NumPyro's own state-field
+                #                  names, which is what this tuple must use: NumPyro has no
+                #                  `tree_depth` attribute (its docstring derives it as
+                #                  log2(num_steps) + 1), so asking for that name here
+                #                  collects nothing. Truncated trajectories mix slowly with
+                #                  ZERO divergences, and the fix is then max_tree_depth --
                 #                  nearly free -- rather than more draws.
+                #
+                #                  In the SAVED ARTIFACT the names differ, because
+                #                  az.from_numpyro maps them onto arviz's conventions and
+                #                  derives two more: read `n_steps`, `acceptance_rate`,
+                #                  `tree_depth` and `reached_max_tree_depth` from
+                #                  sample_stats. `reached_max_tree_depth` is the saturation
+                #                  check, so it does not have to be reconstructed by hand.
                 #   energy      -- the E-BFMI check for heavy tails the momentum cannot
                 #                  traverse, which more draws also will not fix.
                 #   accept_prob -- whether adaptation actually reached target_accept_prob;
