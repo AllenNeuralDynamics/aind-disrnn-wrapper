@@ -210,7 +210,7 @@ for behavioral datasets collected outside AIND. It always returns a multisubject
 `DatasetBundle`; its `train_set` is the adaptation partition and its
 `eval_set` is the untouched test partition.
 
-The canonical Parquet or pickle table has one row per trial and requires:
+The canonical Parquet table has one row per trial and requires:
 
 | Column | Contract |
 |--------|----------|

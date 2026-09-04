@@ -38,6 +38,7 @@ dependencies = [
     # the analysis code and its tests are not ported to. CI installs whatever is
     # unpinned, so without this the suite tests a stack nobody actually runs.
     "pandas<3",
+    "pyarrow>=17,<22",
     "wandb~=0.23.0",
     "hydra-core~=1.3.0",
     "omegaconf~=2.3.0",
