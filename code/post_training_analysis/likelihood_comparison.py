@@ -579,8 +579,14 @@ def _evaluate_resolved_run_splits(
                 dataset=split_payload["dataset"],
                 raw_df=split_payload["raw_df"],
                 bundle=bundle,
+                score_partition=split_payload.get("score_partition"),
             )
         else:
+            if split_payload.get("score_partition") is not None:
+                raise NotImplementedError(
+                    "Within-session prefix/suffix baseline scoring requires the "
+                    "state-preserving adaptation path tracked in wrapper issue #92."
+                )
             split_results[split_name] = _evaluate_baseline_training_split(
                 run,
                 split_name=split_name,
@@ -733,6 +739,42 @@ def _build_training_split_payloads(bundle: Any) -> dict[str, dict[str, Any]]:
         )
 
     full_session_ids = list(dict.fromkeys(raw_df["ses_idx"].tolist()))
+    trial_partition_column = metadata.get("trial_partition_column")
+    if trial_partition_column is not None:
+        if not isinstance(trial_partition_column, str) or not trial_partition_column:
+            raise ValueError("trial_partition_column metadata must be a non-empty string.")
+        if trial_partition_column not in raw_df.columns:
+            raise ValueError(
+                f"Trial-split raw data is missing {trial_partition_column!r}."
+            )
+        adapt_partition = str(metadata.get("adapt_trial_partition", "adapt"))
+        test_partition = str(metadata.get("test_trial_partition", "test"))
+        train_raw_df = raw_df[
+            raw_df[trial_partition_column].astype(str) == adapt_partition
+        ].copy()
+        test_rows = raw_df[trial_partition_column].astype(str) == test_partition
+        if train_raw_df.empty or not bool(test_rows.any()):
+            raise ValueError(
+                "Trial-split raw data must contain non-empty adaptation and test partitions."
+            )
+        return {
+            "train": {
+                "dataset": bundle.train_set,
+                "raw_df": train_raw_df,
+            },
+            # The eval dataset includes the prefix so the recurrent state reaches
+            # the correct boundary condition. Keep all rows aligned for forward
+            # evaluation, then score only the declared suffix.
+            "eval": {
+                "dataset": bundle.eval_set,
+                "raw_df": raw_df.copy(),
+                "score_partition": (trial_partition_column, test_partition),
+            },
+            "combined": {
+                "dataset": _resolve_full_dataset(bundle),
+                "raw_df": _subset_raw_df_by_session_ids(raw_df, full_session_ids),
+            },
+        }
     return {
         "train": {
             "dataset": bundle.train_set,
@@ -764,6 +806,7 @@ def _evaluate_rnn_split(
     dataset: Any,
     raw_df: Any,
     bundle: Any,
+    score_partition: tuple[str, str] | None = None,
 ) -> dict[str, Any]:
     if dataset is None:
         raise ValueError(f"Bundle is missing dataset for split={split_name!r}.")
@@ -785,11 +828,29 @@ def _evaluate_rnn_split(
     else:
         raise ValueError(f"Unexpected RNN model_type={run.model_type!r}")
 
+    metric_raw_df = raw_df
+    if score_partition is not None:
+        partition_column, partition_value = score_partition
+        if partition_column not in output_df.columns:
+            raise ValueError(
+                f"Model output is missing trial partition column {partition_column!r}."
+            )
+        output_df = output_df[
+            output_df[partition_column].astype(str) == partition_value
+        ].copy()
+        metric_raw_df = raw_df[
+            raw_df[partition_column].astype(str) == partition_value
+        ].copy()
+        if output_df.empty:
+            raise ValueError(
+                f"No model outputs remain for trial partition {partition_value!r}."
+            )
+
     session_metrics_df = _session_metrics_from_output_df(
         run,
         split_name=split_name,
         output_df=output_df,
-        raw_df=raw_df,
+        raw_df=metric_raw_df,
         metadata=dict(getattr(bundle, "metadata", {}) or {}),
         n_action_logits=n_action_logits,
     )

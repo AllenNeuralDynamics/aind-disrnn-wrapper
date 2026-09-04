@@ -24,12 +24,14 @@ except ModuleNotFoundError:  # pragma: no cover - local desktop Python may be mi
 from post_training_analysis.likelihood_comparison import (
     ResolvedLikelihoodRun,
     _baseline_session_metrics_from_probabilities,
+    _build_training_split_payloads,
     _build_plot_title_session_counts,
     _build_curriculum_palette,
     _deduplicate_model_labels,
     _evaluate_baseline_global_sessions,
     _evaluate_baseline_heldout_split,
     _evaluate_baseline_multisubject_sessions,
+    _evaluate_rnn_split,
     _load_training_bundle_for_run,
     _make_completed_split_result,
     _make_dataframe,
@@ -48,6 +50,84 @@ try:
     from utils.gru_evaluation import add_gru_model_results
 except ModuleNotFoundError:  # pragma: no cover - local desktop Python may be minimal
     add_gru_model_results = None
+
+
+@unittest.skipIf(pd is None, "pandas is not installed")
+class TestTrainingSplitPayloads(unittest.TestCase):
+    def test_trial_split_preserves_eval_warmup_and_limits_scoring(self):
+        raw_df = pd.DataFrame(
+            {
+                "subject_id": ["human-a"] * 6,
+                "ses_idx": ["human-a__main"] * 6,
+                "trial": list(range(6)),
+                "external_split_partition": ["adapt"] * 3 + ["test"] * 3,
+            }
+        )
+        bundle = types.SimpleNamespace(
+            raw=raw_df,
+            train_set="train-dataset",
+            eval_set="eval-dataset-with-prefix",
+            metadata={
+                "train_session_ids": ["human-a__main"],
+                "eval_session_ids": ["human-a__main"],
+                "trial_partition_column": "external_split_partition",
+                "adapt_trial_partition": "adapt",
+                "test_trial_partition": "test",
+            },
+            extras={"dataset": "full-dataset"},
+        )
+
+        payloads = _build_training_split_payloads(bundle)
+
+        self.assertEqual(len(payloads["train"]["raw_df"]), 3)
+        self.assertEqual(len(payloads["eval"]["raw_df"]), 6)
+        self.assertEqual(
+            payloads["eval"]["score_partition"],
+            ("external_split_partition", "test"),
+        )
+
+    def test_rnn_eval_scores_only_suffix_after_full_forward_pass(self):
+        output_df = pd.DataFrame(
+            {
+                "subject_id": ["human-a"] * 6,
+                "ses_idx": ["human-a__main"] * 6,
+                "trial": list(range(6)),
+                "external_split_partition": ["adapt"] * 3 + ["test"] * 3,
+            }
+        )
+        run = types.SimpleNamespace(model_type="gru")
+        bundle = types.SimpleNamespace(metadata={})
+        with (
+            mock.patch(
+                "post_training_analysis.likelihood_comparison._evaluate_gru_dataset",
+                return_value=(output_df, 2),
+            ) as evaluate,
+            mock.patch(
+                "post_training_analysis.likelihood_comparison._session_metrics_from_output_df",
+                return_value="session-metrics",
+            ) as session_metrics,
+            mock.patch(
+                "post_training_analysis.likelihood_comparison._aggregate_subject_metrics",
+                return_value="subject-metrics",
+            ),
+            mock.patch(
+                "post_training_analysis.likelihood_comparison._make_completed_split_result",
+                return_value={"status": "completed"},
+            ),
+        ):
+            result = _evaluate_rnn_split(
+                run,
+                split_name="eval",
+                dataset="full-eval-dataset",
+                raw_df=output_df,
+                bundle=bundle,
+                score_partition=("external_split_partition", "test"),
+            )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(evaluate.call_args.kwargs["raw_df"].shape[0], 6)
+        self.assertEqual(session_metrics.call_args.kwargs["output_df"].shape[0], 3)
+        self.assertEqual(session_metrics.call_args.kwargs["raw_df"].shape[0], 3)
 
 
 @unittest.skipIf(

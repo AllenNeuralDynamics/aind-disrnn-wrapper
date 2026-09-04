@@ -188,6 +188,30 @@ class TestExternalSplitManifest(unittest.TestCase):
 
 
 class TestExternalBanditDatasetLoader(unittest.TestCase):
+    def test_manifest_order_controls_subject_indices(self):
+        manifest = _manifest()
+        manifest["subjects"] = list(reversed(manifest["subjects"]))
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            table_path = temp_path / "trials.pkl"
+            manifest_path = temp_path / "split.json"
+            _canonical_trials().to_pickle(table_path)
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+            with _optional_dependency_stubs():
+                bundle = ExternalBanditDatasetLoader(
+                    file_path=table_path,
+                    split_manifest_path=manifest_path,
+                    batch_size=None,
+                    batch_mode="single",
+                ).load()
+
+        self.assertEqual(bundle.metadata["subject_ids"], ["rat-b", "rat-a"])
+        self.assertEqual(
+            bundle.metadata["subject_id_to_index"],
+            {"rat-b": 0, "rat-a": 1},
+        )
+
     def test_rejects_conflicting_species_provenance(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
@@ -296,6 +320,12 @@ class TestExternalBanditDatasetLoader(unittest.TestCase):
             [["adapt"] * 3 + ["test"] * 3, ["adapt"] * 3 + ["test"] * 3],
         )
         self.assertEqual(bundle.metadata["split_strategy"], "within_session_prefix_suffix")
+        self.assertEqual(
+            bundle.metadata["trial_partition_column"],
+            "external_split_partition",
+        )
+        self.assertEqual(bundle.metadata["adapt_trial_partition"], "adapt")
+        self.assertEqual(bundle.metadata["test_trial_partition"], "test")
 
 
 if __name__ == "__main__":

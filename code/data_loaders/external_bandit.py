@@ -223,9 +223,11 @@ class ExternalBanditDatasetLoader(DatasetLoader):
             str(_normalize_identifier(value)): _normalize_identifier(value)
             for value in df["subject_id"].unique().tolist()
         }
-        manifest_subject_keys = set(split_by_subject)
+        manifest_subject_key_order = list(split_by_subject)
+        manifest_subject_keys = set(manifest_subject_key_order)
         if self.subject_ids is None:
-            selected_subject_keys = manifest_subject_keys
+            selected_subject_key_order = manifest_subject_key_order
+            selected_subject_keys = set(selected_subject_key_order)
             if manifest_subject_keys != available_subject_keys:
                 raise ValueError(
                     "Without subject_ids filtering, the split manifest subjects must exactly "
@@ -234,9 +236,12 @@ class ExternalBanditDatasetLoader(DatasetLoader):
                     f"manifest_only={sorted(manifest_subject_keys - available_subject_keys)}."
                 )
         else:
-            selected_subject_keys = {
+            selected_subject_key_order = [
                 str(_normalize_identifier(value)) for value in self.subject_ids
-            }
+            ]
+            selected_subject_keys = set(selected_subject_key_order)
+            if len(selected_subject_keys) != len(selected_subject_key_order):
+                raise ValueError("subject_ids cannot contain duplicates.")
             missing_from_table = selected_subject_keys - available_subject_keys
             missing_from_manifest = selected_subject_keys - manifest_subject_keys
             if missing_from_table or missing_from_manifest:
@@ -257,11 +262,7 @@ class ExternalBanditDatasetLoader(DatasetLoader):
             }
         resolved_subject_ids = [
             subject_id_by_key[key]
-            for key in (
-                sorted(selected_subject_keys)
-                if self.subject_ids is None
-                else [str(_normalize_identifier(value)) for value in self.subject_ids]
-            )
+            for key in selected_subject_key_order
         ]
 
         resolved_dataset_id = _resolve_scalar_metadata(
@@ -300,6 +301,9 @@ class ExternalBanditDatasetLoader(DatasetLoader):
                 {
                     "trial_split_by_subject": split_by_subject,
                     "split_strategy": "within_session_prefix_suffix",
+                    "trial_partition_column": "external_split_partition",
+                    "adapt_trial_partition": "adapt",
+                    "test_trial_partition": "test",
                 }
             )
             session_split_by_subject = None

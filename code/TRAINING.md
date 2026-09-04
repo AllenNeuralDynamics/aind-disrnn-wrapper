@@ -246,7 +246,8 @@ Splits are versioned JSON rather than recomputed from row order:
 Every retained subject needs at least one adaptation and one test session. The
 two lists must be disjoint and together cover every retained session exactly
 once; missing, duplicated, overlapping, and unknown session IDs fail before
-training. The manifest list order is preserved in each split.
+training. Subject indexing follows the manifest's subject-list order, and the
+manifest list order is preserved in each split.
 
 Single-session datasets use schema version 2 with a prefix/suffix boundary:
 
@@ -268,7 +269,11 @@ Single-session datasets use schema version 2 with a prefix/suffix boundary:
 The adaptation dataset ends at the boundary. The evaluation dataset retains
 the full input sequence so the prefix establishes the recurrent initial
 condition at the suffix boundary, but prefix targets are masked from scoring.
-This avoids inventing pseudo-sessions or resetting hidden state. Start from
+The raw table is annotated with `external_split_partition=adapt|test`, and the
+bundle metadata records that partition column so downstream evaluation aligns
+the adaptation rows to `train_set`, runs the full sequence for `eval_set`, and
+scores only the test suffix. This avoids inventing pseudo-sessions or resetting
+hidden state. Start from
 `configs/data/external_bandit.yaml`; `subject_ids` may select a manifest
 subset, while `null` requires exact agreement between table and manifest
 subjects.
