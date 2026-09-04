@@ -75,8 +75,14 @@ def validate_canonical_bandit_table(df: pd.DataFrame) -> None:
             "(subject_id, ses_idx, trial)."
         )
     trial_values = pd.to_numeric(df["trial"], errors="coerce")
-    if trial_values.isna().any() or not np.equal(trial_values, np.floor(trial_values)).all():
-        raise ValueError("Canonical column 'trial' must contain integer-valued indices.")
+    if (
+        trial_values.isna().any()
+        or not np.equal(trial_values, np.floor(trial_values)).all()
+        or (trial_values < 0).any()
+    ):
+        raise ValueError(
+            "Canonical column 'trial' must contain non-negative integer-valued indices."
+        )
 
 
 def load_external_split_manifest(path: str | Path) -> dict[str, object]:

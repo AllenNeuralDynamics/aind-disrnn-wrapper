@@ -166,6 +166,12 @@ class TestCanonicalBanditValidation(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "reward aliases"):
             validate_canonical_bandit_table(df)
 
+    def test_rejects_negative_trial_index(self):
+        df = _canonical_trials()
+        df.loc[0, "trial"] = -1
+        with self.assertRaisesRegex(ValueError, "non-negative"):
+            validate_canonical_bandit_table(df)
+
 
 class TestExternalSplitManifest(unittest.TestCase):
     def test_rejects_unknown_schema_version(self):
