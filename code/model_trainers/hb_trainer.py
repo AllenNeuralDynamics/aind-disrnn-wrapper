@@ -690,7 +690,26 @@ class HBTrainer(ModelTrainer):
                 chain_method="vectorized", progress_bar=False,
             )
             mcmc.run(
-                key, choice_arr, reward_arr, valid_mask, session_mask, beta_max=beta_max
+                key, choice_arr, reward_arr, valid_mask, session_mask, beta_max=beta_max,
+                # NumPyro collects nothing but the sampler's own state unless asked, so
+                # without this the saved fit carries `diverging` and nothing else -- which
+                # is enough to see that a fit mixed badly and not enough to say why.
+                #
+                # These four separate the two failure modes that look identical in r_hat
+                # and ESS alone:
+                #   num_steps   -- trajectory length. NUTS has NO tree_depth field; the
+                #                  docstring's derivation is log2(num_steps) + 1, and
+                #                  saturation at max_tree_depth means num_steps pinned near
+                #                  2**max_tree_depth - 1. Truncated trajectories mix slowly
+                #                  with ZERO divergences, and the fix is max_tree_depth --
+                #                  nearly free -- rather than more draws.
+                #   energy      -- the E-BFMI check for heavy tails the momentum cannot
+                #                  traverse, which more draws also will not fix.
+                #   accept_prob -- whether adaptation actually reached target_accept_prob;
+                #                  a large gap means warmup ended before adaptation settled.
+                #   diverging   -- already used for the divergence count; named explicitly
+                #                  now that the tuple is explicit.
+                extra_fields=("num_steps", "energy", "accept_prob", "diverging"),
             )
             samples = mcmc.get_samples()
             population = {
