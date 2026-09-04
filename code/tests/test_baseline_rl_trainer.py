@@ -1626,7 +1626,7 @@ class TestBaselineRLTrainer(unittest.TestCase):
                 "ses_idx": ["rat-a__s1"] * 6,
                 "trial": list(range(6)),
                 "animal_response": [0, 1, 0, 1, 1, 0],
-                "rewarded": [1, 0, 1, 0, 1, 0],
+                "earned_reward": [1, 0, 1, 0, 1, 0],
                 "curriculum_name": ["external"] * 6,
                 "external_split_partition": ["adapt"] * 3 + ["test"] * 3,
             }
@@ -1673,7 +1673,7 @@ class TestBaselineRLTrainer(unittest.TestCase):
                 "ses_idx": ["rat-a__s1"] * 2,
                 "trial": [0, 1],
                 "animal_response": [0, 1],
-                "rewarded": [1, 0],
+                "earned_reward": [1, 0],
                 "external_split_partition": ["adapt", "test"],
                 "target_adaptation_selected": [False, False],
             }
