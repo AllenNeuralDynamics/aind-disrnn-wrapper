@@ -22,7 +22,12 @@ CANONICAL_REQUIRED_COLUMNS = (
     "rewarded",
     "earned_reward",
 )
-SPLIT_MANIFEST_SCHEMA_VERSION = 1
+SESSION_SPLIT_MANIFEST_SCHEMA_VERSION = 1
+TRIAL_SPLIT_MANIFEST_SCHEMA_VERSION = 2
+SUPPORTED_SPLIT_MANIFEST_SCHEMA_VERSIONS = {
+    SESSION_SPLIT_MANIFEST_SCHEMA_VERSION,
+    TRIAL_SPLIT_MANIFEST_SCHEMA_VERSION,
+}
 
 
 def _normalize_identifier(value):
@@ -75,16 +80,17 @@ def validate_canonical_bandit_table(df: pd.DataFrame) -> None:
 
 
 def load_external_split_manifest(path: str | Path) -> dict[str, object]:
-    """Load and validate a version-1 adaptation/test session manifest."""
+    """Load an explicit session split (v1) or within-session prefix split (v2)."""
     manifest_path = Path(path)
     with manifest_path.open("r", encoding="utf-8") as stream:
         manifest = json.load(stream)
     if not isinstance(manifest, dict):
         raise ValueError("External split manifest must be a JSON object.")
-    if manifest.get("schema_version") != SPLIT_MANIFEST_SCHEMA_VERSION:
+    schema_version = manifest.get("schema_version")
+    if schema_version not in SUPPORTED_SPLIT_MANIFEST_SCHEMA_VERSIONS:
         raise ValueError(
-            "External split manifest schema_version must be "
-            f"{SPLIT_MANIFEST_SCHEMA_VERSION}."
+            "External split manifest schema_version must be one of "
+            f"{sorted(SUPPORTED_SPLIT_MANIFEST_SCHEMA_VERSIONS)}."
         )
     subjects = manifest.get("subjects")
     if not isinstance(subjects, list) or not subjects:
@@ -97,24 +103,50 @@ def load_external_split_manifest(path: str | Path) -> dict[str, object]:
         subject_key = str(_normalize_identifier(row["subject_id"]))
         if subject_key in split_by_subject:
             raise ValueError(f"Duplicate subject_id={subject_key!r} in split manifest.")
-        adapt = row.get("adapt_session_ids")
-        test = row.get("test_session_ids")
-        if not isinstance(adapt, list) or not adapt or not isinstance(test, list) or not test:
-            raise ValueError(
-                f"Subject {subject_key!r} needs non-empty adapt_session_ids and "
-                "test_session_ids lists."
-            )
-        normalized_adapt = [str(_normalize_identifier(value)) for value in adapt]
-        normalized_test = [str(_normalize_identifier(value)) for value in test]
-        all_ids = normalized_adapt + normalized_test
-        if len(all_ids) != len(set(all_ids)):
-            raise ValueError(
-                f"Subject {subject_key!r} has duplicate or overlapping session IDs."
-            )
-        split_by_subject[subject_key] = {
-            "adapt_session_ids": normalized_adapt,
-            "test_session_ids": normalized_test,
-        }
+        if schema_version == SESSION_SPLIT_MANIFEST_SCHEMA_VERSION:
+            adapt = row.get("adapt_session_ids")
+            test = row.get("test_session_ids")
+            if (
+                not isinstance(adapt, list)
+                or not adapt
+                or not isinstance(test, list)
+                or not test
+            ):
+                raise ValueError(
+                    f"Subject {subject_key!r} needs non-empty adapt_session_ids and "
+                    "test_session_ids lists."
+                )
+            normalized_adapt = [str(_normalize_identifier(value)) for value in adapt]
+            normalized_test = [str(_normalize_identifier(value)) for value in test]
+            all_ids = normalized_adapt + normalized_test
+            if len(all_ids) != len(set(all_ids)):
+                raise ValueError(
+                    f"Subject {subject_key!r} has duplicate or overlapping session IDs."
+                )
+            split_by_subject[subject_key] = {
+                "adapt_session_ids": normalized_adapt,
+                "test_session_ids": normalized_test,
+            }
+        else:
+            session_id = row.get("session_id")
+            adapt_prefix_trials = row.get("adapt_prefix_trials")
+            total_trials = row.get("total_trials")
+            if session_id is None:
+                raise ValueError(f"Subject {subject_key!r} needs a session_id.")
+            if (
+                not isinstance(adapt_prefix_trials, int)
+                or not isinstance(total_trials, int)
+                or adapt_prefix_trials <= 0
+                or adapt_prefix_trials >= total_trials
+            ):
+                raise ValueError(
+                    f"Subject {subject_key!r} needs 0 < adapt_prefix_trials < total_trials."
+                )
+            split_by_subject[subject_key] = {
+                "session_id": str(_normalize_identifier(session_id)),
+                "adapt_prefix_trials": adapt_prefix_trials,
+                "total_trials": total_trials,
+            }
     manifest["split_by_subject"] = split_by_subject
     manifest["manifest_path"] = str(manifest_path)
     return manifest
@@ -182,6 +214,7 @@ class ExternalBanditDatasetLoader(DatasetLoader):
         validate_canonical_bandit_table(df)
         manifest = load_external_split_manifest(self.split_manifest_path)
         split_by_subject = dict(manifest["split_by_subject"])
+        schema_version = int(manifest["schema_version"])
 
         available_subject_keys = {
             str(_normalize_identifier(value)) for value in df["subject_id"].unique().tolist()
@@ -241,18 +274,36 @@ class ExternalBanditDatasetLoader(DatasetLoader):
             "source": "external_bandit_file",
             "file_path": str(self.file_path),
             "split_manifest_path": str(self.split_manifest_path),
-            "split_manifest_schema_version": SPLIT_MANIFEST_SCHEMA_VERSION,
+            "split_manifest_schema_version": schema_version,
             "split_strategy": "explicit_manifest",
             "dataset_id": resolved_dataset_id,
             "species": resolved_species,
             "features": self.features,
-            "adapt_session_ids_by_subject": {
-                key: value["adapt_session_ids"] for key, value in split_by_subject.items()
-            },
-            "test_session_ids_by_subject": {
-                key: value["test_session_ids"] for key, value in split_by_subject.items()
-            },
         }
+        if schema_version == SESSION_SPLIT_MANIFEST_SCHEMA_VERSION:
+            metadata.update(
+                {
+                    "adapt_session_ids_by_subject": {
+                        key: value["adapt_session_ids"]
+                        for key, value in split_by_subject.items()
+                    },
+                    "test_session_ids_by_subject": {
+                        key: value["test_session_ids"]
+                        for key, value in split_by_subject.items()
+                    },
+                }
+            )
+            session_split_by_subject = split_by_subject
+            trial_split_by_subject = None
+        else:
+            metadata.update(
+                {
+                    "trial_split_by_subject": split_by_subject,
+                    "split_strategy": "within_session_prefix_suffix",
+                }
+            )
+            session_split_by_subject = None
+            trial_split_by_subject = split_by_subject
         metadata.update(self.extras)
         logger.info(
             "Loading canonical external bandit dataset_id=%s species=%s with %d subjects",
@@ -269,5 +320,6 @@ class ExternalBanditDatasetLoader(DatasetLoader):
             batch_size=self.batch_size,
             batch_mode=self.batch_mode,
             metadata=metadata,
-            session_split_by_subject=split_by_subject,
+            session_split_by_subject=session_split_by_subject,
+            trial_split_by_subject=trial_split_by_subject,
         )

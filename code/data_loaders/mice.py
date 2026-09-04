@@ -367,8 +367,11 @@ def _build_multisubject_bundle(
     metadata: Mapping[str, object],
     skip_subjects_with_insufficient_sessions: bool = False,
     session_split_by_subject: Mapping[str, Mapping[str, object]] | None = None,
+    trial_split_by_subject: Mapping[str, Mapping[str, object]] | None = None,
 ) -> DatasetBundle:
     """Build a merged multisubject dataset bundle from a trial dataframe."""
+    if session_split_by_subject is not None and trial_split_by_subject is not None:
+        raise ValueError("Specify either a session split or a trial split, not both.")
     if "subject_id" not in df.columns:
         raise ValueError(
             "Multisubject loading requires a 'subject_id' column in the raw dataframe."
@@ -424,7 +427,8 @@ def _build_multisubject_bundle(
             str(session_id): int(index)
             for index, session_id in enumerate(session_ids, start=1)
         }
-        if session_split_by_subject is None:
+        trial_split_spec = None
+        if session_split_by_subject is None and trial_split_by_subject is None:
             try:
                 train_session_ids, eval_session_ids = compute_train_eval_session_ids(
                     session_ids,
@@ -457,7 +461,7 @@ def _build_multisubject_bundle(
                     "sessions. Choose subjects with more sessions, reduce eval_every_n in the "
                     "source training config, or specify explicit subject IDs."
                 ) from exc
-        else:
+        elif session_split_by_subject is not None:
             subject_key = str(normalize_subject_id(subject_id))
             split_spec = session_split_by_subject.get(subject_key)
             if split_spec is None:
@@ -503,6 +507,46 @@ def _build_multisubject_bundle(
                 )
             train_session_ids = [source_to_session_id[value] for value in adapt_source_ids]
             eval_session_ids = [source_to_session_id[value] for value in test_source_ids]
+        else:
+            subject_key = str(normalize_subject_id(subject_id))
+            trial_split_spec = trial_split_by_subject.get(subject_key)
+            if trial_split_spec is None:
+                raise ValueError(
+                    "Explicit trial split manifest has no entry for "
+                    f"subject_id={subject_id!r}."
+                )
+            requested_session_id = str(
+                normalize_subject_id(trial_split_spec.get("session_id"))
+            )
+            normalized_source_ids = [
+                str(normalize_subject_id(value)) for value in source_session_ids
+            ]
+            if normalized_source_ids != [requested_session_id]:
+                raise ValueError(
+                    f"Trial split for subject {subject_id!r} requires exactly session "
+                    f"{requested_session_id!r}; retained sessions are {normalized_source_ids}."
+                )
+            total_trials = int(trial_split_spec.get("total_trials", -1))
+            adapt_prefix_trials = int(
+                trial_split_spec.get("adapt_prefix_trials", -1)
+            )
+            if total_trials != len(subject_df):
+                raise ValueError(
+                    f"Trial split for subject {subject_id!r} declares {total_trials} trials "
+                    f"but the canonical table contains {len(subject_df)}."
+                )
+            if adapt_prefix_trials <= 0 or adapt_prefix_trials >= total_trials:
+                raise ValueError(
+                    f"Trial split for subject {subject_id!r} needs a non-empty prefix and "
+                    "suffix."
+                )
+            train_session_ids = list(session_ids)
+            eval_session_ids = list(session_ids)
+            subject_df["external_split_partition"] = np.where(
+                np.arange(len(subject_df)) < adapt_prefix_trials,
+                "adapt",
+                "test",
+            )
         subject_df["subject_session_index"] = subject_df["ses_idx"].map(
             lambda session_id: session_index_by_session_id[str(session_id)]
         )
@@ -525,6 +569,7 @@ def _build_multisubject_bundle(
                 "train_session_ids": train_session_ids,
                 "eval_session_ids": eval_session_ids,
                 "session_index_by_session_id": session_index_by_session_id,
+                "trial_split_spec": trial_split_spec,
             }
         )
 
@@ -583,12 +628,12 @@ def _build_multisubject_bundle(
                 f"subject {subject_id}. Expected {expected_n_sessions}, got {xs_subject.shape[1]}."
             )
 
-        if session_split_by_subject is None:
+        if session_split_by_subject is None and trial_split_by_subject is None:
             dataset_train, dataset_eval = rnn_utils.split_dataset(
                 dataset,
                 eval_every_n=eval_every_n,
             )
-        else:
+        elif session_split_by_subject is not None:
             session_index = {
                 session_id: index
                 for index, session_id in enumerate(item["full_session_ids"])
@@ -611,6 +656,35 @@ def _build_multisubject_bundle(
 
             dataset_train = _select_sessions(item["train_session_ids"])
             dataset_eval = _select_sessions(item["eval_session_ids"])
+        else:
+            all_data = dataset.get_all()
+            xs = np.asarray(all_data["xs"])
+            ys = np.asarray(all_data["ys"])
+            split_spec = item["trial_split_spec"]
+            adapt_prefix_trials = int(split_spec["adapt_prefix_trials"])
+            dataset_class = dataset.__class__
+            dataset_train = dataset_class(
+                xs[:adapt_prefix_trials, :, :],
+                ys[:adapt_prefix_trials, :, :],
+                y_type=dataset.y_type,
+                n_classes=dataset.n_classes,
+                x_names=dataset.x_names,
+                y_names=dataset.y_names,
+                batch_size=dataset.batch_size,
+                batch_mode=dataset.batch_mode,
+            )
+            eval_ys = ys.copy()
+            eval_ys[:adapt_prefix_trials, :, :] = -1
+            dataset_eval = dataset_class(
+                xs,
+                eval_ys,
+                y_type=dataset.y_type,
+                n_classes=dataset.n_classes,
+                x_names=dataset.x_names,
+                y_names=dataset.y_names,
+                batch_size=dataset.batch_size,
+                batch_mode=dataset.batch_mode,
+            )
         logger.info(
             "Built per-subject dataset for subject_id=%s (subject_index=%d): "
             "full=%s train=%s eval=%s",

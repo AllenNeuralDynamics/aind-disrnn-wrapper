@@ -108,6 +108,43 @@ def _manifest() -> dict:
     }
 
 
+def _prefix_trials() -> pd.DataFrame:
+    rows = []
+    for subject_id in ("human-a", "human-b"):
+        for trial in range(6):
+            rows.append(
+                {
+                    "dataset_id": "demo-humans",
+                    "species": "human",
+                    "subject_id": subject_id,
+                    "ses_idx": "main",
+                    "trial": trial,
+                    "animal_response": trial % 2,
+                    "rewarded": (trial + 1) % 2,
+                    "earned_reward": (trial + 1) % 2,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def _prefix_manifest() -> dict:
+    return {
+        "schema_version": 2,
+        "dataset_id": "demo-humans",
+        "species": "human",
+        "split_strategy": "within_session_prefix_suffix",
+        "subjects": [
+            {
+                "subject_id": subject_id,
+                "session_id": "main",
+                "adapt_prefix_trials": 3,
+                "total_trials": 6,
+            }
+            for subject_id in ("human-a", "human-b")
+        ],
+    }
+
+
 class TestCanonicalBanditValidation(unittest.TestCase):
     def test_accepts_binary_two_arm_table(self):
         validate_canonical_bandit_table(_canonical_trials())
@@ -133,7 +170,7 @@ class TestCanonicalBanditValidation(unittest.TestCase):
 class TestExternalSplitManifest(unittest.TestCase):
     def test_rejects_unknown_schema_version(self):
         manifest = _manifest()
-        manifest["schema_version"] = 2
+        manifest["schema_version"] = 3
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "split.json"
             path.write_text(json.dumps(manifest), encoding="utf-8")
@@ -226,6 +263,39 @@ class TestExternalBanditDatasetLoader(unittest.TestCase):
             with _optional_dependency_stubs():
                 with self.assertRaisesRegex(ValueError, "cover every retained session"):
                     loader.load()
+
+    def test_prefix_split_warms_eval_state_without_scoring_prefix(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            table_path = temp_path / "trials.pkl"
+            manifest_path = temp_path / "split.json"
+            _prefix_trials().to_pickle(table_path)
+            manifest_path.write_text(json.dumps(_prefix_manifest()), encoding="utf-8")
+
+            with _optional_dependency_stubs():
+                bundle = ExternalBanditDatasetLoader(
+                    file_path=table_path,
+                    split_manifest_path=manifest_path,
+                    batch_size=None,
+                    batch_mode="single",
+                ).load()
+
+        train = bundle.train_set.get_all()
+        eval_data = bundle.eval_set.get_all()
+        self.assertEqual(train["xs"].shape[:2], (3, 2))
+        self.assertEqual(eval_data["xs"].shape[:2], (6, 2))
+        self.assertTrue(np.all(train["ys"] >= 0))
+        self.assertTrue(np.all(eval_data["ys"][:3] == -1))
+        self.assertTrue(np.all(eval_data["ys"][3:] >= 0))
+        np.testing.assert_array_equal(
+            train["xs"],
+            eval_data["xs"][:3],
+        )
+        self.assertEqual(
+            bundle.raw.groupby("subject_id")["external_split_partition"].apply(list).tolist(),
+            [["adapt"] * 3 + ["test"] * 3, ["adapt"] * 3 + ["test"] * 3],
+        )
+        self.assertEqual(bundle.metadata["split_strategy"], "within_session_prefix_suffix")
 
 
 if __name__ == "__main__":
