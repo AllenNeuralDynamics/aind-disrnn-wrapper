@@ -35,6 +35,10 @@ from utils.baseline_rl_evaluation import (
 
 from base.interfaces import ModelTrainer
 from base.types import DatasetBundle
+from evaluation.target_transfer import (
+    build_binary_trial_predictions,
+    summarize_binary_trial_predictions,
+)
 from utils.multisubject import (
     build_subject_index_maps,
     compute_train_eval_session_ids,
@@ -115,18 +119,29 @@ def _compute_negLL_from_choice_prob(
 def _compute_likelihood_stats(
     choice_sessions: List[np.ndarray],
     choice_prob_sessions: List[np.ndarray],
+    score_masks: List[np.ndarray] | None = None,
 ) -> dict[str, float | int]:
     """Return aggregate log-likelihood stats plus normalized likelihood."""
     total_log_lik = 0.0
     total_trials = 0
 
-    for choices, choice_prob in zip(choice_sessions, choice_prob_sessions):
+    if score_masks is None:
+        score_masks = [np.ones(len(choices), dtype=bool) for choices in choice_sessions]
+    if len(score_masks) != len(choice_sessions):
+        raise ValueError("score_masks must align one-to-one with choice sessions.")
+
+    for choices, choice_prob, score_mask in zip(
+        choice_sessions, choice_prob_sessions, score_masks
+    ):
         choice_prob = np.asarray(choice_prob)
         n_trials = min(len(choices), int(choice_prob.shape[1]))
         if n_trials == 0:
             continue
         choices_idx = np.asarray(choices[:n_trials], dtype=int)
-        valid = choices_idx >= 0
+        score_mask = np.asarray(score_mask, dtype=bool).reshape(-1)
+        if len(score_mask) < n_trials:
+            raise ValueError("A score mask is shorter than its choice session.")
+        valid = (choices_idx >= 0) & score_mask[:n_trials]
         if not np.any(valid):
             continue
         trial_idx = np.arange(n_trials)[valid]
@@ -196,6 +211,7 @@ def _fit_subject_sessions_impl(
     eval_choices: List[np.ndarray],
     eval_rewards: List[np.ndarray],
     include_choice_prob_sessions: bool,
+    eval_score_masks: List[np.ndarray] | None = None,
 ) -> dict[str, Any]:
     """Fit one subject's sessions and return summary metrics."""
     agent_class_obj = getattr(generative_model, agent_class, None)
@@ -243,6 +259,7 @@ def _fit_subject_sessions_impl(
     eval_stats = _compute_likelihood_stats(
         eval_choices,
         eval_choice_prob_sessions,
+        score_masks=eval_score_masks,
     )
 
     output = {
@@ -279,6 +296,7 @@ def _fit_multisubject_subject_worker(payload: Mapping[str, Any]) -> dict[str, An
         eval_choices=list(payload["eval_choices"]),
         eval_rewards=list(payload["eval_rewards"]),
         include_choice_prob_sessions=False,
+        eval_score_masks=list(payload.get("eval_score_masks") or []) or None,
     )
     return {
         "subject_id": payload["subject_id"],
@@ -726,6 +744,11 @@ class BaselineRLTrainer(ModelTrainer):
 
         subject_records: list[dict[str, Any]] = []
         normalized_subject_series = raw_df["subject_id"].map(normalize_subject_id)
+        prefix_split = str(metadata.get("split_strategy")) == "within_session_prefix_suffix"
+        partition_column = str(
+            metadata.get("trial_partition_column", "external_split_partition")
+        )
+        test_partition = str(metadata.get("test_trial_partition", "test"))
         for subject_index, subject_id in ordered_subjects:
             subject_df = raw_df[normalized_subject_series == subject_id].copy()
             if subject_df.empty:
@@ -733,7 +756,44 @@ class BaselineRLTrainer(ModelTrainer):
             subject_df = subject_df.sort_values(["ses_idx", "trial"]).reset_index(drop=True)
             session_ids = list(dict.fromkeys(subject_df["ses_idx"].tolist()))
 
-            if train_session_id_set is not None and eval_session_id_set is not None:
+            if prefix_split:
+                if partition_column not in subject_df.columns:
+                    raise ValueError(
+                        "Prefix/suffix baseline fitting requires raw partition column "
+                        f"{partition_column!r}."
+                    )
+                if "target_adaptation_selected" in subject_df.columns:
+                    train_df = subject_df[
+                        subject_df["target_adaptation_selected"].astype(bool)
+                    ].copy()
+                else:
+                    adapt_partition = str(metadata.get("adapt_trial_partition", "adapt"))
+                    train_df = subject_df[
+                        subject_df[partition_column].astype(str).eq(adapt_partition)
+                    ].copy()
+                if train_df.empty:
+                    raise ValueError(
+                        "Subject-level Q-learning requires at least one adaptation trial; "
+                        f"subject_id={subject_id!r} has none. K=0 is a GRU zero-shot "
+                        "condition, not a fitted Q-learning condition."
+                    )
+                train_session_ids = list(dict.fromkeys(train_df["ses_idx"].tolist()))
+                eval_session_ids = list(session_ids)
+                train_choices, train_rewards, train_session_ids = self._extract_sessions_from_raw_df(
+                    train_df, session_ids=train_session_ids
+                )
+                eval_choices, eval_rewards, eval_session_ids = self._extract_sessions_from_raw_df(
+                    subject_df, session_ids=eval_session_ids
+                )
+                eval_score_masks, eval_trial_indices = [], []
+                for session_id in eval_session_ids:
+                    session_df = subject_df[subject_df["ses_idx"] == session_id].sort_values("trial")
+                    valid = session_df["animal_response"].isin([0, 1]).to_numpy()
+                    eval_score_masks.append(
+                        session_df[partition_column].astype(str).eq(test_partition).to_numpy()[valid]
+                    )
+                    eval_trial_indices.append(session_df["trial"].to_numpy(dtype=int)[valid])
+            elif train_session_id_set is not None and eval_session_id_set is not None:
                 train_session_ids = [
                     session_id
                     for session_id in session_ids
@@ -745,6 +805,16 @@ class BaselineRLTrainer(ModelTrainer):
                     if str(session_id) in eval_session_id_set
                 ]
                 if not train_session_ids or not eval_session_ids:
+                    if str(metadata.get("source")) == "external_bandit_file":
+                        if int(metadata.get("adapt_sessions_per_subject", -1)) == 0:
+                            raise ValueError(
+                                "Subject-level Q-learning requires at least one "
+                                "adaptation session; K=0 is a GRU zero-shot condition."
+                            )
+                        raise ValueError(
+                            "External target manifest/budget produced an empty Q-learning "
+                            f"adaptation or test split for subject_id={subject_id!r}."
+                        )
                     logger.warning(
                         "Could not resolve train/eval session ids from metadata for subject_id=%s; "
                         "falling back to eval_every_n=%s.",
@@ -761,14 +831,19 @@ class BaselineRLTrainer(ModelTrainer):
                     eval_every_n=eval_every_n,
                 )
 
-            train_choices, train_rewards, train_session_ids = self._extract_sessions_from_raw_df(
-                subject_df,
-                session_ids=train_session_ids,
-            )
-            eval_choices, eval_rewards, eval_session_ids = self._extract_sessions_from_raw_df(
-                subject_df,
-                session_ids=eval_session_ids,
-            )
+            if not prefix_split:
+                train_choices, train_rewards, train_session_ids = self._extract_sessions_from_raw_df(
+                    subject_df, session_ids=train_session_ids
+                )
+                eval_choices, eval_rewards, eval_session_ids = self._extract_sessions_from_raw_df(
+                    subject_df, session_ids=eval_session_ids
+                )
+                eval_score_masks = [np.ones(len(x), dtype=bool) for x in eval_choices]
+                eval_trial_indices = []
+                for session_id in eval_session_ids:
+                    session_df = subject_df[subject_df["ses_idx"] == session_id].sort_values("trial")
+                    valid = session_df["animal_response"].isin([0, 1]).to_numpy()
+                    eval_trial_indices.append(session_df["trial"].to_numpy(dtype=int)[valid])
 
             if not train_choices or not eval_choices:
                 raise ValueError(
@@ -788,6 +863,8 @@ class BaselineRLTrainer(ModelTrainer):
                     "train_rewards": train_rewards,
                     "eval_choices": eval_choices,
                     "eval_rewards": eval_rewards,
+                    "eval_score_masks": eval_score_masks,
+                    "eval_trial_indices": eval_trial_indices,
                     "train_session_ids": train_session_ids,
                     "eval_session_ids": eval_session_ids,
                 }
@@ -998,6 +1075,7 @@ class BaselineRLTrainer(ModelTrainer):
                 "train_rewards": subject_record["train_rewards"],
                 "eval_choices": subject_record["eval_choices"],
                 "eval_rewards": subject_record["eval_rewards"],
+                "eval_score_masks": subject_record["eval_score_masks"],
                 "train_session_ids": subject_record["train_session_ids"],
                 "eval_session_ids": subject_record["eval_session_ids"],
             }
@@ -1020,6 +1098,7 @@ class BaselineRLTrainer(ModelTrainer):
         aggregated_eval_choice_prob_sessions: list[np.ndarray] = []
         aggregated_eval_session_ids: list[Any] = []
         aggregated_eval_subject_ids: list[Any] = []
+        target_probability_rows: list[dict[str, Any]] = []
 
         if subject_parallel_workers == 1:
             for payload in worker_payloads:
@@ -1163,6 +1242,36 @@ class BaselineRLTrainer(ModelTrainer):
                 subject_eval_agent,
                 subject_eval_choice_prob_sessions,
             )
+            for session_id, trial_indices, choices, choice_prob, score_mask in zip(
+                subject_record["eval_session_ids"],
+                subject_record["eval_trial_indices"],
+                eval_choices,
+                subject_eval_choice_prob_sessions,
+                subject_record["eval_score_masks"],
+            ):
+                aligned_prob = _align_choice_prob_session(choice_prob, len(choices))
+                trial_indices = np.asarray(trial_indices, dtype=int).reshape(-1)
+                score_mask = np.asarray(score_mask, dtype=bool).reshape(-1)
+                if not (
+                    len(trial_indices) == len(choices) == len(score_mask)
+                ):
+                    raise ValueError(
+                        "Target trial indices, choices, and score mask must align."
+                    )
+                for trial_index, probability_1, should_score in zip(
+                    trial_indices,
+                    aligned_prob[1],
+                    score_mask,
+                ):
+                    if should_score:
+                        target_probability_rows.append(
+                            {
+                                "subject_id": normalize_subject_id(subject_id),
+                                "ses_idx": _normalize_identifier(session_id),
+                                "trial": int(trial_index),
+                                "probability_choice_1": float(probability_1),
+                            }
+                        )
 
             aggregated_train_choices.extend(train_choices)
             aggregated_train_rewards.extend(train_rewards)
@@ -1223,6 +1332,53 @@ class BaselineRLTrainer(ModelTrainer):
             float(subject_metrics_df["eval_total_log_likelihood"].sum()),
             int(subject_metrics_df["eval_total_trials"].sum()),
         )
+
+        target_probability_df = pd.DataFrame(target_probability_rows)
+        if target_probability_df.empty:
+            raise ValueError("Q-learning produced no scored target-test predictions.")
+        probability_lookup = {
+            (
+                normalize_subject_id(row.subject_id),
+                str(_normalize_identifier(row.ses_idx)),
+                int(row.trial),
+            ): float(row.probability_choice_1)
+            for row in target_probability_df.itertuples(index=False)
+        }
+        probability_choice_1 = np.asarray(
+            [
+                probability_lookup.get(
+                    (
+                        normalize_subject_id(row.subject_id),
+                        str(_normalize_identifier(row.ses_idx)),
+                        int(row.trial),
+                    ),
+                    np.nan,
+                )
+                for row in raw_df.itertuples(index=False)
+            ],
+            dtype=float,
+        )
+        test_trial_predictions = build_binary_trial_predictions(
+            raw_df,
+            metadata,
+            probability_choice_1=probability_choice_1,
+            model="q_learning",
+        )
+        test_metrics = summarize_binary_trial_predictions(test_trial_predictions)
+        if not np.isclose(
+            float(test_metrics["normalized_likelihood"]),
+            pooled_eval_trial_likelihood,
+            atol=1e-10,
+        ):
+            raise AssertionError(
+                "Canonical target-test likelihood does not match the pooled "
+                "Q-learning evaluation likelihood."
+            )
+        test_trial_predictions_path = self.output_dir / "test_trial_predictions.csv"
+        test_metrics_path = self.output_dir / "test_metrics.json"
+        test_trial_predictions.to_csv(test_trial_predictions_path, index=False)
+        with test_metrics_path.open("w") as f:
+            json.dump(test_metrics, f, indent=2, default=_json_default)
 
         parameter_space_path = None
         parameter_space_fig = self._plot_subject_parameter_state_space(
@@ -1311,11 +1467,14 @@ class BaselineRLTrainer(ModelTrainer):
             ),
             "parameter_columns": parameter_columns,
             "fitted_params_per_subject": per_subject_summary_map,
+            "test_metrics": test_metrics,
             "subject_artifacts": {
                 "subject_index_map": str(subject_index_map_path),
                 "subject_fit_metrics_csv": str(subject_metrics_csv_path),
                 "subject_fit_metrics_pickle": str(subject_metrics_pickle_path),
                 "subject_fit_summaries_json": str(subject_fit_summaries_path),
+                "test_trial_predictions_csv": str(test_trial_predictions_path),
+                "test_metrics_json": str(test_metrics_path),
             },
             "subject_parameter_state_space_path": (
                 str(parameter_space_path) if parameter_space_path is not None else None

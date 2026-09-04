@@ -2,6 +2,17 @@ source_run:
   model_dir: /path/to/trained/model_run
   checkpoint_policy: best_eval
 
+# Optional external target. Uncomment to replace the legacy AIND held-out selector.
+# target_data:
+#   _target_: data_loaders.external_bandit.ExternalBanditDatasetLoader
+#   file_path: /path/to/canonical_trials.parquet
+#   split_manifest_path: /path/to/session_split.json
+#   dataset_id: null
+#   species: null
+#   batch_size: null
+#   batch_mode: single
+#   seed: ${seed}
+
 # Held-out subject selection. Leave fields null to inherit the reserved heldout
 # set from the source training run's config (the every-Nth subjects per curriculum).
 heldout_subjects:
@@ -25,6 +36,11 @@ heldout_finetuning:
   example_max_subjects: 6
   skip_subjects_with_insufficient_sessions: true
   keep_media_files: true
+  selection_policy: fixed_final  # target test data never select an adaptation step
+  # Schema v1 only: first K sessions from each manifest adaptation list.
+  adapt_sessions_per_subject: null
+  # Schema v2 only: first K trials from each manifest adaptation prefix.
+  adapt_trials_per_subject: null
 
 output:
   output_root: /results/heldout_subject_finetuning

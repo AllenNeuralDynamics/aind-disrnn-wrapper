@@ -362,6 +362,58 @@ class TestExternalBanditDatasetLoader(unittest.TestCase):
         self.assertEqual(bundle.metadata["test_trial_partition"], "test")
         self.assertIs(bundle.train_set.rng, bundle.eval_set.rng)
 
+    def test_session_budget_uses_first_manifest_adaptation_session(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            table_path = temp_path / "trials.pkl"
+            manifest_path = temp_path / "split.json"
+            _canonical_trials().to_pickle(table_path)
+            manifest_path.write_text(json.dumps(_manifest()), encoding="utf-8")
+            with _optional_dependency_stubs():
+                bundle = ExternalBanditDatasetLoader(
+                    file_path=table_path,
+                    split_manifest_path=manifest_path,
+                    adapt_sessions_per_subject=1,
+                    batch_size=None,
+                    batch_mode="single",
+                ).load()
+
+        self.assertEqual(bundle.train_set.get_all()["xs"].shape[1], 2)
+        self.assertEqual(bundle.eval_set.get_all()["xs"].shape[1], 4)
+        self.assertEqual(
+            bundle.metadata["train_session_ids"],
+            ["rat-a__s1", "rat-b__s1"],
+        )
+        selected = bundle.raw[bundle.raw["target_adaptation_selected"]]
+        self.assertEqual(
+            selected.groupby("subject_id")["source_ses_idx"].unique().apply(list).tolist(),
+            [["s1"], ["s1"]],
+        )
+
+    def test_prefix_trial_budget_keeps_full_eval_warmup(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            table_path = temp_path / "trials.pkl"
+            manifest_path = temp_path / "split.json"
+            _prefix_trials().to_pickle(table_path)
+            manifest_path.write_text(json.dumps(_prefix_manifest()), encoding="utf-8")
+            with _optional_dependency_stubs():
+                bundle = ExternalBanditDatasetLoader(
+                    file_path=table_path,
+                    split_manifest_path=manifest_path,
+                    adapt_trials_per_subject=1,
+                    batch_size=None,
+                    batch_mode="single",
+                ).load()
+
+        self.assertEqual(bundle.train_set.get_all()["xs"].shape[:2], (1, 2))
+        self.assertEqual(bundle.eval_set.get_all()["xs"].shape[:2], (6, 2))
+        selected = bundle.raw.groupby("subject_id")[
+            "target_adaptation_selected"
+        ].sum()
+        self.assertEqual(selected.tolist(), [1, 1])
+        self.assertTrue(np.all(bundle.eval_set.get_all()["ys"][:3] == -1))
+
 
 if __name__ == "__main__":
     unittest.main()
