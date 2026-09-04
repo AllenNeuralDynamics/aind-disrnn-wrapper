@@ -85,6 +85,7 @@ def _canonical_trials() -> pd.DataFrame:
                         "ses_idx": session_id,
                         "trial": trial,
                         "animal_response": trial % 2,
+                        "rewarded": (trial + 1) % 2,
                         "earned_reward": (trial + 1) % 2,
                     }
                 )
@@ -120,6 +121,12 @@ class TestCanonicalBanditValidation(unittest.TestCase):
     def test_rejects_duplicate_trial_key(self):
         df = pd.concat([_canonical_trials(), _canonical_trials().iloc[[0]]])
         with self.assertRaisesRegex(ValueError, "unique"):
+            validate_canonical_bandit_table(df)
+
+    def test_rejects_disagreeing_reward_aliases(self):
+        df = _canonical_trials()
+        df.loc[0, "rewarded"] = 1 - df.loc[0, "earned_reward"]
+        with self.assertRaisesRegex(ValueError, "reward aliases"):
             validate_canonical_bandit_table(df)
 
 

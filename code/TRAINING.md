@@ -218,12 +218,13 @@ The canonical Parquet or pickle table has one row per trial and requires:
 | `ses_idx` | Stable session identifier within the subject |
 | `trial` | Integer-valued within-session trial index |
 | `animal_response` | Chosen arm, encoded `0` or `1` |
+| `rewarded` | Binary outcome consumed by the GRU, encoded `0` or `1` |
 | `earned_reward` | Binary outcome, encoded `0` or `1` |
 
 Rows must be unique by `(subject_id, ses_idx, trial)`. Optional scalar
 `dataset_id` and `species` columns may be included for provenance; when the
-same fields are supplied in the config or manifest, all values must agree.
-`rewarded` is derived from `earned_reward` by the shared dataset builder.
+same fields are supplied in the config or manifest, all values must agree. The
+two reward aliases must agree row by row.
 
 Splits are versioned JSON rather than recomputed from row order:
 

@@ -19,6 +19,7 @@ CANONICAL_REQUIRED_COLUMNS = (
     "ses_idx",
     "trial",
     "animal_response",
+    "rewarded",
     "earned_reward",
 )
 SPLIT_MANIFEST_SCHEMA_VERSION = 1
@@ -55,7 +56,14 @@ def validate_canonical_bandit_table(df: pd.DataFrame) -> None:
     if df[list(CANONICAL_REQUIRED_COLUMNS)].isna().any().any():
         raise ValueError("Canonical external-bandit columns cannot contain missing values.")
     _validate_binary_column(df, "animal_response")
+    _validate_binary_column(df, "rewarded")
     _validate_binary_column(df, "earned_reward")
+    rewarded = pd.to_numeric(df["rewarded"])
+    earned_reward = pd.to_numeric(df["earned_reward"])
+    if (rewarded != earned_reward).any():
+        raise ValueError(
+            "Canonical reward aliases 'rewarded' and 'earned_reward' must agree row-wise."
+        )
     if df.duplicated(["subject_id", "ses_idx", "trial"]).any():
         raise ValueError(
             "Canonical external-bandit rows must be unique by "
