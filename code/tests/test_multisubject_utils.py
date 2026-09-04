@@ -61,6 +61,12 @@ class _DummyDataset:
         return {"xs": self._xs, "ys": self._ys}
 
 
+class _DummyDatasetWithRng(_DummyDataset):
+    def __init__(self, *args, rng=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.rng = rng
+
+
 class TestMultisubjectUtils(unittest.TestCase):
     def test_compute_session_curriculum_lambda_obeys_pretrain_and_warmup_steps(self):
         lambdas = [
@@ -157,6 +163,23 @@ class TestMultisubjectUtils(unittest.TestCase):
         self.assertTrue(np.allclose(merged_xs[:, :, 0], 3.0))
         self.assertTrue(np.allclose(merged_xs[:, 0, 1], 1.0))
         self.assertTrue(np.allclose(merged_xs[:, 1, 1], 2.0))
+
+    def test_merge_datasets_preserves_rng_when_dataset_supports_it(self):
+        rng = np.random.default_rng(123)
+        dataset = _DummyDatasetWithRng(
+            xs=np.array([[[0.0, 1.0]], [[1.0, 0.0]]]),
+            ys=np.array([[[0.0]], [[1.0]]]),
+            rng=rng,
+        )
+
+        merged = merge_datasets_with_subject_index(
+            [dataset],
+            [0],
+            batch_size=None,
+            batch_mode="random",
+        )
+
+        self.assertIs(merged.rng, rng)
 
     def test_prepend_session_index_to_multisubject_dataset_marks_padding(self):
         dataset = _DummyDataset(

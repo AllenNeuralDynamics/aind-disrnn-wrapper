@@ -203,6 +203,83 @@ job_id: 0
   penalties before training (`utils.run_helpers.resolve_disrnn_penalties`).
 - Multisubject mode auto-appends `_multisubject` to the W&B run name.
 
+### External binary two-arm bandit files
+
+`data_loaders.external_bandit.ExternalBanditDatasetLoader` is the file boundary
+for behavioral datasets collected outside AIND. It always returns a multisubject
+`DatasetBundle`; its `train_set` is the adaptation partition and its
+`eval_set` is the untouched test partition.
+
+The canonical Parquet table has one row per trial and requires:
+
+| Column | Contract |
+|--------|----------|
+| `subject_id` | Stable subject identifier (string or integer) |
+| `ses_idx` | Stable session identifier within the subject |
+| `trial` | Integer-valued within-session trial index |
+| `animal_response` | Chosen arm, encoded `0` or `1` |
+| `rewarded` | Binary outcome consumed by the GRU, encoded `0` or `1` |
+| `earned_reward` | Binary outcome, encoded `0` or `1` |
+
+Rows must be unique by `(subject_id, ses_idx, trial)`. Optional scalar
+`dataset_id` and `species` columns may be included for provenance; when the
+same fields are supplied in the config or manifest, all values must agree. The
+two reward aliases must agree row by row.
+
+Splits are versioned JSON rather than recomputed from row order:
+
+```json
+{
+  "schema_version": 1,
+  "dataset_id": "example-rats",
+  "species": "rat",
+  "subjects": [
+    {
+      "subject_id": "rat-01",
+      "adapt_session_ids": ["s01", "s03"],
+      "test_session_ids": ["s02", "s04"]
+    }
+  ]
+}
+```
+
+Every retained subject needs at least one adaptation and one test session. The
+two lists must be disjoint and together cover every retained session exactly
+once; missing, duplicated, overlapping, and unknown session IDs fail before
+training. Subject indexing follows the manifest's subject-list order, and the
+manifest list order is preserved in each split.
+
+Single-session datasets use schema version 2 with a prefix/suffix boundary:
+
+    {
+      "schema_version": 2,
+      "dataset_id": "example-humans",
+      "species": "human",
+      "split_strategy": "within_session_prefix_suffix",
+      "subjects": [
+        {
+          "subject_id": "person-01",
+          "session_id": "main",
+          "adapt_prefix_trials": 150,
+          "total_trials": 300
+        }
+      ]
+    }
+
+The adaptation dataset ends at the boundary. The evaluation dataset retains
+the full input sequence so the prefix establishes the recurrent initial
+condition at the suffix boundary, but prefix targets are masked from scoring.
+The raw table is annotated with `external_split_partition=adapt|test`, and the
+bundle metadata records that partition column so downstream evaluation aligns
+the adaptation rows to `train_set`, runs the full sequence for `eval_set`, and
+scores only the test suffix. This avoids inventing pseudo-sessions or resetting
+hidden state. Baseline-RL evaluation follows the same contract: fitted
+parameters stay fixed while the full sequence updates the agent's Q-state,
+and likelihood metrics include only suffix choices. Start from
+`configs/data/external_bandit.yaml`; `subject_ids` may select a manifest
+subset, while `null` requires exact agreement between table and manifest
+subjects.
+
 ---
 
 ## 5. Models & trainers
@@ -515,6 +592,13 @@ environment.
 ## Changelog
 
 > Add a dated entry (newest first) whenever you add or change a feature.
+
+### 2026-09-04
+- **Canonical external-bandit loader and explicit session manifests.**
+  `ExternalBanditDatasetLoader` validates binary two-arm trial tables, checks
+  dataset/species provenance, and builds multisubject bundles from a versioned
+  JSON manifest whose adaptation/test sessions are exhaustive and disjoint.
+  Existing AIND loaders retain their interleaved `eval_every_n` behavior.
 
 ### 2026-09-03
 - **`beta_max` is recorded in the fit artifact's meta.** Per-session parameters

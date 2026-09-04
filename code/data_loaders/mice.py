@@ -7,8 +7,6 @@ from typing import Iterable, List, Literal, Mapping, Optional
 import numpy as np
 import pandas as pd
 
-import aind_dynamic_foraging_data_utils.code_ocean_utils as co
-import aind_dynamic_foraging_multisession_analysis.multisession_load as ms_load
 import data_loaders.disrnn_dataset as dl
 from disentangled_rnns.library import rnn_utils
 
@@ -368,8 +366,12 @@ def _build_multisubject_bundle(
     batch_mode: Literal["single", "rolling", "random"],
     metadata: Mapping[str, object],
     skip_subjects_with_insufficient_sessions: bool = False,
+    session_split_by_subject: Mapping[str, Mapping[str, object]] | None = None,
+    trial_split_by_subject: Mapping[str, Mapping[str, object]] | None = None,
 ) -> DatasetBundle:
     """Build a merged multisubject dataset bundle from a trial dataframe."""
+    if session_split_by_subject is not None and trial_split_by_subject is not None:
+        raise ValueError("Specify either a session split or a trial split, not both.")
     if "subject_id" not in df.columns:
         raise ValueError(
             "Multisubject loading requires a 'subject_id' column in the raw dataframe."
@@ -425,38 +427,126 @@ def _build_multisubject_bundle(
             str(session_id): int(index)
             for index, session_id in enumerate(session_ids, start=1)
         }
-        try:
-            train_session_ids, eval_session_ids = compute_train_eval_session_ids(
-                session_ids,
-                eval_every_n=eval_every_n,
+        trial_split_spec = None
+        if session_split_by_subject is None and trial_split_by_subject is None:
+            try:
+                train_session_ids, eval_session_ids = compute_train_eval_session_ids(
+                    session_ids,
+                    eval_every_n=eval_every_n,
+                )
+            except ValueError as exc:
+                if skip_subjects_with_insufficient_sessions:
+                    logger.warning(
+                        "Skipping subject_id=%s because only %d valid sessions remain after "
+                        "filtering, which is insufficient for eval_every_n=%d: %s",
+                        subject_id,
+                        len(session_ids),
+                        eval_every_n,
+                        exc,
+                    )
+                    skipped_subjects_with_insufficient_sessions.append(
+                        {
+                            "subject_id": normalize_subject_id(subject_id),
+                            "num_valid_sessions": int(len(session_ids)),
+                            "eval_every_n": int(eval_every_n),
+                            "reason": str(exc),
+                        }
+                    )
+                    continue
+                raise ValueError(
+                    "Failed to construct a per-subject train/eval split for "
+                    f"subject_id={subject_id!r}: only {len(session_ids)} valid sessions remain "
+                    f"after filtering, with eval_every_n={eval_every_n}. "
+                    "This commonly happens when low-ranked held-out subjects have too few mature "
+                    "sessions. Choose subjects with more sessions, reduce eval_every_n in the "
+                    "source training config, or specify explicit subject IDs."
+                ) from exc
+        elif session_split_by_subject is not None:
+            subject_key = str(normalize_subject_id(subject_id))
+            split_spec = session_split_by_subject.get(subject_key)
+            if split_spec is None:
+                raise ValueError(
+                    "Explicit session split manifest has no entry for "
+                    f"subject_id={subject_id!r}."
+                )
+            source_to_session_id = {
+                str(normalize_subject_id(source_id)): session_id
+                for source_id, session_id in zip(source_session_ids, session_ids)
+            }
+            if len(source_to_session_id) != len(source_session_ids):
+                raise ValueError(
+                    f"Subject {subject_id!r} has source session IDs that collide after "
+                    "string normalization."
+                )
+            adapt_source_ids = [
+                str(normalize_subject_id(value))
+                for value in split_spec.get("adapt_session_ids", [])
+            ]
+            test_source_ids = [
+                str(normalize_subject_id(value))
+                for value in split_spec.get("test_session_ids", [])
+            ]
+            requested_ids = adapt_source_ids + test_source_ids
+            if not adapt_source_ids or not test_source_ids:
+                raise ValueError(
+                    f"Subject {subject_id!r} must have at least one adaptation and one test "
+                    "session in the explicit split manifest."
+                )
+            if len(set(requested_ids)) != len(requested_ids):
+                raise ValueError(
+                    f"Subject {subject_id!r} has duplicate or overlapping session IDs in the "
+                    "explicit split manifest."
+                )
+            available_ids = set(source_to_session_id)
+            if set(requested_ids) != available_ids:
+                missing = sorted(available_ids - set(requested_ids))
+                unknown = sorted(set(requested_ids) - available_ids)
+                raise ValueError(
+                    f"Explicit session split for subject {subject_id!r} must cover every "
+                    f"retained session exactly once; unassigned={missing}, unknown={unknown}."
+                )
+            train_session_ids = [source_to_session_id[value] for value in adapt_source_ids]
+            eval_session_ids = [source_to_session_id[value] for value in test_source_ids]
+        else:
+            subject_key = str(normalize_subject_id(subject_id))
+            trial_split_spec = trial_split_by_subject.get(subject_key)
+            if trial_split_spec is None:
+                raise ValueError(
+                    "Explicit trial split manifest has no entry for "
+                    f"subject_id={subject_id!r}."
+                )
+            requested_session_id = str(
+                normalize_subject_id(trial_split_spec.get("session_id"))
             )
-        except ValueError as exc:
-            if skip_subjects_with_insufficient_sessions:
-                logger.warning(
-                    "Skipping subject_id=%s because only %d valid sessions remain after "
-                    "filtering, which is insufficient for eval_every_n=%d: %s",
-                    subject_id,
-                    len(session_ids),
-                    eval_every_n,
-                    exc,
+            normalized_source_ids = [
+                str(normalize_subject_id(value)) for value in source_session_ids
+            ]
+            if normalized_source_ids != [requested_session_id]:
+                raise ValueError(
+                    f"Trial split for subject {subject_id!r} requires exactly session "
+                    f"{requested_session_id!r}; retained sessions are {normalized_source_ids}."
                 )
-                skipped_subjects_with_insufficient_sessions.append(
-                    {
-                        "subject_id": normalize_subject_id(subject_id),
-                        "num_valid_sessions": int(len(session_ids)),
-                        "eval_every_n": int(eval_every_n),
-                        "reason": str(exc),
-                    }
+            total_trials = int(trial_split_spec.get("total_trials", -1))
+            adapt_prefix_trials = int(
+                trial_split_spec.get("adapt_prefix_trials", -1)
+            )
+            if total_trials != len(subject_df):
+                raise ValueError(
+                    f"Trial split for subject {subject_id!r} declares {total_trials} trials "
+                    f"but the canonical table contains {len(subject_df)}."
                 )
-                continue
-            raise ValueError(
-                "Failed to construct a per-subject train/eval split for "
-                f"subject_id={subject_id!r}: only {len(session_ids)} valid sessions remain "
-                f"after filtering, with eval_every_n={eval_every_n}. "
-                "This commonly happens when low-ranked held-out subjects have too few mature "
-                "sessions. Choose subjects with more sessions, reduce eval_every_n in the "
-                "source training config, or specify explicit subject IDs."
-            ) from exc
+            if adapt_prefix_trials <= 0 or adapt_prefix_trials >= total_trials:
+                raise ValueError(
+                    f"Trial split for subject {subject_id!r} needs a non-empty prefix and "
+                    "suffix."
+                )
+            train_session_ids = list(session_ids)
+            eval_session_ids = list(session_ids)
+            subject_df["external_split_partition"] = np.where(
+                np.arange(len(subject_df)) < adapt_prefix_trials,
+                "adapt",
+                "test",
+            )
         subject_df["subject_session_index"] = subject_df["ses_idx"].map(
             lambda session_id: session_index_by_session_id[str(session_id)]
         )
@@ -479,6 +569,7 @@ def _build_multisubject_bundle(
                 "train_session_ids": train_session_ids,
                 "eval_session_ids": eval_session_ids,
                 "session_index_by_session_id": session_index_by_session_id,
+                "trial_split_spec": trial_split_spec,
             }
         )
 
@@ -537,10 +628,66 @@ def _build_multisubject_bundle(
                 f"subject {subject_id}. Expected {expected_n_sessions}, got {xs_subject.shape[1]}."
             )
 
-        dataset_train, dataset_eval = rnn_utils.split_dataset(
-            dataset,
-            eval_every_n=eval_every_n,
-        )
+        if session_split_by_subject is None and trial_split_by_subject is None:
+            dataset_train, dataset_eval = rnn_utils.split_dataset(
+                dataset,
+                eval_every_n=eval_every_n,
+            )
+        elif session_split_by_subject is not None:
+            session_index = {
+                session_id: index
+                for index, session_id in enumerate(item["full_session_ids"])
+            }
+
+            def _select_sessions(selected_session_ids):
+                selected_indices = [session_index[value] for value in selected_session_ids]
+                all_data = dataset.get_all()
+                dataset_class = dataset.__class__
+                return dataset_class(
+                    all_data["xs"][:, selected_indices, :],
+                    all_data["ys"][:, selected_indices, :],
+                    y_type=dataset.y_type,
+                    n_classes=dataset.n_classes,
+                    x_names=dataset.x_names,
+                    y_names=dataset.y_names,
+                    batch_size=dataset.batch_size,
+                    batch_mode=dataset.batch_mode,
+                    rng=dataset.rng,
+                )
+
+            dataset_train = _select_sessions(item["train_session_ids"])
+            dataset_eval = _select_sessions(item["eval_session_ids"])
+        else:
+            all_data = dataset.get_all()
+            xs = np.asarray(all_data["xs"])
+            ys = np.asarray(all_data["ys"])
+            split_spec = item["trial_split_spec"]
+            adapt_prefix_trials = int(split_spec["adapt_prefix_trials"])
+            dataset_class = dataset.__class__
+            dataset_train = dataset_class(
+                xs[:adapt_prefix_trials, :, :],
+                ys[:adapt_prefix_trials, :, :],
+                y_type=dataset.y_type,
+                n_classes=dataset.n_classes,
+                x_names=dataset.x_names,
+                y_names=dataset.y_names,
+                batch_size=dataset.batch_size,
+                batch_mode=dataset.batch_mode,
+                rng=dataset.rng,
+            )
+            eval_ys = ys.copy()
+            eval_ys[:adapt_prefix_trials, :, :] = -1
+            dataset_eval = dataset_class(
+                xs,
+                eval_ys,
+                y_type=dataset.y_type,
+                n_classes=dataset.n_classes,
+                x_names=dataset.x_names,
+                y_names=dataset.y_names,
+                batch_size=dataset.batch_size,
+                batch_mode=dataset.batch_mode,
+                rng=dataset.rng,
+            )
         logger.info(
             "Built per-subject dataset for subject_id=%s (subject_index=%d): "
             "full=%s train=%s eval=%s",
@@ -678,6 +825,9 @@ class MiceDatasetLoader(DatasetLoader):
         self.extras = extras
 
     def load(self) -> DatasetBundle:
+        import aind_dynamic_foraging_data_utils.code_ocean_utils as co
+        import aind_dynamic_foraging_multisession_analysis.multisession_load as ms_load
+
         # Fix numpy random seed (will affect batch_mode="random")
         if self.seed is not None:
             np.random.seed(self.seed)

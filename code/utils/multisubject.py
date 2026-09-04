@@ -233,15 +233,20 @@ def merge_datasets_with_subject_index(
     if session_indices_per_dataset is not None:
         merged_x_names.append(session_feature_name)
     merged_x_names.extend(base_x_names)
+    constructor_kwargs = {
+        "y_type": base_y_type,
+        "n_classes": base_n_classes,
+        "x_names": merged_x_names,
+        "y_names": base_y_names,
+        "batch_size": batch_size,
+        "batch_mode": merged_batch_mode,
+    }
+    if hasattr(first_dataset, "rng"):
+        constructor_kwargs["rng"] = first_dataset.rng
     return dataset_class(
         merged_xs,
         merged_ys,
-        y_type=base_y_type,
-        n_classes=base_n_classes,
-        x_names=merged_x_names,
-        y_names=base_y_names,
-        batch_size=batch_size,
-        batch_mode=merged_batch_mode,
+        **constructor_kwargs,
     )
 
 
