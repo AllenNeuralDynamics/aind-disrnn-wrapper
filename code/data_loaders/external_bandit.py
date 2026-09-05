@@ -194,7 +194,7 @@ def _copy_dataset_with_arrays(dataset, xs: np.ndarray, ys: np.ndarray):
     }
     if hasattr(dataset, "rng"):
         kwargs["rng"] = dataset.rng
-    return dataset.__class__(xs, ys, **kwargs)
+    return dataset.__class__(xs=xs, ys=ys, **kwargs)
 
 
 def apply_external_adaptation_budget(

@@ -14,6 +14,7 @@ import pandas as pd
 
 from data_loaders.external_bandit import (
     ExternalBanditDatasetLoader,
+    _copy_dataset_with_arrays,
     load_external_split_manifest,
     validate_canonical_bandit_table,
 )
@@ -389,6 +390,33 @@ class TestExternalBanditDatasetLoader(unittest.TestCase):
             selected.groupby("subject_id")["source_ses_idx"].unique().apply(list).tolist(),
             [["s1"], ["s1"]],
         )
+
+    def test_dataset_copy_supports_keyword_only_array_constructor(self):
+        class KeywordOnlyDataset:
+            def __init__(self, *, xs, ys, **kwargs):
+                self.xs = np.asarray(xs)
+                self.ys = np.asarray(ys)
+                vars(self).update(kwargs)
+
+        source = KeywordOnlyDataset(
+            xs=np.zeros((2, 3, 4)),
+            ys=np.zeros((2, 3, 1)),
+            y_type="categorical",
+            n_classes=2,
+            x_names=["choice", "reward"],
+            y_names=["choice"],
+            batch_size=None,
+            batch_mode="single",
+            rng=object(),
+        )
+        copied_xs = np.ones((2, 1, 4))
+        copied_ys = np.ones((2, 1, 1))
+
+        copied = _copy_dataset_with_arrays(source, copied_xs, copied_ys)
+
+        np.testing.assert_array_equal(copied.xs, copied_xs)
+        np.testing.assert_array_equal(copied.ys, copied_ys)
+        self.assertIs(copied.rng, source.rng)
 
     def test_zero_session_budget_keeps_aligned_reference_tensor(self):
         with tempfile.TemporaryDirectory() as temp_dir:
