@@ -280,17 +280,17 @@ and likelihood metrics include only suffix choices. Start from
 subset, while `null` requires exact agreement between table and manifest
 subjects.
 
-Few-shot budgets are applied at this shared loader boundary, so GRU/disRNN and
-subject-level Q-learning consume exactly the same adaptation observations while
-the test partition remains immutable. For schema version 1,
+Session-level few-shot budgets are applied at this shared loader boundary, so
+GRU/disRNN and subject-level Q-learning consume exactly the same adaptation
+sessions while the test partition remains immutable. For schema version 1,
 `adapt_sessions_per_subject: K` means the first K entries in each subject's
 **manifest adaptation list** (for the dispatcher-generated odd/even split, the
 first K odd-positioned adaptation sessions), not the first K sessions before the
-split. For schema version 2, `adapt_trials_per_subject: K` means the first K
-trials in the declared adaptation prefix. Set only one budget. `K=0` is the
-GRU/disRNN zero-shot condition initialized from the source-subject embedding
-mean; a fitted subject-level Q-learning model needs at least one adaptation
-trial and therefore has no K=0 result.
+split. `K=0` is the GRU/disRNN zero-shot condition initialized from the
+source-subject embedding mean; a fitted subject-level Q-learning model needs at
+least one adaptation session and therefore has no K=0 result. Schema version 2
+does not use K: it always fits on the complete manifest-declared prefix and
+scores the complete suffix.
 
 ---
 

@@ -201,117 +201,60 @@ def apply_external_adaptation_budget(
     bundle: DatasetBundle,
     *,
     adapt_sessions_per_subject: int | None = None,
-    adapt_trials_per_subject: int | None = None,
 ) -> DatasetBundle:
-    """Cap adaptation observations without changing target-test membership."""
-    if adapt_sessions_per_subject is not None and adapt_trials_per_subject is not None:
-        raise ValueError(
-            "Set only one of adapt_sessions_per_subject and adapt_trials_per_subject."
-        )
-    if adapt_sessions_per_subject is None and adapt_trials_per_subject is None:
+    """Cap schema-v1 adaptation sessions without changing target-test membership."""
+    if adapt_sessions_per_subject is None:
         return bundle
 
     metadata = dict(bundle.metadata)
     raw_df = bundle.raw.copy()
-    if adapt_sessions_per_subject is not None:
-        K = int(adapt_sessions_per_subject)
-        if K < 0:
-            raise ValueError("adapt_sessions_per_subject must be >= 0 or null.")
-        if str(metadata.get("split_strategy")) != "explicit_manifest":
-            raise ValueError(
-                "adapt_sessions_per_subject requires a schema-v1 explicit session manifest."
-            )
-        train_session_ids = [str(x) for x in metadata.get("train_session_ids", [])]
-        train_all = bundle.train_set.get_all()
-        if len(train_session_ids) != int(np.asarray(train_all["xs"]).shape[1]):
-            raise ValueError("Adapt session IDs do not align with packed train columns.")
-        subject_by_session = {}
-        for row in dict(metadata.get("session_context") or {}).get("per_subject", []):
-            for session_id in row.get("ordered_session_ids") or []:
-                subject_by_session[str(session_id)] = str(row.get("subject_id"))
-        kept_columns, kept_session_ids = [], []
-        seen, kept_counts = {}, {}
-        for column_index, session_id in enumerate(train_session_ids):
-            subject_id = subject_by_session.get(session_id, "unknown")
-            count = seen.get(subject_id, 0)
-            kept_counts.setdefault(subject_id, 0)
-            if count < K:
-                kept_columns.append(column_index)
-                kept_session_ids.append(session_id)
-                kept_counts[subject_id] += 1
-            seen[subject_id] = count + 1
-        metadata["adapt_sessions_per_subject"] = K
-        metadata["adapt_sessions_per_subject_counts"] = kept_counts
-        metadata["target_adaptation_session_ids"] = kept_session_ids
-        raw_df["target_adaptation_selected"] = raw_df["ses_idx"].astype(str).isin(
-            set(kept_session_ids)
-        )
-        kept = np.asarray(kept_columns, dtype=int)
-        train_set = bundle.train_set
-        if len(kept) == 0:
-            # DatasetRNN rejects empty arrays. The zero-shot runner skips gradient
-            # steps from the explicit K=0 metadata, so retain the full reference
-            # train set for step-0 diagnostics and keep train_session_ids aligned
-            # with its columns. target_adaptation_session_ids remains empty.
-            metadata["zero_shot_train_set_is_reference"] = True
-        elif len(kept) != int(np.asarray(train_all["xs"]).shape[1]):
-            train_set = _copy_dataset_with_arrays(
-                bundle.train_set,
-                np.asarray(train_all["xs"])[:, kept, :],
-                np.asarray(train_all["ys"])[:, kept, :],
-            )
-            metadata["train_session_ids"] = kept_session_ids
-        return DatasetBundle(
-            raw=raw_df,
-            train_set=train_set,
-            eval_set=bundle.eval_set,
-            metadata=metadata,
-            extras=bundle.extras,
-        )
-
-    K = int(adapt_trials_per_subject)
+    K = int(adapt_sessions_per_subject)
     if K < 0:
-        raise ValueError("adapt_trials_per_subject must be >= 0 or null.")
-    if str(metadata.get("split_strategy")) != "within_session_prefix_suffix":
+        raise ValueError("adapt_sessions_per_subject must be >= 0 or null.")
+    if str(metadata.get("split_strategy")) != "explicit_manifest":
         raise ValueError(
-            "adapt_trials_per_subject requires a schema-v2 prefix/suffix manifest."
+            "adapt_sessions_per_subject requires a schema-v1 explicit session manifest."
         )
-    partition_column = str(
-        metadata.get("trial_partition_column", "external_split_partition")
-    )
-    adapt_partition = str(metadata.get("adapt_trial_partition", "adapt"))
-    raw_df["target_adaptation_selected"] = False
-    available_counts = {}
-    for subject_id, subject_rows in raw_df.groupby("subject_id", sort=False):
-        adapt_rows = subject_rows[
-            subject_rows[partition_column].astype(str).eq(adapt_partition)
-        ].sort_values(["ses_idx", "trial"])
-        available_counts[str(subject_id)] = int(len(adapt_rows))
-        if K > len(adapt_rows):
-            raise ValueError(
-                f"Subject {subject_id!r} has only {len(adapt_rows)} manifest adaptation "
-                f"trials, fewer than requested K={K}."
-            )
-        if K > 0:
-            raw_df.loc[adapt_rows.index[:K], "target_adaptation_selected"] = True
-    metadata["adapt_trials_per_subject"] = K
-    metadata["adapt_trials_available_per_subject"] = available_counts
+    train_session_ids = [str(x) for x in metadata.get("train_session_ids", [])]
     train_all = bundle.train_set.get_all()
+    if len(train_session_ids) != int(np.asarray(train_all["xs"]).shape[1]):
+        raise ValueError("Adapt session IDs do not align with packed train columns.")
+    subject_by_session = {}
+    for row in dict(metadata.get("session_context") or {}).get("per_subject", []):
+        for session_id in row.get("ordered_session_ids") or []:
+            subject_by_session[str(session_id)] = str(row.get("subject_id"))
+    kept_columns, kept_session_ids = [], []
+    seen, kept_counts = {}, {}
+    for column_index, session_id in enumerate(train_session_ids):
+        subject_id = subject_by_session.get(session_id, "unknown")
+        count = seen.get(subject_id, 0)
+        kept_counts.setdefault(subject_id, 0)
+        if count < K:
+            kept_columns.append(column_index)
+            kept_session_ids.append(session_id)
+            kept_counts[subject_id] += 1
+        seen[subject_id] = count + 1
+    metadata["adapt_sessions_per_subject"] = K
+    metadata["adapt_sessions_per_subject_counts"] = kept_counts
+    metadata["target_adaptation_session_ids"] = kept_session_ids
+    raw_df["target_adaptation_selected"] = raw_df["ses_idx"].astype(str).isin(
+        set(kept_session_ids)
+    )
+    kept = np.asarray(kept_columns, dtype=int)
     train_set = bundle.train_set
-    packed_prefix_length = int(np.asarray(train_all["xs"]).shape[0])
-    if K > packed_prefix_length:
-        raise ValueError("Requested adaptation trials exceed packed prefix length.")
-    if K == 0:
-        # See the session-budget branch above: retain the reference tensor only
-        # for zero-shot diagnostics; target_adaptation_selected is all false and
-        # the runner performs no gradient steps.
+    if len(kept) == 0:
+        # DatasetRNN rejects empty arrays. The zero-shot runner skips gradient
+        # steps from the explicit K=0 metadata, so retain the full reference
+        # train set for step-0 diagnostics and keep train_session_ids aligned
+        # with its columns. target_adaptation_session_ids remains empty.
         metadata["zero_shot_train_set_is_reference"] = True
-    elif K != packed_prefix_length:
+    elif len(kept) != int(np.asarray(train_all["xs"]).shape[1]):
         train_set = _copy_dataset_with_arrays(
             bundle.train_set,
-            np.asarray(train_all["xs"])[:K, :, :],
-            np.asarray(train_all["ys"])[:K, :, :],
+            np.asarray(train_all["xs"])[:, kept, :],
+            np.asarray(train_all["ys"])[:, kept, :],
         )
+        metadata["train_session_ids"] = kept_session_ids
     return DatasetBundle(
         raw=raw_df,
         train_set=train_set,
@@ -335,7 +278,6 @@ class ExternalBanditDatasetLoader(DatasetLoader):
         batch_size: int | None = None,
         batch_mode: Literal["single", "rolling", "random"] = "random",
         adapt_sessions_per_subject: int | None = None,
-        adapt_trials_per_subject: int | None = None,
         seed: int | None = None,
         **extras: object,
     ) -> None:
@@ -349,7 +291,6 @@ class ExternalBanditDatasetLoader(DatasetLoader):
         self.batch_size = batch_size
         self.batch_mode = batch_mode
         self.adapt_sessions_per_subject = adapt_sessions_per_subject
-        self.adapt_trials_per_subject = adapt_trials_per_subject
         self.extras = extras
 
     def load(self) -> DatasetBundle:
@@ -484,5 +425,4 @@ class ExternalBanditDatasetLoader(DatasetLoader):
         return apply_external_adaptation_budget(
             bundle,
             adapt_sessions_per_subject=self.adapt_sessions_per_subject,
-            adapt_trials_per_subject=self.adapt_trials_per_subject,
         )

@@ -39,8 +39,6 @@ heldout_finetuning:
   selection_policy: fixed_final  # target test data never select an adaptation step
   # Schema v1 only: first K sessions from each manifest adaptation list.
   adapt_sessions_per_subject: null
-  # Schema v2 only: first K trials from each manifest adaptation prefix.
-  adapt_trials_per_subject: null
 
 output:
   output_root: /results/heldout_subject_finetuning

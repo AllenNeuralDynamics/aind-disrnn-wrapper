@@ -396,11 +396,6 @@ def _resolve_runtime_config(
             if fine_tune_cfg.get("adapt_sessions_per_subject") is None
             else int(fine_tune_cfg["adapt_sessions_per_subject"])
         ),
-        "adapt_trials_per_subject": (
-            None
-            if fine_tune_cfg.get("adapt_trials_per_subject") is None
-            else int(fine_tune_cfg["adapt_trials_per_subject"])
-        ),
         "selection_policy": selection_policy,
         "skip_subjects_with_insufficient_sessions": bool(
             fine_tune_cfg.get("skip_subjects_with_insufficient_sessions", True)
@@ -412,21 +407,6 @@ def _resolve_runtime_config(
     ):
         raise ValueError(
             "heldout_finetuning.adapt_sessions_per_subject must be >= 0 or null."
-        )
-    if (
-        resolved["heldout_finetuning"]["adapt_trials_per_subject"] is not None
-        and resolved["heldout_finetuning"]["adapt_trials_per_subject"] < 0
-    ):
-        raise ValueError(
-            "heldout_finetuning.adapt_trials_per_subject must be >= 0 or null."
-        )
-    if (
-        resolved["heldout_finetuning"]["adapt_sessions_per_subject"] is not None
-        and resolved["heldout_finetuning"]["adapt_trials_per_subject"] is not None
-    ):
-        raise ValueError(
-            "Set only one of heldout_finetuning.adapt_sessions_per_subject and "
-            "heldout_finetuning.adapt_trials_per_subject."
         )
     return resolved
 
@@ -994,22 +974,15 @@ def _build_global_heldout_bundle(
         architecture=architecture,
     )
     adapt_sessions_per_subject = fine_tune_cfg.get("adapt_sessions_per_subject")
-    adapt_trials_per_subject = fine_tune_cfg.get("adapt_trials_per_subject")
     if target_bundle is not None:
         global_bundle = apply_external_adaptation_budget(
             global_bundle,
             adapt_sessions_per_subject=adapt_sessions_per_subject,
-            adapt_trials_per_subject=adapt_trials_per_subject,
         )
     elif adapt_sessions_per_subject is not None:
         global_bundle = _cap_adapt_sessions_per_subject(
             dataset_bundle=global_bundle,
             adapt_sessions_per_subject=int(adapt_sessions_per_subject),
-        )
-    elif adapt_trials_per_subject is not None:
-        raise ValueError(
-            "adapt_trials_per_subject is supported only by external schema-v2 "
-            "prefix/suffix targets."
         )
     logger.info(
         "Held-out fine-tuning dataset shapes after session packing: full input %s, train %s, "
@@ -1867,10 +1840,7 @@ def run_heldout_subject_finetuning_from_config(
         total_steps = int(resolved_config["heldout_finetuning"]["n_steps"])
         # Zero-shot (K=0): no adapt sessions, so skip all gradient steps and run only the
         # step-0 init eval + per_subject logging (embedding stays at its init).
-        if (
-            int(bundle.metadata.get("adapt_sessions_per_subject", -1)) == 0
-            or int(bundle.metadata.get("adapt_trials_per_subject", -1)) == 0
-        ):
+        if int(bundle.metadata.get("adapt_sessions_per_subject", -1)) == 0:
             logger.info(
                 "No selected adaptation observations; skipping gradient steps and "
                 "running zero-shot initialization evaluation only."

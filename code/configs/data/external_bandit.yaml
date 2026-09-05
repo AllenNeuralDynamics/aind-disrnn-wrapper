@@ -12,6 +12,4 @@ batch_mode: random             # single | rolling | random
 # Schema v1: first K sessions in each subject's manifest adaptation list.
 # K=0 is GRU zero-shot; it is not a fitted subject-level Q-learning condition.
 adapt_sessions_per_subject: null
-# Schema v2: first K trials of each subject's manifest adaptation prefix.
-adapt_trials_per_subject: null
 seed: ${seed}
