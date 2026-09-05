@@ -125,6 +125,10 @@ def _compute_likelihood_stats(
     total_log_lik = 0.0
     total_trials = 0
 
+    if len(choice_prob_sessions) != len(choice_sessions):
+        raise ValueError(
+            "choice_prob_sessions must align one-to-one with choice sessions."
+        )
     if score_masks is None:
         score_masks = [np.ones(len(choices), dtype=bool) for choices in choice_sessions]
     if len(score_masks) != len(choice_sessions):

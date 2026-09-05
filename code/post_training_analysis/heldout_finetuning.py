@@ -1510,6 +1510,12 @@ def _build_final_target_predictions(
     bundle: DatasetBundle,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     """Replay the full target sequence and score only immutable test trials."""
+    ignore_policy = str(bundle.metadata.get("ignore_policy", "exclude"))
+    if ignore_policy != "exclude":
+        raise ValueError(
+            "Target-transfer trial export currently requires ignore_policy='exclude' "
+            "for binary-choice scoring."
+        )
     dataset_full = bundle.extras["dataset"]
     xs_full = dataset_full.get_all()["xs"]
     yhat_full, network_states_full = rnn_utils.eval_network(
@@ -1517,7 +1523,6 @@ def _build_final_target_predictions(
         params,
         xs_full,
     )
-    ignore_policy = str(bundle.metadata.get("ignore_policy", "exclude"))
     if model_type == "gru":
         output_df = add_gru_model_results(
             bundle.raw.copy(),

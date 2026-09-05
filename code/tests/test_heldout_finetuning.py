@@ -25,6 +25,7 @@ try:
     from models.gru_network import make_gru_network
     from models.session_conditioning import resolve_session_conditioning_from_architecture
     from post_training_analysis.heldout_finetuning import (
+        _build_final_target_predictions,
         _heldout_subject_run_name_suffix,
         _maybe_start_wandb_run,
         run_heldout_subject_finetuning_from_config,
@@ -528,6 +529,24 @@ class TestHeldoutSubjectFinetuning(unittest.TestCase):
         )
 
         self.assertIn("target_external_target", Path(result["output_dir"]).name)
+
+    def test_final_target_predictions_reject_nonbinary_ignore_policy(self) -> None:
+        target = self._make_external_target_bundle()
+        target = DatasetBundle(
+            raw=target.raw,
+            train_set=target.train_set,
+            eval_set=target.eval_set,
+            metadata={**target.metadata, "ignore_policy": "include"},
+            extras=target.extras,
+        )
+
+        with self.assertRaisesRegex(ValueError, "ignore_policy='exclude'"):
+            _build_final_target_predictions(
+                model_type="gru",
+                params=None,
+                make_eval_network=None,
+                bundle=target,
+            )
 
     def test_external_target_zero_shot_keeps_mean_initialized_embedding(self) -> None:
         model_dir, _, source_params = self._create_gru_source_run(

@@ -1711,6 +1711,13 @@ class TestBaselineRLTrainer(unittest.TestCase):
         self.assertEqual(stats["total_trials"], 3)
         self.assertAlmostEqual(stats["normalized_likelihood"], 0.9)
 
+    def test_likelihood_stats_rejects_misaligned_session_lists(self):
+        with self.assertRaisesRegex(ValueError, "align one-to-one"):
+            _compute_likelihood_stats(
+                [np.asarray([0]), np.asarray([1])],
+                [np.asarray([[0.9], [0.1]])],
+            )
+
     def test_prefix_zero_adaptation_rejects_q_learning(self):
         raw_df = pd.DataFrame(
             {
