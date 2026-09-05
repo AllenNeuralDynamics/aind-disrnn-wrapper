@@ -343,6 +343,21 @@ class HBTrainer(ModelTrainer):
             which is the bulk of the artifact -- but a site exists only while the sampler
             does, so a fit that ships without it can be recovered only by re-fitting, at
             hours per fit. Defaults on for that reason; turn it off for a throwaway fit.
+        progress_bar : bool
+            Emit NumPyro's sampling progress. Off by default, which is the behaviour every
+            existing caller had. Worth turning on for any multi-hour rung: a population fit
+            otherwise logs nothing between "starting" and "fitted in Ns", so a silent job
+            cannot be told apart from a hung one -- three ladder rungs sat at 32 h before
+            this existed with no way to know. It is not free, though: NumPyro's docs note
+            that disabling the bar "will improve the speed for many cases, but it might
+            require more memory", because the bar breaks the sampler's scan into chunks.
+            That trade reverses at large ``D``, where memory rather than speed binds, so
+            this is a per-rung decision.
+        progress_rate : int, optional
+            Iterations per progress update. Left as ``None`` NumPyro uses 5% of total
+            iterations, which is what keeps a captured log readable -- roughly 20 lines for
+            a whole fit. Set it only to override that: tqdm writes to stderr, which Beaker
+            captures, so a small value here buries the log rather than illuminating it.
         architecture : mapping
             Present for parity with the other trainers; unused.
         output_dir : str
