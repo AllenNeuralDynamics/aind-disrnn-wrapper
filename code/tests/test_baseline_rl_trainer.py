@@ -743,6 +743,7 @@ class TestBaselineRLTrainer(unittest.TestCase):
 
             subject_metrics_df = pd.read_csv(subject_metrics_csv_path)
             self.assertEqual(len(subject_metrics_df), 2)
+
             self.assertEqual(subject_metrics_df["subject_index"].tolist(), [0, 1])
             self.assertCountEqual(
                 subject_metrics_df["curriculum_name"].tolist(),
@@ -834,6 +835,47 @@ class TestBaselineRLTrainer(unittest.TestCase):
                 trainer._compute_normalized_likelihood(pooled_eval_choices, pooled_eval_probs),
                 places=6,
             )
+
+    def test_multisubject_fit_exports_predictions_with_legacy_derived_split(self):
+        """Prediction export reuses an eval_every_n split absent from metadata."""
+        metadata = dict(self.multisubject_bundle.metadata)
+        metadata.pop("train_session_ids")
+        metadata.pop("eval_session_ids")
+        legacy_bundle = DatasetBundle(
+            raw=self.multisubject_bundle.raw,
+            train_set=None,
+            eval_set=None,
+            metadata=metadata,
+            extras={},
+        )
+
+        with tempfile.TemporaryDirectory(prefix="baseline_rl_legacy_split_") as tmpdir:
+            trainer = BaselineRLTrainer(
+                architecture={"multisubject": True},
+                multisubject_subject_workers=1,
+                agent_class="ForagerQLearning",
+                agent_kwargs={
+                    "number_of_learning_rate": 2,
+                    "number_of_forget_rate": 1,
+                    "choice_kernel": "none",
+                    "action_selection": "softmax",
+                },
+                DE_kwargs={
+                    "workers": 1,
+                    "maxiter": 1,
+                    "popsize": 4,
+                    "polish": False,
+                },
+                output_dir=tmpdir,
+                seed=42,
+            )
+
+            output = trainer.fit(legacy_bundle)
+            predictions = pd.read_csv(
+                output["subject_artifacts"]["test_trial_predictions_csv"]
+            )
+
+        self.assertEqual(set(predictions["ses_idx"]), {"101__1", "202__1"})
 
     def test_multisubject_fit_example_plots_fallback_to_probabilities_when_q_histories_missing(self):
         """Test that multisubject example plots still export when Q histories are unavailable."""

@@ -509,6 +509,26 @@ class TestHeldoutSubjectFinetuning(unittest.TestCase):
         self.assertEqual(summary["selection_policy"], "fixed_final")
         self.assertFalse(summary["target_test_used_for_selection"])
 
+    def test_external_target_with_null_dataset_id_uses_fallback_slug(self) -> None:
+        model_dir, _, _ = self._create_gru_source_run(session_conditioning=False)
+        config = self._make_runner_config(model_dir=model_dir)
+        config["heldout_finetuning"]["n_steps"] = 1
+        target = self._make_external_target_bundle()
+        target = DatasetBundle(
+            raw=target.raw,
+            train_set=target.train_set,
+            eval_set=target.eval_set,
+            metadata={**target.metadata, "dataset_id": None},
+            extras=target.extras,
+        )
+
+        result = run_heldout_subject_finetuning_from_config(
+            config,
+            target_bundle=target,
+        )
+
+        self.assertIn("target_external_target", Path(result["output_dir"]).name)
+
     def test_external_target_zero_shot_keeps_mean_initialized_embedding(self) -> None:
         model_dir, _, source_params = self._create_gru_source_run(
             session_conditioning=False

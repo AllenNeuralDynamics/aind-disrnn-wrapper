@@ -1045,6 +1045,21 @@ class BaselineRLTrainer(ModelTrainer):
             raw_df=raw_df,
             metadata=metadata,
         )
+        # ``_build_multisubject_subject_records`` is the authoritative split
+        # resolver: for legacy bundles it may derive the session lists from
+        # ``eval_every_n`` when explicit metadata is absent.  Preserve those
+        # resolved lists for the canonical prediction export below so it scores
+        # the same evaluation rows that were used during fitting.
+        metadata["train_session_ids"] = [
+            session_id
+            for subject_record in subject_records
+            for session_id in subject_record["train_session_ids"]
+        ]
+        metadata["eval_session_ids"] = [
+            session_id
+            for subject_record in subject_records
+            for session_id in subject_record["eval_session_ids"]
+        ]
 
         subject_id_to_index = metadata.get("subject_id_to_index")
         index_to_subject_id = metadata.get("index_to_subject_id")

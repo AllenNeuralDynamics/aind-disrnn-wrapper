@@ -1695,7 +1695,7 @@ def run_heldout_subject_finetuning_from_config(
     run_selector = heldout_selector
     if target_bundle is not None:
         run_selector = {
-            "dataset_id": target_bundle.metadata.get("dataset_id", "external_target")
+            "dataset_id": target_bundle.metadata.get("dataset_id") or "external_target"
         }
     run_dir = _resolve_output_run_dir(
         resolved_config=resolved_config,
