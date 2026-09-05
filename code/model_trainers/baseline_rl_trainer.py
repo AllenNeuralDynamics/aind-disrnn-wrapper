@@ -749,6 +749,16 @@ class BaselineRLTrainer(ModelTrainer):
             metadata.get("trial_partition_column", "external_split_partition")
         )
         test_partition = str(metadata.get("test_trial_partition", "test"))
+        adapt_sessions_per_subject = metadata.get("adapt_sessions_per_subject")
+        if (
+            str(metadata.get("source")) == "external_bandit_file"
+            and adapt_sessions_per_subject is not None
+            and int(adapt_sessions_per_subject) == 0
+        ):
+            raise ValueError(
+                "Subject-level Q-learning requires at least one adaptation session; "
+                "K=0 is a GRU zero-shot condition."
+            )
         for subject_index, subject_id in ordered_subjects:
             subject_df = raw_df[normalized_subject_series == subject_id].copy()
             if subject_df.empty:
@@ -806,11 +816,6 @@ class BaselineRLTrainer(ModelTrainer):
                 ]
                 if not train_session_ids or not eval_session_ids:
                     if str(metadata.get("source")) == "external_bandit_file":
-                        if int(metadata.get("adapt_sessions_per_subject", -1)) == 0:
-                            raise ValueError(
-                                "Subject-level Q-learning requires at least one "
-                                "adaptation session; K=0 is a GRU zero-shot condition."
-                            )
                         raise ValueError(
                             "External target manifest/budget produced an empty Q-learning "
                             f"adaptation or test split for subject_id={subject_id!r}."

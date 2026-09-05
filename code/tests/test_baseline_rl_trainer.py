@@ -1697,6 +1697,40 @@ class TestBaselineRLTrainer(unittest.TestCase):
                 metadata=metadata,
             )
 
+    def test_schema_v1_zero_adaptation_reference_rejects_q_learning(self):
+        raw_df = pd.DataFrame(
+            {
+                "subject_id": ["mouse-a"] * 4,
+                "ses_idx": ["mouse-a__adapt"] * 2 + ["mouse-a__test"] * 2,
+                "trial": [0, 1, 0, 1],
+                "animal_response": [0, 1, 1, 0],
+                "earned_reward": [1, 0, 1, 0],
+                "target_adaptation_selected": [False] * 4,
+            }
+        )
+        metadata = {
+            "source": "external_bandit_file",
+            "subject_id_to_index": {"mouse-a": 0},
+            "index_to_subject_id": {0: "mouse-a"},
+            "split_strategy": "explicit_manifest",
+            "adapt_sessions_per_subject": 0,
+            # K=0 retains these reference IDs because DatasetRNN cannot hold
+            # an empty train tensor. They must not enable a baseline fit.
+            "train_session_ids": ["mouse-a__adapt"],
+            "eval_session_ids": ["mouse-a__test"],
+            "target_adaptation_session_ids": [],
+            "zero_shot_train_set_is_reference": True,
+        }
+        trainer = BaselineRLTrainer(
+            agent_class="ForagerQLearning",
+            output_dir=str(self.output_dir),
+        )
+        with self.assertRaisesRegex(ValueError, "K=0 is a GRU zero-shot"):
+            trainer._build_multisubject_subject_records(
+                raw_df=raw_df,
+                metadata=metadata,
+            )
+
     def test_subject_fit_rolls_out_full_eval_before_masked_scoring(self):
         rollout_lengths = []
 
