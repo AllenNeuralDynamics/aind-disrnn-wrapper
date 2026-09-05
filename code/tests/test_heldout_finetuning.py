@@ -25,6 +25,7 @@ try:
     from models.gru_network import make_gru_network
     from models.session_conditioning import resolve_session_conditioning_from_architecture
     from post_training_analysis.heldout_finetuning import (
+        _build_final_target_predictions,
         _heldout_subject_run_name_suffix,
         _maybe_start_wandb_run,
         run_heldout_subject_finetuning_from_config,
@@ -451,6 +452,127 @@ class TestHeldoutSubjectFinetuning(unittest.TestCase):
             },
             "seed": 17,
         }
+
+    def _make_external_target_bundle(self) -> DatasetBundle:
+        subject_id = self.heldout_subject_ids[0]
+        target_df = self.heldout_snapshot_df.copy()
+        bundle = mice_loader._build_multisubject_bundle(
+            df=target_df,
+            resolved_subject_ids=[subject_id],
+            ignore_policy="exclude",
+            features=None,
+            eval_every_n=2,
+            batch_size=None,
+            batch_mode="single",
+            metadata={
+                "subject_ids": [subject_id],
+                "ignore_policy": "exclude",
+                "features": None,
+                "eval_every_n": 2,
+            },
+        )
+        metadata = dict(bundle.metadata)
+        metadata.update(
+            {
+                "source": "external_bandit_file",
+                "dataset_id": "external-test",
+                "species": "mouse",
+                "split_strategy": "explicit_manifest",
+            }
+        )
+        return DatasetBundle(
+            raw=bundle.raw,
+            train_set=bundle.train_set,
+            eval_set=bundle.eval_set,
+            metadata=metadata,
+            extras=bundle.extras,
+        )
+
+    def test_runner_accepts_external_target_and_exports_fixed_test_rows(self) -> None:
+        model_dir, _, _ = self._create_gru_source_run(session_conditioning=False)
+        config = self._make_runner_config(model_dir=model_dir)
+        config["heldout_finetuning"]["n_steps"] = 1
+        config["heldout_finetuning"]["adapt_sessions_per_subject"] = 1
+        result = run_heldout_subject_finetuning_from_config(
+            config,
+            target_bundle=self._make_external_target_bundle(),
+        )
+
+        predictions = pd.read_csv(result["test_trial_predictions_path"])
+        metrics = json.loads(Path(result["test_metrics_path"]).read_text())
+        target = self._make_external_target_bundle()
+        expected_sessions = set(target.metadata["eval_session_ids"])
+        self.assertEqual(set(predictions["ses_idx"]), expected_sessions)
+        self.assertEqual(metrics["n_trials"], len(predictions))
+        self.assertIn("brier_score", metrics)
+        self.assertIn("accuracy", metrics)
+        summary = json.loads(Path(result["summary_path"]).read_text())
+        self.assertEqual(summary["selection_policy"], "fixed_final")
+        self.assertFalse(summary["target_test_used_for_selection"])
+
+    def test_external_target_with_null_dataset_id_uses_fallback_slug(self) -> None:
+        model_dir, _, _ = self._create_gru_source_run(session_conditioning=False)
+        config = self._make_runner_config(model_dir=model_dir)
+        config["heldout_finetuning"]["n_steps"] = 1
+        target = self._make_external_target_bundle()
+        target = DatasetBundle(
+            raw=target.raw,
+            train_set=target.train_set,
+            eval_set=target.eval_set,
+            metadata={**target.metadata, "dataset_id": None},
+            extras=target.extras,
+        )
+
+        result = run_heldout_subject_finetuning_from_config(
+            config,
+            target_bundle=target,
+        )
+
+        self.assertIn("target_external_target", Path(result["output_dir"]).name)
+
+    def test_final_target_predictions_skips_nonbinary_ignore_policy(self) -> None:
+        target = self._make_external_target_bundle()
+        target = DatasetBundle(
+            raw=target.raw,
+            train_set=target.train_set,
+            eval_set=target.eval_set,
+            metadata={**target.metadata, "ignore_policy": "include"},
+            extras=target.extras,
+        )
+
+        predictions, metrics = _build_final_target_predictions(
+            model_type="gru",
+            params=None,
+            make_eval_network=None,
+            bundle=target,
+        )
+
+        self.assertIsNone(predictions)
+        self.assertIsNone(metrics)
+
+    def test_external_target_zero_shot_keeps_mean_initialized_embedding(self) -> None:
+        model_dir, _, source_params = self._create_gru_source_run(
+            session_conditioning=False
+        )
+        config = self._make_runner_config(model_dir=model_dir)
+        config["heldout_finetuning"]["adapt_sessions_per_subject"] = 0
+        result = run_heldout_subject_finetuning_from_config(
+            config,
+            target_bundle=self._make_external_target_bundle(),
+        )
+
+        checkpoint_metrics = json.loads(Path(result["checkpoint_metrics_path"]).read_text())
+        self.assertEqual([record["step"] for record in checkpoint_metrics], [0])
+        final_params = rnn_utils.to_np(json.loads(Path(result["params_path"]).read_text()))
+        expected_params = expand_local_multisubject_params(
+            source_params,
+            n_new_subjects=1,
+            init="mean",
+        )
+        np.testing.assert_allclose(
+            extract_subject_embeddings_from_params(final_params),
+            extract_subject_embeddings_from_params(expected_params),
+        )
 
     def test_gru_runner_finetunes_only_new_subject_rows(self) -> None:
         model_dir, _, source_params = self._create_gru_source_run(session_conditioning=False)

@@ -280,6 +280,18 @@ and likelihood metrics include only suffix choices. Start from
 subset, while `null` requires exact agreement between table and manifest
 subjects.
 
+Session-level few-shot budgets are applied at this shared loader boundary, so
+GRU/disRNN and subject-level Q-learning consume exactly the same adaptation
+sessions while the test partition remains immutable. For schema version 1,
+`adapt_sessions_per_subject: K` means the first K entries in each subject's
+**manifest adaptation list** (for the dispatcher-generated odd/even split, the
+first K odd-positioned adaptation sessions), not the first K sessions before the
+split. `K=0` is the GRU/disRNN zero-shot condition initialized from the
+source-subject embedding mean; a fitted subject-level Q-learning model needs at
+least one adaptation session and therefore has no K=0 result. Schema version 2
+does not use K: it always fits on the complete manifest-declared prefix and
+scores the complete suffix.
+
 ---
 
 ## 5. Models & trainers
@@ -541,6 +553,18 @@ python run_heldout_subject_finetuning.py --config configs/config_heldout_subject
 This writes its own run dir under `output.output_root` and (optionally) its own
 W&B run. Implementation: `post_training_analysis/heldout_finetuning.py`.
 
+The standalone config can instead define `target_data` with an
+`ExternalBanditDatasetLoader`. In that mode the frozen source recurrent core is
+evaluated zero-shot or after adapting only the new subject-embedding rows. The
+policy is `fixed_final`: target-test likelihood never selects a checkpoint or
+fine-tuning step. After fitting, evaluation replays each complete target
+sequence to reconstruct the recurrent/Q state at the test boundary, keeps all
+learned parameters fixed, and scores only immutable test rows. Both neural and
+Q-learning paths write `test_trial_predictions.csv` and `test_metrics.json`
+with matched `(subject_id, ses_idx, trial)` keys, log likelihood in nats/bits,
+normalized likelihood, Brier score, accuracy, and calibration-ready
+`choice`/`probability_choice_1` columns.
+
 > Note: held-out **generative/rollout post-training analysis** (the
 > `generative_analysis` path) remains unsupported for multisubject runs — see
 > [README.md](../README.md). The auto fine-tuning above is the supported way to get
@@ -594,6 +618,12 @@ environment.
 > Add a dated entry (newest first) whenever you add or change a feature.
 
 ### 2026-09-04
+- **External target transfer and matched neural/Q evaluation.** Held-out
+  fine-tuning now accepts external `DatasetBundle` targets, supports session- and
+  prefix-trial few-shot budgets without changing test membership, prohibits
+  target-test checkpoint selection, and exports a shared trial-level prediction
+  and metric contract. Prefix/suffix Q evaluation replays the full sequence with
+  fixed fitted parameters and scores only the suffix.
 - **Canonical external-bandit loader and explicit session manifests.**
   `ExternalBanditDatasetLoader` validates binary two-arm trial tables, checks
   dataset/species provenance, and builds multisubject bundles from a versioned

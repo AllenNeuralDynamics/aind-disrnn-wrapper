@@ -15,7 +15,11 @@ import pandas as pd
 from aind_dynamic_foraging_models import generative_model
 
 from base.types import DatasetBundle
-from model_trainers.baseline_rl_trainer import BaselineRLTrainer
+from model_trainers.baseline_rl_trainer import (
+    BaselineRLTrainer,
+    _compute_likelihood_stats,
+    _fit_subject_sessions_impl,
+)
 from data_loaders.synthetic import SyntheticCognitiveAgents
 from utils.baseline_rl_evaluation import (
     _extract_q_histories,
@@ -739,6 +743,7 @@ class TestBaselineRLTrainer(unittest.TestCase):
 
             subject_metrics_df = pd.read_csv(subject_metrics_csv_path)
             self.assertEqual(len(subject_metrics_df), 2)
+
             self.assertEqual(subject_metrics_df["subject_index"].tolist(), [0, 1])
             self.assertCountEqual(
                 subject_metrics_df["curriculum_name"].tolist(),
@@ -830,6 +835,65 @@ class TestBaselineRLTrainer(unittest.TestCase):
                 trainer._compute_normalized_likelihood(pooled_eval_choices, pooled_eval_probs),
                 places=6,
             )
+
+    def test_multisubject_fit_exports_predictions_with_legacy_derived_split(self):
+        """Prediction export reuses an eval_every_n split absent from metadata."""
+        metadata = dict(self.multisubject_bundle.metadata)
+        metadata.pop("train_session_ids")
+        metadata.pop("eval_session_ids")
+        legacy_bundle = DatasetBundle(
+            raw=self.multisubject_bundle.raw,
+            train_set=None,
+            eval_set=None,
+            metadata=metadata,
+            extras={},
+        )
+
+        with tempfile.TemporaryDirectory(prefix="baseline_rl_legacy_split_") as tmpdir:
+            trainer = BaselineRLTrainer(
+                architecture={"multisubject": True},
+                multisubject_subject_workers=1,
+                agent_class="ForagerQLearning",
+                agent_kwargs={
+                    "number_of_learning_rate": 2,
+                    "number_of_forget_rate": 1,
+                    "choice_kernel": "none",
+                    "action_selection": "softmax",
+                },
+                DE_kwargs={
+                    "workers": 1,
+                    "maxiter": 1,
+                    "popsize": 4,
+                    "polish": False,
+                },
+                output_dir=tmpdir,
+                seed=42,
+            )
+
+            output = trainer.fit(legacy_bundle)
+            predictions = pd.read_csv(
+                output["subject_artifacts"]["test_trial_predictions_csv"]
+            )
+
+        self.assertEqual(set(predictions["ses_idx"]), {"101__1", "202__1"})
+
+    def test_multisubject_fit_rejects_include_ignore_policy(self):
+        metadata = {**self.multisubject_bundle.metadata, "ignore_policy": "include"}
+        bundle = DatasetBundle(
+            raw=self.multisubject_bundle.raw,
+            train_set=None,
+            eval_set=None,
+            metadata=metadata,
+            extras={},
+        )
+        trainer = BaselineRLTrainer(
+            architecture={"multisubject": True},
+            agent_class="ForagerQLearning",
+            output_dir=self.output_dir,
+        )
+
+        with self.assertRaisesRegex(ValueError, "ignore_policy='exclude'"):
+            trainer.fit(bundle)
 
     def test_multisubject_fit_example_plots_fallback_to_probabilities_when_q_histories_missing(self):
         """Test that multisubject example plots still export when Q histories are unavailable."""
@@ -1614,6 +1678,180 @@ class TestBaselineRLTrainer(unittest.TestCase):
             self.assertEqual(fake_run.summary["heldout/eval_likelihood"], 0.42)
             self.assertIn("resolved_subject_ids", fake_run.config)
             self.assertTrue((Path(tmpdir) / "baseline_rl_output.json").exists())
+
+    def test_prefix_subject_record_replays_full_sequence_and_scores_suffix(self):
+        raw_df = pd.DataFrame(
+            {
+                "subject_id": ["rat-a"] * 6,
+                "ses_idx": ["rat-a__s1"] * 6,
+                "trial": list(range(6)),
+                "animal_response": [0, 1, 0, 1, 1, 0],
+                "earned_reward": [1, 0, 1, 0, 1, 0],
+                "curriculum_name": ["external"] * 6,
+                "external_split_partition": ["adapt"] * 3 + ["test"] * 3,
+            }
+        )
+        metadata = {
+            "multisubject": True,
+            "subject_id_to_index": {"rat-a": 0},
+            "index_to_subject_id": {0: "rat-a"},
+            "subject_curricula": {"rat-a": "external"},
+            "split_strategy": "within_session_prefix_suffix",
+            "trial_partition_column": "external_split_partition",
+            "test_trial_partition": "test",
+        }
+        trainer = BaselineRLTrainer(
+            agent_class="ForagerQLearning",
+            output_dir=str(self.output_dir),
+        )
+        record = trainer._build_multisubject_subject_records(
+            raw_df=raw_df,
+            metadata=metadata,
+        )[0]
+        self.assertEqual(len(record["train_choices"][0]), 3)
+        self.assertEqual(len(record["eval_choices"][0]), 6)
+        np.testing.assert_array_equal(
+            record["eval_score_masks"][0],
+            [False, False, False, True, True, True],
+        )
+        stats = _compute_likelihood_stats(
+            record["eval_choices"],
+            [
+                np.vstack(
+                    [
+                        [0.9, 0.1, 0.9, 0.1, 0.1, 0.9],
+                        [0.1, 0.9, 0.1, 0.9, 0.9, 0.1],
+                    ]
+                )
+            ],
+            score_masks=record["eval_score_masks"],
+        )
+        self.assertEqual(stats["total_trials"], 3)
+        self.assertAlmostEqual(stats["normalized_likelihood"], 0.9)
+
+    def test_likelihood_stats_rejects_misaligned_session_lists(self):
+        with self.assertRaisesRegex(ValueError, "align one-to-one"):
+            _compute_likelihood_stats(
+                [np.asarray([0]), np.asarray([1])],
+                [np.asarray([[0.9], [0.1]])],
+            )
+
+    def test_prefix_zero_adaptation_rejects_q_learning(self):
+        raw_df = pd.DataFrame(
+            {
+                "subject_id": ["rat-a"] * 2,
+                "ses_idx": ["rat-a__s1"] * 2,
+                "trial": [0, 1],
+                "animal_response": [0, 1],
+                "earned_reward": [1, 0],
+                "external_split_partition": ["adapt", "test"],
+                "target_adaptation_selected": [False, False],
+            }
+        )
+        metadata = {
+            "subject_id_to_index": {"rat-a": 0},
+            "index_to_subject_id": {0: "rat-a"},
+            "split_strategy": "within_session_prefix_suffix",
+            "trial_partition_column": "external_split_partition",
+        }
+        trainer = BaselineRLTrainer(
+            agent_class="ForagerQLearning",
+            output_dir=str(self.output_dir),
+        )
+        with self.assertRaisesRegex(ValueError, "K=0 is a GRU zero-shot"):
+            trainer._build_multisubject_subject_records(
+                raw_df=raw_df,
+                metadata=metadata,
+            )
+
+    def test_schema_v1_zero_adaptation_reference_rejects_q_learning(self):
+        raw_df = pd.DataFrame(
+            {
+                "subject_id": ["mouse-a"] * 4,
+                "ses_idx": ["mouse-a__adapt"] * 2 + ["mouse-a__test"] * 2,
+                "trial": [0, 1, 0, 1],
+                "animal_response": [0, 1, 1, 0],
+                "earned_reward": [1, 0, 1, 0],
+                "target_adaptation_selected": [False] * 4,
+            }
+        )
+        metadata = {
+            "source": "external_bandit_file",
+            "subject_id_to_index": {"mouse-a": 0},
+            "index_to_subject_id": {0: "mouse-a"},
+            "split_strategy": "explicit_manifest",
+            "adapt_sessions_per_subject": 0,
+            # K=0 retains these reference IDs because DatasetRNN cannot hold
+            # an empty train tensor. They must not enable a baseline fit.
+            "train_session_ids": ["mouse-a__adapt"],
+            "eval_session_ids": ["mouse-a__test"],
+            "target_adaptation_session_ids": [],
+            "zero_shot_train_set_is_reference": True,
+        }
+        trainer = BaselineRLTrainer(
+            agent_class="ForagerQLearning",
+            output_dir=str(self.output_dir),
+        )
+        with self.assertRaisesRegex(ValueError, "K=0 is a GRU zero-shot"):
+            trainer._build_multisubject_subject_records(
+                raw_df=raw_df,
+                metadata=metadata,
+            )
+
+    def test_subject_fit_rolls_out_full_eval_before_masked_scoring(self):
+        rollout_lengths = []
+
+        class _FakeAgent:
+            def __init__(self, **kwargs):
+                pass
+
+            def fit(self, *args, **kwargs):
+                return (
+                    types.SimpleNamespace(
+                        params={"bias": 0.0},
+                        k_model=1,
+                        log_likelihood=-2.0,
+                        LPT=-0.5,
+                        AIC=6.0,
+                        BIC=6.0,
+                    ),
+                    None,
+                )
+
+            def set_params(self, **kwargs):
+                pass
+
+            def perform_closed_loop_multi_session(self, choices, rewards):
+                rollout_lengths.append([len(session) for session in choices])
+                return [
+                    np.vstack(
+                        [np.full(len(session), 0.5), np.full(len(session), 0.5)]
+                    )
+                    for session in choices
+                ]
+
+            def get_params(self):
+                return {"bias": 0.0}
+
+        with mock.patch.object(generative_model, "_PrefixReplayAgent", _FakeAgent, create=True):
+            result = _fit_subject_sessions_impl(
+                agent_class="_PrefixReplayAgent",
+                agent_kwargs={},
+                fit_bounds_override={},
+                clamp_params={},
+                DE_kwargs={},
+                seed=0,
+                train_choices=[np.asarray([0, 1, 0])],
+                train_rewards=[np.asarray([1, 0, 1])],
+                eval_choices=[np.asarray([0, 1, 0, 1, 1, 0])],
+                eval_rewards=[np.asarray([1, 0, 1, 0, 1, 0])],
+                include_choice_prob_sessions=False,
+                eval_score_masks=[
+                    np.asarray([False, False, False, True, True, True])
+                ],
+            )
+        self.assertEqual(rollout_lengths, [[3], [6]])
+        self.assertEqual(result["eval_total_trials"], 3)
 
 
 if __name__ == "__main__":

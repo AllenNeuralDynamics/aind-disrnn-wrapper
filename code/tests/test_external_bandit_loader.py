@@ -14,6 +14,8 @@ import pandas as pd
 
 from data_loaders.external_bandit import (
     ExternalBanditDatasetLoader,
+    _copy_dataset_with_arrays,
+    apply_external_adaptation_budget,
     load_external_split_manifest,
     validate_canonical_bandit_table,
 )
@@ -362,6 +364,107 @@ class TestExternalBanditDatasetLoader(unittest.TestCase):
         self.assertEqual(bundle.metadata["test_trial_partition"], "test")
         self.assertIs(bundle.train_set.rng, bundle.eval_set.rng)
 
+    def test_session_budget_uses_first_manifest_adaptation_session(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            table_path = temp_path / "trials.pkl"
+            manifest_path = temp_path / "split.json"
+            _canonical_trials().to_pickle(table_path)
+            manifest_path.write_text(json.dumps(_manifest()), encoding="utf-8")
+            with _optional_dependency_stubs():
+                bundle = ExternalBanditDatasetLoader(
+                    file_path=table_path,
+                    split_manifest_path=manifest_path,
+                    adapt_sessions_per_subject=1,
+                    batch_size=None,
+                    batch_mode="single",
+                ).load()
+
+        self.assertEqual(bundle.train_set.get_all()["xs"].shape[1], 2)
+        self.assertEqual(bundle.eval_set.get_all()["xs"].shape[1], 4)
+        self.assertEqual(
+            bundle.metadata["train_session_ids"],
+            ["rat-a__s1", "rat-b__s1"],
+        )
+        selected = bundle.raw[bundle.raw["target_adaptation_selected"]]
+        self.assertEqual(
+            selected.groupby("subject_id")["source_ses_idx"].unique().apply(list).tolist(),
+            [["s1"], ["s1"]],
+        )
+
+    def test_session_budget_rejects_incomplete_subject_mapping(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            table_path = temp_path / "trials.pkl"
+            manifest_path = temp_path / "split.json"
+            _canonical_trials().to_pickle(table_path)
+            manifest_path.write_text(json.dumps(_manifest()), encoding="utf-8")
+            with _optional_dependency_stubs():
+                bundle = ExternalBanditDatasetLoader(
+                    file_path=table_path,
+                    split_manifest_path=manifest_path,
+                    batch_size=None,
+                    batch_mode="single",
+                ).load()
+
+        bundle.metadata["session_context"] = {"per_subject": []}
+        with self.assertRaisesRegex(ValueError, "map every adaptation session"):
+            apply_external_adaptation_budget(bundle, adapt_sessions_per_subject=1)
+
+    def test_dataset_copy_supports_keyword_only_array_constructor(self):
+        class KeywordOnlyDataset:
+            def __init__(self, *, xs, ys, **kwargs):
+                self.xs = np.asarray(xs)
+                self.ys = np.asarray(ys)
+                vars(self).update(kwargs)
+
+        source = KeywordOnlyDataset(
+            xs=np.zeros((2, 3, 4)),
+            ys=np.zeros((2, 3, 1)),
+            y_type="categorical",
+            n_classes=2,
+            x_names=["choice", "reward"],
+            y_names=["choice"],
+            batch_size=None,
+            batch_mode="single",
+            rng=object(),
+        )
+        copied_xs = np.ones((2, 1, 4))
+        copied_ys = np.ones((2, 1, 1))
+
+        copied = _copy_dataset_with_arrays(source, copied_xs, copied_ys)
+
+        np.testing.assert_array_equal(copied.xs, copied_xs)
+        np.testing.assert_array_equal(copied.ys, copied_ys)
+        self.assertIs(copied.rng, source.rng)
+
+    def test_zero_session_budget_keeps_aligned_reference_tensor(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            table_path = temp_path / "trials.pkl"
+            manifest_path = temp_path / "split.json"
+            _canonical_trials().to_pickle(table_path)
+            manifest_path.write_text(json.dumps(_manifest()), encoding="utf-8")
+            with _optional_dependency_stubs():
+                bundle = ExternalBanditDatasetLoader(
+                    file_path=table_path,
+                    split_manifest_path=manifest_path,
+                    adapt_sessions_per_subject=0,
+                    batch_size=None,
+                    batch_mode="single",
+                ).load()
+
+        train = bundle.train_set.get_all()
+        self.assertEqual(train["xs"].shape[1], 4)
+        self.assertEqual(train["ys"].shape[1], 4)
+        self.assertEqual(len(bundle.metadata["train_session_ids"]), 4)
+        self.assertEqual(bundle.metadata["target_adaptation_session_ids"], [])
+        self.assertEqual(
+            bundle.metadata["adapt_sessions_per_subject_counts"],
+            {"rat-a": 0, "rat-b": 0},
+        )
+        self.assertTrue(bundle.metadata["zero_shot_train_set_is_reference"])
+        self.assertFalse(bundle.raw["target_adaptation_selected"].any())
 
 if __name__ == "__main__":
     unittest.main()

@@ -227,7 +227,10 @@ explicitly:
 
 1. **`heldout_finetuning.run_heldout_subject_finetuning_from_config`** — genuinely
    *re-trains* held-out subject embeddings, so it legitimately uses
-   `DisrnnTrainer`/`GruTrainer` and the training utilities.
+   `DisrnnTrainer`/`GruTrainer` and the training utilities. It also accepts a
+   canonical external target through `target_data` or `target_bundle`, freezes
+   the recurrent core, and uses a fixed-final-step policy so target-test data do
+   not select adaptation hyperparameters or checkpoints.
 2. **`likelihood_comparison._evaluate_disrnn_dataset`** — for the **multisubject
    disRNN** case only, it borrows the trainer's network-construction helpers
    (single-subject eval uses `evaluation.disrnn_evaluation`'s own builder).
@@ -298,6 +301,14 @@ python -m unittest tests.test_post_training_analysis tests.test_likelihood_compa
 ## Changelog
 
 > Add a dated entry (newest first) whenever you add or change an evaluation feature.
+
+### 2026-09-04
+- **External target-transfer evaluation.** Held-out embedding fine-tuning accepts
+  canonical external bandit bundles, applies predeclared zero/few-shot budgets,
+  fixes model selection before reading target test performance, and exports
+  `test_trial_predictions.csv` plus `test_metrics.json`. The shared
+  `evaluation.target_transfer` contract keeps GRU/disRNN and Q-learning trial
+  keys and binary prediction metrics directly comparable.
 
 ### 2026-06-18
 - **Evaluation made training-independent + this guide created.** Introduced the

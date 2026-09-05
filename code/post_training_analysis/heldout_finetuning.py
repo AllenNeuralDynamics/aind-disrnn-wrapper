@@ -27,7 +27,12 @@ from omegaconf import DictConfig, OmegaConf
 
 from base.types import DatasetBundle
 from data_loaders import mice as mice_loader
+from data_loaders.external_bandit import apply_external_adaptation_budget
 from disentangled_rnns.library import rnn_utils
+from evaluation.target_transfer import (
+    build_binary_trial_predictions,
+    summarize_binary_trial_predictions,
+)
 from model_trainers.disrnn_trainer import DisrnnTrainer
 from model_trainers.gru_trainer import GruTrainer, _threeway_likelihood_decomposition
 from models.gru_network import make_gru_network
@@ -203,6 +208,8 @@ def _resolve_heldout_selector(
 
 
 def _heldout_selector_slug(selector: Mapping[str, Any]) -> str:
+    if selector.get("dataset_id") is not None:
+        return f"target_{_safe_slug(selector['dataset_id'])}"
     if selector.get("test_subject_ids") is not None:
         subject_ids = selector["test_subject_ids"]
         if not isinstance(subject_ids, list):
@@ -306,6 +313,9 @@ def _resolve_runtime_config(
         config=config,
         source_data_cfg=source_data_cfg,
     )
+    target_data_cfg = config.get("target_data")
+    if target_data_cfg is not None and not isinstance(target_data_cfg, Mapping):
+        raise ValueError("target_data must be a Hydra-instantiable mapping or null.")
 
     if "n_steps" not in fine_tune_cfg:
         raise ValueError("Config must set heldout_finetuning.n_steps.")
@@ -331,6 +341,14 @@ def _resolve_runtime_config(
         _resolved_output_root(config, output_root_override=output_root_override)
     )
     resolved["heldout_subjects"] = heldout_selector
+    if target_data_cfg is not None:
+        resolved["target_data"] = copy.deepcopy(dict(target_data_cfg))
+    selection_policy = str(fine_tune_cfg.get("selection_policy", "fixed_final"))
+    if selection_policy != "fixed_final":
+        raise ValueError(
+            "heldout_finetuning.selection_policy must be 'fixed_final'; target-test "
+            "performance cannot select the fine-tuning step."
+        )
     resolved["heldout_finetuning"] = {
         "n_steps": int(fine_tune_cfg["n_steps"]),
         "lr": float(fine_tune_cfg["lr"]),
@@ -378,6 +396,10 @@ def _resolve_runtime_config(
             if fine_tune_cfg.get("adapt_sessions_per_subject") is None
             else int(fine_tune_cfg["adapt_sessions_per_subject"])
         ),
+        "selection_policy": selection_policy,
+        "skip_subjects_with_insufficient_sessions": bool(
+            fine_tune_cfg.get("skip_subjects_with_insufficient_sessions", True)
+        ),
     }
     if (
         resolved["heldout_finetuning"]["adapt_sessions_per_subject"] is not None
@@ -387,6 +409,27 @@ def _resolve_runtime_config(
             "heldout_finetuning.adapt_sessions_per_subject must be >= 0 or null."
         )
     return resolved
+
+
+def _load_configured_target_bundle(target_data_cfg: Mapping[str, Any]) -> DatasetBundle:
+    """Instantiate an external target loader without importing Hydra at module import."""
+    from hydra.utils import instantiate
+
+    loader = instantiate(OmegaConf.create(dict(target_data_cfg)))
+    if isinstance(loader, DatasetBundle):
+        bundle = loader
+    elif hasattr(loader, "load"):
+        bundle = loader.load()
+    elif hasattr(loader, "load_data"):
+        bundle = loader.load_data()
+    else:
+        bundle = loader
+    if not isinstance(bundle, DatasetBundle):
+        raise TypeError(
+            "target_data must instantiate a DatasetLoader or DatasetBundle; got "
+            f"{type(bundle).__name__}."
+        )
+    return bundle
 
 
 def _resolve_output_run_dir(
@@ -795,31 +838,40 @@ def _build_global_heldout_bundle(
     heldout_selector: Mapping[str, Any],
     fine_tune_cfg: Mapping[str, Any],
     architecture: Mapping[str, Any],
+    target_bundle: DatasetBundle | None = None,
 ) -> tuple[DatasetBundle, list[Any], list[int], dict[Any, int], dict[int, Any]]:
     if source_run.subject_index_map_path is None:
         raise FileNotFoundError(
             "Held-out fine-tuning requires outputs/subject_index_map.json in the source run."
         )
-    source_data_cfg = _normalize_mapping(_normalize_mapping(source_run.run_config).get("data"))
-    heldout_df, heldout_subject_ids = _load_heldout_snapshot_selection(
-        heldout_selector=heldout_selector
-    )
-    # Derive the optional timing inputs on the held-out frame BEFORE building the
-    # bundle, so its input width matches the trained model's. See
-    # _attach_heldout_timing_features for why this cannot be skipped.
-    heldout_df, timing_feature_map = _attach_heldout_timing_features(
-        heldout_df,
-        heldout_selector=heldout_selector,
-        source_data_cfg=source_data_cfg,
-    )
-    if timing_feature_map is not None:
-        source_data_cfg = {**source_data_cfg, "features": timing_feature_map}
-    local_bundle = _build_local_heldout_bundle(
-        heldout_df=heldout_df,
-        heldout_subject_ids=heldout_subject_ids,
-        source_data_cfg=source_data_cfg,
-        fine_tune_cfg=fine_tune_cfg,
-    )
+    if target_bundle is None:
+        source_data_cfg = _normalize_mapping(
+            _normalize_mapping(source_run.run_config).get("data")
+        )
+        heldout_df, heldout_subject_ids = _load_heldout_snapshot_selection(
+            heldout_selector=heldout_selector
+        )
+        # Derive optional timing inputs before packing so the held-out tensor has
+        # the same input width as the trained model.
+        heldout_df, timing_feature_map = _attach_heldout_timing_features(
+            heldout_df,
+            heldout_selector=heldout_selector,
+            source_data_cfg=source_data_cfg,
+        )
+        if timing_feature_map is not None:
+            source_data_cfg = {**source_data_cfg, "features": timing_feature_map}
+        local_bundle = _build_local_heldout_bundle(
+            heldout_df=heldout_df,
+            heldout_subject_ids=heldout_subject_ids,
+            source_data_cfg=source_data_cfg,
+            fine_tune_cfg=fine_tune_cfg,
+        )
+    else:
+        local_bundle = target_bundle
+        if not bool(local_bundle.metadata.get("multisubject")):
+            raise ValueError("External target_data must produce a multisubject bundle.")
+        if local_bundle.raw is None or not hasattr(local_bundle.raw, "columns"):
+            raise ValueError("External target_data must retain its canonical raw table.")
     retained_heldout_subject_ids = list(local_bundle.metadata.get("subject_ids") or [])
     skipped_subject_rows = list(
         local_bundle.metadata.get("skipped_subjects_with_insufficient_sessions") or []
@@ -922,7 +974,12 @@ def _build_global_heldout_bundle(
         architecture=architecture,
     )
     adapt_sessions_per_subject = fine_tune_cfg.get("adapt_sessions_per_subject")
-    if adapt_sessions_per_subject is not None:
+    if target_bundle is not None:
+        global_bundle = apply_external_adaptation_budget(
+            global_bundle,
+            adapt_sessions_per_subject=adapt_sessions_per_subject,
+        )
+    elif adapt_sessions_per_subject is not None:
         global_bundle = _cap_adapt_sessions_per_subject(
             dataset_bundle=global_bundle,
             adapt_sessions_per_subject=int(adapt_sessions_per_subject),
@@ -1445,6 +1502,58 @@ def _evaluate_checkpoint(
     return record
 
 
+def _build_final_target_predictions(
+    *,
+    model_type: str,
+    params: Any,
+    make_eval_network: Any,
+    bundle: DatasetBundle,
+) -> tuple[pd.DataFrame | None, dict[str, Any] | None]:
+    """Replay the full target sequence and score only immutable test trials."""
+    ignore_policy = str(bundle.metadata.get("ignore_policy", "exclude"))
+    if ignore_policy != "exclude":
+        logger.info(
+            "Skipping binary target-transfer trial export for ignore_policy=%s.",
+            ignore_policy,
+        )
+        return None, None
+    dataset_full = bundle.extras["dataset"]
+    xs_full = dataset_full.get_all()["xs"]
+    yhat_full, network_states_full = rnn_utils.eval_network(
+        make_eval_network,
+        params,
+        xs_full,
+    )
+    if model_type == "gru":
+        output_df = add_gru_model_results(
+            bundle.raw.copy(),
+            np.asarray(network_states_full),
+            np.asarray(yhat_full),
+            ignore_policy=ignore_policy,
+        )
+        probability_choice_1 = output_df["choice_prob_1"].to_numpy(dtype=float)
+    else:
+        output_df = dl.add_model_results(
+            bundle.raw.copy(),
+            np.asarray(network_states_full),
+            yhat_full,
+            ignore_policy=ignore_policy,
+        )
+        logits = output_df[["logit(left)", "logit(right)"]].to_numpy(dtype=float)
+        logits -= np.max(logits, axis=1, keepdims=True)
+        probabilities = np.exp(logits)
+        probabilities /= probabilities.sum(axis=1, keepdims=True)
+        probability_choice_1 = probabilities[:, 1]
+
+    predictions = build_binary_trial_predictions(
+        output_df,
+        bundle.metadata,
+        probability_choice_1=probability_choice_1,
+        model=model_type,
+    )
+    return predictions, summarize_binary_trial_predictions(predictions)
+
+
 def _plot_checkpoint_metric_curve(
     *,
     checkpoint_records: Sequence[Mapping[str, Any]],
@@ -1540,11 +1649,16 @@ def run_heldout_subject_finetuning_from_config(
     config_source: str | Path | Mapping[str, Any] | DictConfig,
     *,
     output_root: str | Path | None = None,
+    target_bundle: DatasetBundle | None = None,
     wandb_run: Any | None = None,
     wandb_key_prefix: str | None = None,
     wandb_step_offset: int | None = None,
 ) -> dict[str, Any]:
-    """Fine-tune held-out subject embeddings for a trained multisubject GRU/disRNN.
+    """Fine-tune target subject embeddings for a trained multisubject GRU/disRNN.
+
+    The target may be supplied directly as ``target_bundle`` or instantiated from
+    ``target_data`` in the config. If neither is present, the legacy AIND held-out
+    subject selection is used.
 
     When ``wandb_run`` is provided (e.g. the still-open training run in
     ``run_capsule``), held-out metrics are logged into that run instead of a new
@@ -1577,10 +1691,22 @@ def run_heldout_subject_finetuning_from_config(
         output_root_override=output_root,
     )
     heldout_selector = _normalize_mapping(resolved_config.get("heldout_subjects"))
+    target_data_cfg = resolved_config.get("target_data")
+    if target_bundle is not None and target_data_cfg is not None:
+        raise ValueError("Supply target_bundle or config target_data, not both.")
+    if target_data_cfg is not None:
+        target_bundle = _load_configured_target_bundle(
+            _normalize_mapping(target_data_cfg)
+        )
+    run_selector = heldout_selector
+    if target_bundle is not None:
+        run_selector = {
+            "dataset_id": target_bundle.metadata.get("dataset_id") or "external_target"
+        }
     run_dir = _resolve_output_run_dir(
         resolved_config=resolved_config,
         source_run=resolved_source_run,
-        heldout_selector=heldout_selector,
+        heldout_selector=run_selector,
     )
     outputs_dir = run_dir / "outputs"
     checkpoints_root = outputs_dir / "checkpoints"
@@ -1636,6 +1762,7 @@ def run_heldout_subject_finetuning_from_config(
             heldout_selector=heldout_selector,
             fine_tune_cfg=resolved_config["heldout_finetuning"],
             architecture=architecture,
+            target_bundle=target_bundle,
         )
         if wandb_run is not None and not external_wandb_run:
             _update_wandb_run_name_for_heldout_subjects(
@@ -1721,8 +1848,8 @@ def run_heldout_subject_finetuning_from_config(
         # step-0 init eval + per_subject logging (embedding stays at its init).
         if int(bundle.metadata.get("adapt_sessions_per_subject", -1)) == 0:
             logger.info(
-                "No adapt sessions (adapt_sessions_per_subject=0); skipping gradient "
-                "steps and running zero-shot init eval only."
+                "No selected adaptation observations; skipping gradient steps and "
+                "running zero-shot initialization evaluation only."
             )
             total_steps = 0
         evaluation_steps = [0]
@@ -1826,6 +1953,32 @@ def run_heldout_subject_finetuning_from_config(
 
         _save_params(outputs_dir / "params.json", params)
         _save_json(outputs_dir / "checkpoint_metrics.json", checkpoint_records)
+        test_trial_predictions, test_metrics = _build_final_target_predictions(
+            model_type=resolved_source_run.model_type,
+            params=params,
+            make_eval_network=make_eval_network,
+            bundle=bundle,
+        )
+        test_trial_predictions_path = None
+        test_metrics_path = None
+        if test_trial_predictions is not None and test_metrics is not None:
+            final_eval_likelihood = float(checkpoint_records[-1]["eval_likelihood"])
+            if not np.isclose(
+                float(test_metrics["normalized_likelihood"]),
+                final_eval_likelihood,
+                rtol=1e-4,
+                atol=1e-6,
+            ):
+                raise AssertionError(
+                    "Canonical target-test likelihood does not match the final "
+                    "checkpoint evaluation likelihood: "
+                    f"table={test_metrics['normalized_likelihood']}, "
+                    f"checkpoint={final_eval_likelihood}."
+                )
+            test_trial_predictions_path = outputs_dir / "test_trial_predictions.csv"
+            test_metrics_path = outputs_dir / "test_metrics.json"
+            test_trial_predictions.to_csv(test_trial_predictions_path, index=False)
+            _save_json(test_metrics_path, test_metrics)
 
         # Per-held-out-subject / per-session eval likelihood decomposition (from the
         # final checkpoint). Tidy artifact + compact W&B table for downstream paired
@@ -1903,12 +2056,25 @@ def run_heldout_subject_finetuning_from_config(
             "n_steps": int(total_steps),
             "lr": float(resolved_config["heldout_finetuning"]["lr"]),
             "checkpoint_every_n_steps": int(checkpoint_every_n_steps),
+            "selection_policy": str(
+                resolved_config["heldout_finetuning"]["selection_policy"]
+            ),
+            "target_test_used_for_selection": False,
             "metrics": _final_metrics_summary(checkpoint_records),
+            "test_metrics": test_metrics,
             "artifacts": {
                 "resolved_config": str(run_dir / "resolved_config.yaml"),
                 "resolved_source_run": str(run_dir / "resolved_source_run.json"),
                 "params": str(outputs_dir / "params.json"),
                 "checkpoint_metrics": str(outputs_dir / "checkpoint_metrics.json"),
+                "test_trial_predictions": (
+                    str(test_trial_predictions_path)
+                    if test_trial_predictions_path is not None
+                    else None
+                ),
+                "test_metrics": (
+                    str(test_metrics_path) if test_metrics_path is not None else None
+                ),
                 "optimization_trace": str(outputs_dir / "optimization_trace.json"),
                 "model_config": str(model_config_path),
                 "subject_index_map": subject_artifacts["subject_index_map"],
@@ -1963,6 +2129,14 @@ def run_heldout_subject_finetuning_from_config(
             "outputs_dir": str(outputs_dir),
             "summary_path": str(outputs_dir / "output_summary.json"),
             "checkpoint_metrics_path": str(outputs_dir / "checkpoint_metrics.json"),
+            "test_trial_predictions_path": (
+                str(test_trial_predictions_path)
+                if test_trial_predictions_path is not None
+                else None
+            ),
+            "test_metrics_path": (
+                str(test_metrics_path) if test_metrics_path is not None else None
+            ),
             "params_path": str(outputs_dir / "params.json"),
             "subject_index_map_path": subject_artifacts["subject_index_map"],
             "subject_embeddings_path": subject_artifacts["subject_embeddings"],
