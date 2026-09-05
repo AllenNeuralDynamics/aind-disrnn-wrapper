@@ -1044,6 +1044,11 @@ class BaselineRLTrainer(ModelTrainer):
             raise ValueError(
                 "Multisubject baseline RL requires bundle.raw to be a dataframe-like object."
             )
+        if str(metadata.get("ignore_policy", "exclude")) != "exclude":
+            raise ValueError(
+                "Multisubject baseline RL target transfer requires "
+                "ignore_policy='exclude' for binary-choice fitting and export."
+            )
         raw_df = pd.DataFrame(bundle.raw).copy()
         subject_records = self._build_multisubject_subject_records(
             raw_df=raw_df,

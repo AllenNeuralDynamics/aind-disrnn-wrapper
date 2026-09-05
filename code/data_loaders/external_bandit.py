@@ -223,10 +223,20 @@ def apply_external_adaptation_budget(
     for row in dict(metadata.get("session_context") or {}).get("per_subject", []):
         for session_id in row.get("ordered_session_ids") or []:
             subject_by_session[str(session_id)] = str(row.get("subject_id"))
+    missing_subject_sessions = [
+        session_id
+        for session_id in train_session_ids
+        if session_id not in subject_by_session
+    ]
+    if missing_subject_sessions:
+        raise ValueError(
+            "session_context must map every adaptation session to a subject; "
+            f"missing={missing_subject_sessions[:5]}."
+        )
     kept_columns, kept_session_ids = [], []
     seen, kept_counts = {}, {}
     for column_index, session_id in enumerate(train_session_ids):
-        subject_id = subject_by_session.get(session_id, "unknown")
+        subject_id = subject_by_session[session_id]
         count = seen.get(subject_id, 0)
         kept_counts.setdefault(subject_id, 0)
         if count < K:

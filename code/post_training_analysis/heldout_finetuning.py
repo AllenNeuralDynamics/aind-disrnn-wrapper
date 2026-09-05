@@ -1508,14 +1508,15 @@ def _build_final_target_predictions(
     params: Any,
     make_eval_network: Any,
     bundle: DatasetBundle,
-) -> tuple[pd.DataFrame, dict[str, Any]]:
+) -> tuple[pd.DataFrame | None, dict[str, Any] | None]:
     """Replay the full target sequence and score only immutable test trials."""
     ignore_policy = str(bundle.metadata.get("ignore_policy", "exclude"))
     if ignore_policy != "exclude":
-        raise ValueError(
-            "Target-transfer trial export currently requires ignore_policy='exclude' "
-            "for binary-choice scoring."
+        logger.info(
+            "Skipping binary target-transfer trial export for ignore_policy=%s.",
+            ignore_policy,
         )
+        return None, None
     dataset_full = bundle.extras["dataset"]
     xs_full = dataset_full.get_all()["xs"]
     yhat_full, network_states_full = rnn_utils.eval_network(
@@ -1958,23 +1959,26 @@ def run_heldout_subject_finetuning_from_config(
             make_eval_network=make_eval_network,
             bundle=bundle,
         )
-        final_eval_likelihood = float(checkpoint_records[-1]["eval_likelihood"])
-        if not np.isclose(
-            float(test_metrics["normalized_likelihood"]),
-            final_eval_likelihood,
-            rtol=1e-4,
-            atol=1e-6,
-        ):
-            raise AssertionError(
-                "Canonical target-test likelihood does not match the final "
-                "checkpoint evaluation likelihood: "
-                f"table={test_metrics['normalized_likelihood']}, "
-                f"checkpoint={final_eval_likelihood}."
-            )
-        test_trial_predictions_path = outputs_dir / "test_trial_predictions.csv"
-        test_metrics_path = outputs_dir / "test_metrics.json"
-        test_trial_predictions.to_csv(test_trial_predictions_path, index=False)
-        _save_json(test_metrics_path, test_metrics)
+        test_trial_predictions_path = None
+        test_metrics_path = None
+        if test_trial_predictions is not None and test_metrics is not None:
+            final_eval_likelihood = float(checkpoint_records[-1]["eval_likelihood"])
+            if not np.isclose(
+                float(test_metrics["normalized_likelihood"]),
+                final_eval_likelihood,
+                rtol=1e-4,
+                atol=1e-6,
+            ):
+                raise AssertionError(
+                    "Canonical target-test likelihood does not match the final "
+                    "checkpoint evaluation likelihood: "
+                    f"table={test_metrics['normalized_likelihood']}, "
+                    f"checkpoint={final_eval_likelihood}."
+                )
+            test_trial_predictions_path = outputs_dir / "test_trial_predictions.csv"
+            test_metrics_path = outputs_dir / "test_metrics.json"
+            test_trial_predictions.to_csv(test_trial_predictions_path, index=False)
+            _save_json(test_metrics_path, test_metrics)
 
         # Per-held-out-subject / per-session eval likelihood decomposition (from the
         # final checkpoint). Tidy artifact + compact W&B table for downstream paired
@@ -2063,8 +2067,14 @@ def run_heldout_subject_finetuning_from_config(
                 "resolved_source_run": str(run_dir / "resolved_source_run.json"),
                 "params": str(outputs_dir / "params.json"),
                 "checkpoint_metrics": str(outputs_dir / "checkpoint_metrics.json"),
-                "test_trial_predictions": str(test_trial_predictions_path),
-                "test_metrics": str(test_metrics_path),
+                "test_trial_predictions": (
+                    str(test_trial_predictions_path)
+                    if test_trial_predictions_path is not None
+                    else None
+                ),
+                "test_metrics": (
+                    str(test_metrics_path) if test_metrics_path is not None else None
+                ),
                 "optimization_trace": str(outputs_dir / "optimization_trace.json"),
                 "model_config": str(model_config_path),
                 "subject_index_map": subject_artifacts["subject_index_map"],
@@ -2119,8 +2129,14 @@ def run_heldout_subject_finetuning_from_config(
             "outputs_dir": str(outputs_dir),
             "summary_path": str(outputs_dir / "output_summary.json"),
             "checkpoint_metrics_path": str(outputs_dir / "checkpoint_metrics.json"),
-            "test_trial_predictions_path": str(test_trial_predictions_path),
-            "test_metrics_path": str(test_metrics_path),
+            "test_trial_predictions_path": (
+                str(test_trial_predictions_path)
+                if test_trial_predictions_path is not None
+                else None
+            ),
+            "test_metrics_path": (
+                str(test_metrics_path) if test_metrics_path is not None else None
+            ),
             "params_path": str(outputs_dir / "params.json"),
             "subject_index_map_path": subject_artifacts["subject_index_map"],
             "subject_embeddings_path": subject_artifacts["subject_embeddings"],

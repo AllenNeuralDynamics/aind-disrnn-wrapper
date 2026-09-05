@@ -877,6 +877,23 @@ class TestBaselineRLTrainer(unittest.TestCase):
 
         self.assertEqual(set(predictions["ses_idx"]), {"101__1", "202__1"})
 
+    def test_multisubject_fit_rejects_include_ignore_policy(self):
+        metadata = {**self.multisubject_bundle.metadata, "ignore_policy": "include"}
+        bundle = DatasetBundle(
+            raw=self.multisubject_bundle.raw,
+            train_set=None,
+            eval_set=None,
+            metadata=metadata,
+            extras={},
+        )
+        trainer = BaselineRLTrainer(
+            architecture={"multisubject": True},
+            output_dir=self.output_dir,
+        )
+
+        with self.assertRaisesRegex(ValueError, "ignore_policy='exclude'"):
+            trainer.fit(bundle)
+
     def test_multisubject_fit_example_plots_fallback_to_probabilities_when_q_histories_missing(self):
         """Test that multisubject example plots still export when Q histories are unavailable."""
         with tempfile.TemporaryDirectory(prefix="baseline_rl_multisubject_fallback_") as tmpdir:

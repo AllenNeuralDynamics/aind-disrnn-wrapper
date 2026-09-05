@@ -15,6 +15,7 @@ import pandas as pd
 from data_loaders.external_bandit import (
     ExternalBanditDatasetLoader,
     _copy_dataset_with_arrays,
+    apply_external_adaptation_budget,
     load_external_split_manifest,
     validate_canonical_bandit_table,
 )
@@ -390,6 +391,25 @@ class TestExternalBanditDatasetLoader(unittest.TestCase):
             selected.groupby("subject_id")["source_ses_idx"].unique().apply(list).tolist(),
             [["s1"], ["s1"]],
         )
+
+    def test_session_budget_rejects_incomplete_subject_mapping(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            table_path = temp_path / "trials.pkl"
+            manifest_path = temp_path / "split.json"
+            _canonical_trials().to_pickle(table_path)
+            manifest_path.write_text(json.dumps(_manifest()), encoding="utf-8")
+            with _optional_dependency_stubs():
+                bundle = ExternalBanditDatasetLoader(
+                    file_path=table_path,
+                    split_manifest_path=manifest_path,
+                    batch_size=None,
+                    batch_mode="single",
+                ).load()
+
+        bundle.metadata["session_context"] = {"per_subject": []}
+        with self.assertRaisesRegex(ValueError, "map every adaptation session"):
+            apply_external_adaptation_budget(bundle, adapt_sessions_per_subject=1)
 
     def test_dataset_copy_supports_keyword_only_array_constructor(self):
         class KeywordOnlyDataset:

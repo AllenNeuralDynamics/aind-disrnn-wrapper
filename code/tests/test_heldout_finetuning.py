@@ -530,7 +530,7 @@ class TestHeldoutSubjectFinetuning(unittest.TestCase):
 
         self.assertIn("target_external_target", Path(result["output_dir"]).name)
 
-    def test_final_target_predictions_reject_nonbinary_ignore_policy(self) -> None:
+    def test_final_target_predictions_skips_nonbinary_ignore_policy(self) -> None:
         target = self._make_external_target_bundle()
         target = DatasetBundle(
             raw=target.raw,
@@ -540,13 +540,15 @@ class TestHeldoutSubjectFinetuning(unittest.TestCase):
             extras=target.extras,
         )
 
-        with self.assertRaisesRegex(ValueError, "ignore_policy='exclude'"):
-            _build_final_target_predictions(
-                model_type="gru",
-                params=None,
-                make_eval_network=None,
-                bundle=target,
-            )
+        predictions, metrics = _build_final_target_predictions(
+            model_type="gru",
+            params=None,
+            make_eval_network=None,
+            bundle=target,
+        )
+
+        self.assertIsNone(predictions)
+        self.assertIsNone(metrics)
 
     def test_external_target_zero_shot_keeps_mean_initialized_embedding(self) -> None:
         model_dir, _, source_params = self._create_gru_source_run(
