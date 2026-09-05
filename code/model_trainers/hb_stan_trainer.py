@@ -26,12 +26,20 @@ and an HB-Stan run is not a substitute for an HB rung on the scaling curve.
 
 Threading
 ---------
-pystan builds through httpstan, which does not define ``STAN_THREADS``, so the model's
-``reduce_sum`` runs serially and parallelism is one core per chain. Requesting more cores than
-chains buys nothing on this path.
+httpstan compiles models with ``STAN_THREADS`` defined (``httpstan/models.py``), so the
+model's ``reduce_sum`` **can** thread across subjects within a chain. What it cannot do is
+guess how many threads to use: Stan reads ``STAN_NUM_THREADS`` at runtime and falls back to a
+single thread when it is unset, which is what the first D≈29/D≈99 pair ran as. This trainer
+now sets it from the SLURM allocation, so the job uses the cores it was given -- with 4 chains
+and 32 CPUs each chain threads 8 ways over the subject slice.
+
+That makes the CPU request meaningful rather than decorative, and it matters most at the
+large end: D≈99 measured ~53 iterations/hour single-threaded, which projects past any
+reasonable wall clock.
 """
 
 import logging
+import os
 import time
 from typing import Any, Dict, Optional
 
@@ -136,9 +144,20 @@ class HBStanTrainer(ModelTrainer):
 
     def fit(self, bundle: DatasetBundle, loggers: Optional[Dict[str, Any]] = None) -> Any:
         """Fit the population posterior and log sampler-efficiency metrics."""
+        # Must be set BEFORE stan/httpstan starts a model process: Stan reads
+        # STAN_NUM_THREADS once, when it initialises its thread pool, and defaults to a single
+        # thread if it is unset. Chains run as separate processes, so the cores have to be
+        # divided between them rather than handed to each.
+        threads = self._threads_per_chain()
+        os.environ.setdefault("STAN_NUM_THREADS", str(threads))
+
         import stan
 
         wandb_run = (loggers or {}).get("wandb")
+        logger.info(
+            "HBStanTrainer: %d chains x %d reduce_sum threads (STAN_NUM_THREADS=%s)",
+            self.num_chains, threads, os.environ["STAN_NUM_THREADS"],
+        )
 
         if bundle.raw is None or len(bundle.raw) == 0:
             raise ValueError("HBStanTrainer requires bundle.raw with trial-level rows.")
@@ -202,6 +221,20 @@ class HBStanTrainer(ModelTrainer):
         logger.info("HBStanTrainer: %s", {k: v for k, v in metrics.items()
                                           if isinstance(v, (int, float))})
         return {"metrics": metrics, "subject_ids": [str(s) for s in subject_ids]}
+
+    def _threads_per_chain(self) -> int:
+        """How many reduce_sum threads each chain may use.
+
+        Read from the SLURM allocation rather than the machine, because ``os.cpu_count()`` on
+        a shared node reports every core on the box, not the ones this job was given --
+        oversubscribing them would slow the job down and everyone else's with it. An explicit
+        ``STAN_NUM_THREADS`` in the environment always wins, so a launch can override.
+        """
+        for var in ("SLURM_CPUS_PER_TASK", "SLURM_CPUS_ON_NODE"):
+            value = os.environ.get(var)
+            if value and value.isdigit():
+                return max(1, int(value) // max(1, self.num_chains))
+        return 1
 
     def _diagnostics(self, fit, fit_seconds):
         """R-hat / bulk ESS on the population means, plus divergences.
