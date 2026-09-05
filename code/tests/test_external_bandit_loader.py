@@ -390,7 +390,7 @@ class TestExternalBanditDatasetLoader(unittest.TestCase):
             [["s1"], ["s1"]],
         )
 
-    def test_zero_session_budget_returns_empty_adaptation_tensor(self):
+    def test_zero_session_budget_keeps_aligned_reference_tensor(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             table_path = temp_path / "trials.pkl"
@@ -407,9 +407,15 @@ class TestExternalBanditDatasetLoader(unittest.TestCase):
                 ).load()
 
         train = bundle.train_set.get_all()
-        self.assertEqual(train["xs"].shape[1], 0)
-        self.assertEqual(train["ys"].shape[1], 0)
-        self.assertEqual(bundle.metadata["train_session_ids"], [])
+        self.assertEqual(train["xs"].shape[1], 4)
+        self.assertEqual(train["ys"].shape[1], 4)
+        self.assertEqual(len(bundle.metadata["train_session_ids"]), 4)
+        self.assertEqual(bundle.metadata["target_adaptation_session_ids"], [])
+        self.assertEqual(
+            bundle.metadata["adapt_sessions_per_subject_counts"],
+            {"rat-a": 0, "rat-b": 0},
+        )
+        self.assertTrue(bundle.metadata["zero_shot_train_set_is_reference"])
         self.assertFalse(bundle.raw["target_adaptation_selected"].any())
 
     def test_prefix_trial_budget_keeps_full_eval_warmup(self):
@@ -436,7 +442,7 @@ class TestExternalBanditDatasetLoader(unittest.TestCase):
         self.assertEqual(selected.tolist(), [1, 1])
         self.assertTrue(np.all(bundle.eval_set.get_all()["ys"][:3] == -1))
 
-    def test_zero_prefix_budget_returns_empty_adaptation_tensor(self):
+    def test_zero_prefix_budget_keeps_reference_tensor_without_selection(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             table_path = temp_path / "trials.pkl"
@@ -453,8 +459,9 @@ class TestExternalBanditDatasetLoader(unittest.TestCase):
                 ).load()
 
         train = bundle.train_set.get_all()
-        self.assertEqual(train["xs"].shape[:2], (0, 2))
-        self.assertEqual(train["ys"].shape[:2], (0, 2))
+        self.assertEqual(train["xs"].shape[:2], (3, 2))
+        self.assertEqual(train["ys"].shape[:2], (3, 2))
+        self.assertTrue(bundle.metadata["zero_shot_train_set_is_reference"])
         self.assertFalse(bundle.raw["target_adaptation_selected"].any())
 
 

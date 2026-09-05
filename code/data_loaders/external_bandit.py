@@ -234,25 +234,33 @@ def apply_external_adaptation_budget(
         for column_index, session_id in enumerate(train_session_ids):
             subject_id = subject_by_session.get(session_id, "unknown")
             count = seen.get(subject_id, 0)
+            kept_counts.setdefault(subject_id, 0)
             if count < K:
                 kept_columns.append(column_index)
                 kept_session_ids.append(session_id)
-                kept_counts[subject_id] = kept_counts.get(subject_id, 0) + 1
+                kept_counts[subject_id] += 1
             seen[subject_id] = count + 1
         metadata["adapt_sessions_per_subject"] = K
         metadata["adapt_sessions_per_subject_counts"] = kept_counts
-        metadata["train_session_ids"] = kept_session_ids
+        metadata["target_adaptation_session_ids"] = kept_session_ids
         raw_df["target_adaptation_selected"] = raw_df["ses_idx"].astype(str).isin(
             set(kept_session_ids)
         )
         kept = np.asarray(kept_columns, dtype=int)
         train_set = bundle.train_set
-        if len(kept) != int(np.asarray(train_all["xs"]).shape[1]):
+        if len(kept) == 0:
+            # DatasetRNN rejects empty arrays. The zero-shot runner skips gradient
+            # steps from the explicit K=0 metadata, so retain the full reference
+            # train set for step-0 diagnostics and keep train_session_ids aligned
+            # with its columns. target_adaptation_session_ids remains empty.
+            metadata["zero_shot_train_set_is_reference"] = True
+        elif len(kept) != int(np.asarray(train_all["xs"]).shape[1]):
             train_set = _copy_dataset_with_arrays(
                 bundle.train_set,
                 np.asarray(train_all["xs"])[:, kept, :],
                 np.asarray(train_all["ys"])[:, kept, :],
             )
+            metadata["train_session_ids"] = kept_session_ids
         return DatasetBundle(
             raw=raw_df,
             train_set=train_set,
@@ -293,7 +301,12 @@ def apply_external_adaptation_budget(
     packed_prefix_length = int(np.asarray(train_all["xs"]).shape[0])
     if K > packed_prefix_length:
         raise ValueError("Requested adaptation trials exceed packed prefix length.")
-    if K != packed_prefix_length:
+    if K == 0:
+        # See the session-budget branch above: retain the reference tensor only
+        # for zero-shot diagnostics; target_adaptation_selected is all false and
+        # the runner performs no gradient steps.
+        metadata["zero_shot_train_set_is_reference"] = True
+    elif K != packed_prefix_length:
         train_set = _copy_dataset_with_arrays(
             bundle.train_set,
             np.asarray(train_all["xs"])[:K, :, :],
