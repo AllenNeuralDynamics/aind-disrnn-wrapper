@@ -888,6 +888,7 @@ class TestBaselineRLTrainer(unittest.TestCase):
         )
         trainer = BaselineRLTrainer(
             architecture={"multisubject": True},
+            agent_class="ForagerQLearning",
             output_dir=self.output_dir,
         )
 
