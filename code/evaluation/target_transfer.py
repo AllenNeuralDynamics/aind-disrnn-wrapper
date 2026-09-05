@@ -68,6 +68,14 @@ def build_binary_trial_predictions(
     mask = target_test_mask(trial_df, metadata)
     scored = trial_df.loc[mask].copy()
     probability_1 = probabilities[mask]
+
+    if str(metadata.get("ignore_policy", "exclude")) == "exclude":
+        valid_choice = scored["animal_response"].isin([0, 1]).to_numpy()
+        scored = scored.loc[valid_choice].copy()
+        probability_1 = probability_1[valid_choice]
+    if scored.empty:
+        raise ValueError("Target-test membership resolved to zero scorable trials.")
+
     if not np.all(np.isfinite(probability_1)):
         raise ValueError("Scored target-test probabilities must all be finite.")
     if np.any((probability_1 < 0.0) | (probability_1 > 1.0)):

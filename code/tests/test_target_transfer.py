@@ -66,6 +66,49 @@ class TestTargetTransferMetrics(unittest.TestCase):
         self.assertEqual(predictions["trial"].tolist(), [2, 3])
         self.assertEqual(predictions["model"].unique().tolist(), ["q_learning"])
 
+    def test_exclude_ignore_policy_drops_no_response_trials_before_scoring(self):
+        trial_df = pd.DataFrame(
+            {
+                "subject_id": ["m1"] * 3,
+                "ses_idx": ["m1__test"] * 3,
+                "trial": [0, 1, 2],
+                "animal_response": [0, 2, 1],
+            }
+        )
+        predictions = build_binary_trial_predictions(
+            trial_df,
+            {
+                "eval_session_ids": ["m1__test"],
+                "ignore_policy": "exclude",
+            },
+            probability_choice_1=[0.25, np.nan, 0.75],
+            model="gru",
+        )
+
+        self.assertEqual(predictions["trial"].tolist(), [0, 2])
+        self.assertEqual(predictions["choice"].tolist(), [0, 1])
+        np.testing.assert_allclose(predictions["probability_chosen"], [0.75, 0.75])
+
+    def test_exclude_ignore_policy_rejects_all_ignored_test_trials(self):
+        trial_df = pd.DataFrame(
+            {
+                "subject_id": ["m1"],
+                "ses_idx": ["m1__test"],
+                "trial": [0],
+                "animal_response": [2],
+            }
+        )
+        with self.assertRaisesRegex(ValueError, "zero scorable trials"):
+            build_binary_trial_predictions(
+                trial_df,
+                {
+                    "eval_session_ids": ["m1__test"],
+                    "ignore_policy": "exclude",
+                },
+                probability_choice_1=[np.nan],
+                model="gru",
+            )
+
     def test_parity_requires_identical_ordered_trial_keys(self):
         base = pd.DataFrame(
             {

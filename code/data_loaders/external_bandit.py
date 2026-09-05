@@ -245,9 +245,9 @@ def apply_external_adaptation_budget(
         raw_df["target_adaptation_selected"] = raw_df["ses_idx"].astype(str).isin(
             set(kept_session_ids)
         )
+        kept = np.asarray(kept_columns, dtype=int)
         train_set = bundle.train_set
-        if K > 0:
-            kept = np.asarray(kept_columns, dtype=int)
+        if len(kept) != int(np.asarray(train_all["xs"]).shape[1]):
             train_set = _copy_dataset_with_arrays(
                 bundle.train_set,
                 np.asarray(train_all["xs"])[:, kept, :],
@@ -288,11 +288,12 @@ def apply_external_adaptation_budget(
             raw_df.loc[adapt_rows.index[:K], "target_adaptation_selected"] = True
     metadata["adapt_trials_per_subject"] = K
     metadata["adapt_trials_available_per_subject"] = available_counts
+    train_all = bundle.train_set.get_all()
     train_set = bundle.train_set
-    if K > 0:
-        train_all = bundle.train_set.get_all()
-        if K > int(np.asarray(train_all["xs"]).shape[0]):
-            raise ValueError("Requested adaptation trials exceed packed prefix length.")
+    packed_prefix_length = int(np.asarray(train_all["xs"]).shape[0])
+    if K > packed_prefix_length:
+        raise ValueError("Requested adaptation trials exceed packed prefix length.")
+    if K != packed_prefix_length:
         train_set = _copy_dataset_with_arrays(
             bundle.train_set,
             np.asarray(train_all["xs"])[:K, :, :],

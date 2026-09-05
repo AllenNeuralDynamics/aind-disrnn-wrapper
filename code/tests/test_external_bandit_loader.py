@@ -390,6 +390,28 @@ class TestExternalBanditDatasetLoader(unittest.TestCase):
             [["s1"], ["s1"]],
         )
 
+    def test_zero_session_budget_returns_empty_adaptation_tensor(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            table_path = temp_path / "trials.pkl"
+            manifest_path = temp_path / "split.json"
+            _canonical_trials().to_pickle(table_path)
+            manifest_path.write_text(json.dumps(_manifest()), encoding="utf-8")
+            with _optional_dependency_stubs():
+                bundle = ExternalBanditDatasetLoader(
+                    file_path=table_path,
+                    split_manifest_path=manifest_path,
+                    adapt_sessions_per_subject=0,
+                    batch_size=None,
+                    batch_mode="single",
+                ).load()
+
+        train = bundle.train_set.get_all()
+        self.assertEqual(train["xs"].shape[1], 0)
+        self.assertEqual(train["ys"].shape[1], 0)
+        self.assertEqual(bundle.metadata["train_session_ids"], [])
+        self.assertFalse(bundle.raw["target_adaptation_selected"].any())
+
     def test_prefix_trial_budget_keeps_full_eval_warmup(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
@@ -413,6 +435,27 @@ class TestExternalBanditDatasetLoader(unittest.TestCase):
         ].sum()
         self.assertEqual(selected.tolist(), [1, 1])
         self.assertTrue(np.all(bundle.eval_set.get_all()["ys"][:3] == -1))
+
+    def test_zero_prefix_budget_returns_empty_adaptation_tensor(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            table_path = temp_path / "trials.pkl"
+            manifest_path = temp_path / "split.json"
+            _prefix_trials().to_pickle(table_path)
+            manifest_path.write_text(json.dumps(_prefix_manifest()), encoding="utf-8")
+            with _optional_dependency_stubs():
+                bundle = ExternalBanditDatasetLoader(
+                    file_path=table_path,
+                    split_manifest_path=manifest_path,
+                    adapt_trials_per_subject=0,
+                    batch_size=None,
+                    batch_mode="single",
+                ).load()
+
+        train = bundle.train_set.get_all()
+        self.assertEqual(train["xs"].shape[:2], (0, 2))
+        self.assertEqual(train["ys"].shape[:2], (0, 2))
+        self.assertFalse(bundle.raw["target_adaptation_selected"].any())
 
 
 if __name__ == "__main__":
