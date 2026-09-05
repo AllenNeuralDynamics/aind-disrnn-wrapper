@@ -294,6 +294,8 @@ class HBTrainer(ModelTrainer):
         target_accept_prob: float = 0.8,
         max_tree_depth: int = 10,
         save_session_sites: bool = True,
+        progress_bar: bool = False,
+        progress_rate: int | None = None,
         architecture: Mapping[str, Any] | Any = {},
         output_dir: str = "/results/outputs",
         seed: Optional[int] = None,
@@ -341,6 +343,21 @@ class HBTrainer(ModelTrainer):
             which is the bulk of the artifact -- but a site exists only while the sampler
             does, so a fit that ships without it can be recovered only by re-fitting, at
             hours per fit. Defaults on for that reason; turn it off for a throwaway fit.
+        progress_bar : bool
+            Emit NumPyro's sampling progress. Off by default, which is the behaviour every
+            existing caller had. Worth turning on for any multi-hour rung: a population fit
+            otherwise logs nothing between "starting" and "fitted in Ns", so a silent job
+            cannot be told apart from a hung one -- three ladder rungs sat at 32 h before
+            this existed with no way to know. It is not free, though: NumPyro's docs note
+            that disabling the bar "will improve the speed for many cases, but it might
+            require more memory", because the bar breaks the sampler's scan into chunks.
+            That trade reverses at large ``D``, where memory rather than speed binds, so
+            this is a per-rung decision.
+        progress_rate : int, optional
+            Iterations per progress update. Left as ``None`` NumPyro uses 5% of total
+            iterations, which is what keeps a captured log readable -- roughly 20 lines for
+            a whole fit. Set it only to override that: tqdm writes to stderr, which Beaker
+            captures, so a small value here buries the log rather than illuminating it.
         architecture : mapping
             Present for parity with the other trainers; unused.
         output_dir : str
@@ -378,6 +395,8 @@ class HBTrainer(ModelTrainer):
                 "log2 bound on trajectory length (NumPyro's default is 10)."
             )
         self.save_session_sites = bool(save_session_sites)
+        self.progress_bar = bool(progress_bar)
+        self.progress_rate = None if progress_rate is None else int(progress_rate)
         self.output_dir = output_dir
 
     def fit(
@@ -687,7 +706,28 @@ class HBTrainer(ModelTrainer):
                     max_tree_depth=self.max_tree_depth,
                 ),
                 num_warmup=num_warmup, num_samples=num_samples, num_chains=num_chains,
-                chain_method="vectorized", progress_bar=False,
+                chain_method="vectorized",
+                # A population fit emits NOTHING between "starting" and "fitted in Ns",
+                # and these run for hours -- D≈300 took 26.3 h -- so a silent job is
+                # indistinguishable from a hung one for its entire life. That is not a
+                # hypothetical: three rungs sat at 32 h with no output and no way to tell
+                # whether they were progressing.
+                #
+                # progress_rate is what makes this safe in a captured log rather than a
+                # terminal. NumPyro defaults it to 5% of total iterations, so the bar
+                # emits ~20 updates for a whole fit instead of one per iteration; tqdm
+                # writes to stderr, which Beaker captures, so an unthrottled bar would
+                # bury the log.
+                #
+                # It is off by default because it is not free: NumPyro's own docs note
+                # progress_bar=False "will improve the speed for many cases, but it might
+                # require more memory" -- the bar forces the sampler to break its scan
+                # into chunks. The trade runs the other way at large D, where memory is
+                # the binding constraint, so this is a per-rung decision rather than a
+                # global one.
+                progress_bar=self.progress_bar,
+                **({"progress_rate": self.progress_rate}
+                   if self.progress_rate is not None else {}),
             )
             mcmc.run(
                 key, choice_arr, reward_arr, valid_mask, session_mask, beta_max=beta_max,
